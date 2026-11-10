@@ -1,0 +1,9 @@
+#!/usr/bin/env node
+import { pathToFileURL } from 'node:url'
+
+const index = process.argv.indexOf('--extension')
+if (index < 0 || !process.argv[index + 1]) process.exit(2)
+const { default: configure } = await import(pathToFileURL(process.argv[index + 1]).href)
+const providers = {}
+configure({ registerProvider(id, configuration) { providers[id] = configuration } })
+process.stdout.write(JSON.stringify(providers))

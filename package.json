@@ -1,0 +1,35 @@
+{
+  "name": "megachat",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "megachat": "src/main.mjs"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --import ./test/state-guard.mjs --test test/*.test.mjs",
+    "test:bundle": "npm run build && node --import ./test/state-guard.mjs --test test/bundle.test.mjs",
+    "start": "node src/main.mjs start",
+    "daemon": "node src/main.mjs daemon",
+    "acp": "node src/main.mjs acp"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.102.0",
+    "@agentclientprotocol/codex-acp": "2.6.0",
+    "@agentclientprotocol/sdk": "2.5.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.321",
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

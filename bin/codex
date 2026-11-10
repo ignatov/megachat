@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import { delimiter } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const bin = fileURLToPath(new URL('.', import.meta.url)).replace(/\/$/, '')
+const env = { ...process.env, PATH: (process.env.PATH ?? '').split(delimiter).filter(path => path.replace(/\/$/, '') !== bin).join(delimiter) }
+const overrides = env.MEGACHAT_CODEX_ARGS
+let command
+let args
+let cwd
+if (overrides !== undefined) {
+  command = 'codex'
+  args = [...process.argv.slice(2), ...JSON.parse(overrides)]
+  delete env.MEGACHAT_CODEX_ARGS
+  delete env.CODEX_PATH
+}
+else {
+  // The IDE passes its installed Codex ACP: a JSON array, a JSON object { command, args, env, cwd }, or one path.
+  const passed = env.MEGACHAT_CODEX_ACP
+  delete env.MEGACHAT_CODEX_ACP
+  let parsed
+  if (passed !== undefined && passed.trim() !== '') {
+    try { parsed = JSON.parse(passed) }
+    catch { parsed = passed }
+  }
+  if (typeof parsed === 'string') parsed = { command: parsed }
+  else if (Array.isArray(parsed)) parsed = { command: parsed[0], args: parsed.slice(1) }
+  if (parsed !== undefined) {
+    command = parsed.command
+    args = parsed.args ?? []
+    Object.assign(env, parsed.env ?? {})
+    cwd = parsed.cwd
+  }
+  else {
+    command = process.execPath
+    args = [fileURLToPath(new URL('../node_modules/@agentclientprotocol/codex-acp/dist/index.js', import.meta.url))]
+  }
+  env.CODEX_PATH = fileURLToPath(import.meta.url)
+  env.MEGACHAT_CODEX_ARGS = JSON.stringify(process.argv.slice(2))
+}
+const child = spawn(command, args, { stdio: 'inherit', env, ...(cwd ? { cwd } : {}) })
+child.once('error', () => { process.exitCode = 1 })
+child.once('exit', code => { process.exitCode = code ?? 1 })
