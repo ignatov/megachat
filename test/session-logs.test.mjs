@@ -276,6 +276,27 @@ test('the size poll finds a write to an open Codex file every 2 seconds, and pol
   assert.deepEqual(fs.calls.filter(([name]) => name === 'open'), [], 'An unchanged size gives no read')
 })
 
+test('a Codex log that a process keeps open is read at a scan after a write, also when its last write was more than an hour ago', async t => {
+  const home = await temporary(t)
+  const path = await codexLog(home, '/work/quiet', 'quiet', [codex.started(), codex.prompt(), codex.reply(), codex.complete()], { mtime: NOW - 2 * HOUR })
+  const fs = countingFs()
+  const timers = fakeTimers()
+  const { catalog } = await catalogOf(t, home, { fs, timers })
+  const size = catalog.get(path).size
+  const handle = await open(path, 'a')
+  t.after(() => handle.close())
+  await handle.write(`${JSON.stringify({ timestamp: iso(NOW), ...codex.started() })}\n${JSON.stringify({ timestamp: iso(NOW), ...codex.call() })}\n`)
+  for (let poll = 0; poll < 5; poll++) { timers.tick(); await catalog.idle() }
+  assert.deepEqual([catalog.get(path).size, catalog.get(path).step], [size, 'end'], 'The size poll takes only the files with a write in the last hour')
+  const table = fakeTable([proc(30, 2, '/opt/homebrew/bin/codex', { name: 'codex' })], { 30: { cwd: '/work/quiet', files: [path] } })
+  const [row] = (await running(catalog, table).query()).sessions
+  assert.deepEqual([row.sessionId, row.status, catalog.get(path).step, catalog.get(path).size], ['quiet', 'working', 'call', (await stat(path)).size])
+  // An unchanged open log costs one stat at a scan, and no read.
+  fs.calls.length = 0
+  await running(catalog, table).query()
+  assert.deepEqual(fs.calls.filter(([, file]) => file === path).map(([name]) => name), ['stat'])
+})
+
 test('the first pass reads the files with a change in the last 24 hours first, the newest first, and the other files after them', async t => {
   const home = await temporary(t)
   const expected = [

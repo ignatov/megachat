@@ -125,7 +125,10 @@ export class RunningAgents {
       const path = known?.path ?? (row.process?.cwd ? catalog.source(row.agent)?.pathOf?.(row.process.cwd, id) : undefined)
       if (path) wanted.add(path)
     }
-    await Promise.all([...wanted].filter(path => !catalog.get(path)?.read).map(path => catalog.ensure(path).catch(() => undefined)))
+    // A read log of an agent that keeps it open gets a stat at each scan, and a read after a change: macOS reports a
+    // write to an open file only at its close, and the size poll takes only the files with a write in the last hour.
+    const open = path => catalog.get(path)?.read && catalog.source(catalog.get(path).agent)?.keepsOpen
+    await Promise.all([...wanted].map(path => (open(path) ? catalog.read(path) : catalog.ensure(path)).catch(() => undefined)))
     const links = linkLogs(rows, catalog)
     this.linked = new Set([...links.values()].flat().map(link => link.record?.path).filter(Boolean))
     const view = []

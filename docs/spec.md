@@ -303,7 +303,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   the newest first, then the other files. A tail without a step can read more lines backwards, at most 1 MB.
 - The table must read a file on an event of the watch of the provider roots, the same watch as the index. Each file with
   a write in the last hour must also get a poll of its size every 2 seconds, because macOS reports a write only when a
-  file closes, and Codex keeps its file open. A read must take only the appended complete lines. A smaller file or
+  file closes, and Codex keeps its file open. The log of each Codex row must also get a stat at each scan
+  of `agents_running`, whatever the age of its last write, and a read when it changed, because a session can be quiet
+  for more than an hour. A read must take only the appended complete lines. A smaller file or
   another inode must make the table read the file again.
 - Each row must get its session log only by a certain link: the session ID of a Megachat run; an open log of the process
   (Codex keeps its log open, one row for each open log of a `codex app-server`); the process file
