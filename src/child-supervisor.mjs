@@ -18,6 +18,10 @@ process.stdin.pipe(child.stdin)
 child.stdout.pipe(process.stdout)
 child.stderr.pipe(process.stderr)
 child.stdin.on('error', stop)
+// A dead daemon also closes the output pipes. A write to a closed pipe gives an error on the stream. Without a handler,
+// that error ends this process before it reads the end of the lifetime pipe, and the child stays alive.
+process.stdout.on('error', stop)
+process.stderr.on('error', stop)
 lifetime.on('data', () => {})
 lifetime.once('end', stop)
 lifetime.once('error', stop)

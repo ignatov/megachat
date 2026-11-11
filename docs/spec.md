@@ -175,6 +175,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A failed Central configuration must start no child agent.
 - Stored conversation data must contain no Central credentials.
   [@test] ../test/integration.test.mjs
+- A child agent must not stay alive after its daemon. This also applies when the agent still writes output.
+  [@test] ../test/recovery.test.mjs
 
 ## Non-goals
 

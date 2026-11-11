@@ -115,3 +115,29 @@ test('bridge exit preserves work and SIGKILL continues the child session without
   assert.equal((await daemon.json('/input', { requestId: 'original', text: 'Work' })).submissionId, receipt.submissionId)
   assert.equal(await readFile(join(directory, 'dispatches'), 'utf8'), `approval\n${continuationPrompt('child.continue')}\n`)
 })
+
+test('the supervisor stops a child that writes after the daemon closed the output', { timeout: 10000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-supervisor-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const pidFile = join(directory, 'child.pid')
+  // The child ignores a closed output and writes again. So only the supervisor can stop it.
+  const script = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
+    process.stdout.on('error', () => {})
+    setInterval(() => process.stdout.write('x'.repeat(1024)), 1)`
+  const supervisor = spawn(globalThis.process.execPath, [fileURLToPath(new URL('../src/child-supervisor.mjs', import.meta.url)),
+    globalThis.process.execPath, '-e', script], { stdio: ['pipe', 'pipe', 'ignore', 'pipe'] })
+  let childPid
+  t.after(() => {
+    supervisor.kill('SIGKILL')
+    try { if (childPid) globalThis.process.kill(-childPid, 'SIGKILL') }
+    catch (error) { if (error.code !== 'ESRCH') throw error }
+  })
+  await once(supervisor.stdout, 'data')
+  childPid = Number(await readFile(pidFile, 'utf8'))
+  // The lifetime pipe stays open. So the closed output is the only sign that the daemon went away.
+  supervisor.stdout.destroy()
+  await poll(() => {
+    try { globalThis.process.kill(childPid, 0); return false }
+    catch (error) { if (error.code === 'ESRCH') return true; throw error }
+  })
+})
