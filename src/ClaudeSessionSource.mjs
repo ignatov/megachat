@@ -14,8 +14,11 @@ function encode(cwd) {
 const resultText = content => contentText(content)
 /** A user message that Claude Code writes when the user stops a turn. The turn ends without a reply. */
 const interrupted = /^\[Request interrupted by user/
-/** A user message that holds a local command, such as `/model`, or its output. It starts no turn of the model. */
-const localCommand = /^\s*<(?:command-name|command-message|local-command-[\w-]+)>/
+/**
+ * A user message that holds a local command, such as `/model`, a shell line of the bash mode (`!`) or a note of the
+ * memory mode (`#`), or the output of one. It starts no turn of the model.
+ */
+const localCommand = /^\s*<(?:command-name|command-message|local-command-[\w-]+|bash-(?:input|stdout|stderr)|user-memory-input)>/
 /** The system records that Claude Code writes at the end of a turn. */
 const TURN_END = new Set(['turn_duration', 'stop_hook_summary'])
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']

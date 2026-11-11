@@ -319,7 +319,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   - `working`: the tail ends with a tool call, a tool result or a message without a reply, and the last write is less
     than 10 minutes old. Without a write and a CPU load for 2 to 10 minutes, the status stays `working`.
   - `stuck`: such an open step and no write for 10 minutes or more.
-  - `waiting_for_user`: the tail ends with a finished turn, an interrupted turn, or a log without a turn.
+  - `waiting_for_user`: the tail ends with a finished turn, an interrupted turn, or a log without a turn. A local
+    command of Claude Code (such as `/model`), a shell line of its bash mode (`!`), a note of its memory mode (`#`)
+    and the output of each one start no turn.
   - `idle`: a finished turn and no write for 30 minutes or more.
   - `waiting_for_permission` must not be given: Claude Code, Codex and pi write no record of a permission request to
     the log. Without the state request of Air it is not knowable. A pending permission prompt shows as `working`, then
