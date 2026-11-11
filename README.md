@@ -131,6 +131,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `search.sqlite` | The search index. The daemon builds it again from the conversation when necessary. |
 | `workspace/` | The workspace of Megachat. A task without a project works there. |
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
+| `settings.json` | The settings that you gave in the chat, and the status of the setup. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
 | `daemon/daemon.log` | The log of a daemon that `start` started. |
 
@@ -141,8 +142,8 @@ list.
 ## The size of the model context
 
 The daemon sends the conversation to the model with each request. Above 100,000 tokens, it replaces the older part
-with a summary, and it keeps about 20,000 recent tokens as they are. `MEGACHAT_COMPACT_TOKENS` in the environment of
-the daemon replaces the limit. The summary keeps your standing agreements, the open child tasks, the questions that
+with a summary, and it keeps about 20,000 recent tokens as they are. The setting `compaction.tokens` or
+`MEGACHAT_COMPACT_TOKENS` in the environment of the daemon replaces the limit. The summary keeps your standing agreements, the open child tasks, the questions that
 wait for you, and the recent decisions. `resources/compaction.md` holds its instructions. The conversation and the
 search index keep each message, so the agent still finds the earlier details. `node src/main.mjs compact` writes a
 summary at once.
@@ -158,7 +159,8 @@ cache, the next request writes the whole context again, which is slow and costs 
   for one output token, and the cache lives another hour. The conversation does not get the reply. For a context of
   100,000 tokens, one request costs about $0.02 at the list price of Claude Opus 5.5.
 
-The keep-alive requests stop 6 hours after the last turn. The log of the daemon has one line with the token counts
+The keep-alive requests stop 6 hours after the last turn. The settings `cache.ttl`, `keepAlive.hours` and
+`keepAlive.enabled` change these values, and the variables below win over them. The log of the daemon has one line with the token counts
 of each keep-alive request and of each summary request.
 
 | Variable of the daemon | Effect |
@@ -167,6 +169,35 @@ of each keep-alive request and of each summary request.
 | `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out. The default is `6`. |
 | `MEGACHAT_KEEPALIVE` | `0` stops the keep-alive requests and the summary of an idle conversation. |
 | `MEGACHAT_STREAM` | `0` stops the stream of a reply. Then the chat shows a reply when the model has written all of it. |
+
+## Settings and the first run
+
+Megachat keeps its settings in `settings.json` in the state directory. The file is apart from the conversation, so a
+compaction does not change it. Change a setting in the chat, for example "answer in German" or "use Sonnet 5.5 for the
+main agent". The main agent stores the value with its tool `agents_settings`. A change applies at once when no turn
+runs, else at the end of the current turn. No setting needs a restart.
+
+| Setting | Default | Variable | Effect |
+|---|---|---|---|
+| `coordinator.model` | `anthropic/claude-opus-5-5` | | The model of the main agent. The agent lists the models of the registry with their prices. |
+| `coordinator.thinking` | `low` | | The reasoning level of the main agent and of a keep-alive request. |
+| `keepAlive.enabled` | `true` | `MEGACHAT_KEEPALIVE` | The keep-alive requests and the summary of an idle conversation. |
+| `keepAlive.hours` | `6` | `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out, 0 to 168 hours. |
+| `cache.ttl` | `1h` | `MEGACHAT_CACHE_TTL` | The lifetime of the prompt cache: `1h` or `5m`. |
+| `compaction.tokens` | `100000` | `MEGACHAT_COMPACT_TOKENS` | The size of the model context above which the conversation gets a summary. |
+| `reply.suggestions` | `false` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. |
+| `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
+| `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
+| `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
+
+Each environment variable still works, and it wins over the stored value. The agent tells you when a variable hides
+a stored value. A daemon reads the variables at its start.
+
+Without `settings.json`, the setup of Megachat is pending. In its next reply to you, the main agent answers your
+message and then offers the setup. The setup asks one question at a time and shows the default of each question. You
+can skip one question or the whole setup, and the defaults then apply. After the setup, or after a skip, Megachat
+does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon cannot read stays as
+`settings.json.unreadable-<UTC time>`, and the defaults apply.
 
 ## Code map
 
@@ -188,6 +219,7 @@ of each keep-alive request and of each summary request.
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, and the origins of the list. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
+| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The variable `MEGACHAT_SUGGESTIONS`, which lets the main agent offer a next step by itself. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |

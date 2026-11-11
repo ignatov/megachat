@@ -68,7 +68,7 @@ async function daemon() {
     const configuration = new CentralConfigurationService()
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
       undefined, undefined, { searchPath: join(directory, 'search.sqlite'), userInstructionsPath: join(directory, 'instructions.md'),
-        workspacePath: join(directory, 'workspace'), stateDirectory: directory })
+        settingsPath: join(directory, 'settings.json'), workspacePath: join(directory, 'workspace'), stateDirectory: directory })
     await service.search.catchUp()
     // After a storage error each request fails, but the process and its lock stay. So the daemon stops, and the next
     // start opens the state again. The timer ends a stop that does not return.

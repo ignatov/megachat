@@ -94,15 +94,22 @@ export async function migrateLegacyState(target, sources, log = () => {}) {
   return undefined
 }
 
-/** Appends optional user rules after the bundled rules. The bundled rules keep priority. */
-export async function composeInstructions(bundled, userPath) {
-  if (!userPath) return bundled
-  let text
+/** Reads the optional rules of the user. A missing, empty or too large file gives `undefined`. */
+export async function readUserInstructions(userPath) {
+  if (!userPath) return undefined
   try {
-    if ((await stat(userPath)).size > USER_INSTRUCTIONS_LIMIT) return bundled
-    text = (await readFile(userPath, 'utf8')).trim()
+    if ((await stat(userPath)).size > USER_INSTRUCTIONS_LIMIT) return undefined
+    return (await readFile(userPath, 'utf8')).trim() || undefined
   }
-  catch (error) { if (error.code === 'ENOENT') return bundled; throw error }
+  catch (error) { if (error.code === 'ENOENT') return undefined; throw error }
+}
+
+/** Appends the rules of the user after the bundled rules. The bundled rules keep priority. */
+export function withUserInstructions(bundled, text) {
   if (!text) return bundled
   return `${bundled.trimEnd()}\n\n## User preferences\n\n${message('instructions.user')}\n\n<user-preferences>\n${text}\n</user-preferences>\n`
+}
+
+export async function composeInstructions(bundled, userPath) {
+  return withUserInstructions(bundled, await readUserInstructions(userPath))
 }

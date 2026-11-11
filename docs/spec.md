@@ -69,7 +69,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 
 - The main conversation must use the native ACP chat.
 - Megachat must retain the conversation when a project closes.
-- The main agent must use Claude Opus 5.5 through Central.
+- By default, the main agent must use Claude Opus 5.5 through Central with the reasoning level `low`. The setting `coordinator.model` may select another model of the model registry, and `coordinator.thinking` another level.
 - Changing the main model must keep the existing conversation.
 - The agent must know that its conversation persists through an IDE or daemon restart.
 - The user may add rules in `instructions.md` in the state directory. They must follow the bundled rules as user preferences.
@@ -135,6 +135,30 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - By default, the main agent must have no suggestion rules and no `agents_suggest` and `agents_feedback` tools. The stored proposal decisions must stay.
 - `MEGACHAT_SUGGESTIONS=1` must give the suggestion rules and the two tools back. A daemon restart applies a changed value.
   [@test] ../test/suggestions.test.mjs
+- Megachat must keep its settings in `settings.json` in the state directory, apart from the conversation. A daemon restart and a compaction must not lose a setting.
+- The file must have the mode 0600. The daemon must write it to a temporary file and rename that file, so a crash cannot leave a partial file.
+- The file must hold the schema 1, the status of the onboarding, and the stored values. A stored key that this build does not know must stay in the file.
+- A file that the daemon cannot read must stay next to it as `settings.json.unreadable-<UTC time>`. The log must give the reason without the content, and the defaults must apply.
+- A stored value that this build does not accept must give the default. The file must keep that value.
+- The effective value of a setting must be the environment variable, else the stored value, else the default. A variable that the daemon cannot read must have no effect.
+- The tool `agents_settings` must give each setting with its value, its source (`environment`, `setting` or `default`), its default, its variable, the allowed values or the range, a description, and when a change applies.
+- It must say when a variable hides a stored value. A caller of the service may give an explicit value for a test, with the source `option`.
+- The tool must store a valid value at once, remove a stored value, and set the status of the onboarding. It must refuse an unknown key and an invalid value as each other tool refuses an invalid request.
+- A project event or a child result must not change a setting or the status of the onboarding.
+- The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
+- A model must be valid only when the model registry knows it. A reasoning level must be a level of pi-ai that the model supports.
+- The output of `get` must list each model of the registry with the prices of its model data, and one note with the measurement of Claude Opus 5.5. It must give no measurement of another model.
+- A changed setting must apply at once when no turn runs, else at the end of the current turn, before the next turn starts. A change must not apply in the middle of a turn.
+- The model and the reasoning level must reach the next model request without a restart. A keep-alive request must use the same model and level as the turns.
+- The keep-alive, the cache lifetime and the limit of a summary must take the stored value without a restart.
+- The setting `reply.suggestions` must change the rules and the suggestion tools of the running main agent.
+- The reply style must give lines of the rules of the main agent: the language, the length, and a quote of the original request in a report of a child result. The defaults must give the rules from before the settings.
+- The rules that the settings give must be a section of their own, so a change sends only that section to the model again.
+- Without `settings.json`, the onboarding must be pending. The rules of the main agent must then hold the setup rules of `resources/instructions-onboarding.md`.
+- The setup rules must tell the agent to answer the user first and then offer the setup one time, to ask one question at a time with its default, to let the user skip one question or the setup, to store each answer at once, and to mark the onboarding done at the end. They must name only the settings of this build.
+- After the status `done` or `skipped`, the setup rules must not come back by themselves, also after a restart. The rules must then say that the agent changes a setting or runs the setup again when the user asks.
+- The status `pending` must bring the setup rules back. The tool result must hold them, so the setup can start in the same turn.
+  [@test] ../test/settings.test.mjs
 - With `MEGACHAT_SUGGESTIONS=1`, Megachat may offer one useful next step after work ends.
 - After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.
@@ -174,7 +198,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The state must live in `~/.jetbrains/air/megachat/` for each user: `%USERPROFILE%\.jetbrains\air\megachat` on Windows.
 - All JetBrains products of the user must share this directory, its daemon, and its conversation.
 - `MEGACHAT_HOME` or the final command argument may select another directory for a test or development.
-- The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log.
+- The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log. It may hold `settings.json`.
 - The name `memory.md` is reserved for learned memory that the user can edit. Megachat does not read it yet.
 - The directories must be private to the user: mode 0700 for directories and 0600 for files on macOS and Linux.
 - Only one daemon may own a storage directory.

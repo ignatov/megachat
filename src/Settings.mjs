@@ -1,0 +1,250 @@
+import { chmod, readFile, rename, writeFile } from 'node:fs/promises'
+import { basename } from 'node:path'
+import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai/models'
+import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
+import { logEvent, message, requireCondition } from './messages.mjs'
+
+/** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
+export const COMPACT_TOKENS_VARIABLE = 'MEGACHAT_COMPACT_TOKENS'
+export const DEFAULT_COMPACT_TOKENS = 100000
+/** The lifetime of the prompt cache that each model request asks for: `1h` or `5m`. */
+export const CACHE_TTL_VARIABLE = 'MEGACHAT_CACHE_TTL'
+/** The value `0` stops each keep-alive request and each summary of an idle conversation. */
+export const KEEPALIVE_VARIABLE = 'MEGACHAT_KEEPALIVE'
+/** The time after the last turn, in hours, in which keep-alive requests go out. */
+export const KEEPALIVE_HOURS_VARIABLE = 'MEGACHAT_KEEPALIVE_HOURS'
+export const DEFAULT_KEEPALIVE_HOURS = 6
+/** `1` lets the main agent offer a next step by itself, `0` stops it. */
+export const SUGGESTIONS_VARIABLE = 'MEGACHAT_SUGGESTIONS'
+export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'
+/** The cache retention of pi-ai for each value of `cache.ttl`. */
+export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
+export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
+const SCHEMA = 1
+
+const toBoolean = value => typeof value === 'boolean' ? value
+  : typeof value !== 'string' ? undefined
+    : /^(on|true|yes|1)$/i.test(value.trim()) ? true : /^(off|false|no|0)$/i.test(value.trim()) ? false : undefined
+const toNumber = value => typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value.trim()) : NaN
+const choice = values => value => typeof value === 'string' && values.includes(value.trim()) ? value.trim() : undefined
+
+/** Splits `provider/modelId` at the first slash, because a model ID of some providers holds a slash. */
+export function modelRef(value) {
+  const index = value.indexOf('/')
+  return { provider: value.slice(0, index), modelId: value.slice(index + 1) }
+}
+
+const modelOf = (models, value) => {
+  const { provider, modelId } = modelRef(value)
+  return models?.getModel(provider, modelId)
+}
+const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(model) : [...MODEL_THINKING_LEVELS]
+
+/**
+ * The settings of Megachat. Each item is the one place that defines a setting:
+ * - `key` names it in `settings.json` and in the tool `agents_settings`. `setting.<key>` in the resources describes it.
+ * - `variable` names the environment variable that wins over the stored value.
+ * - `fromEnvironment` reads the text of the variable. A text that it cannot read gives `undefined`, and the variable
+ *   then has no effect. Without it, `validate` reads the text.
+ * - `validate` gives the normalized value, or `undefined` for an invalid value. It gets the models and the effective
+ *   model of the main agent.
+ * - `allowed` gives the allowed values or the range for the output of `get`.
+ * - `applies` tells when a change has an effect: `settings.applies.<applies>` in the resources says it to the user.
+ */
+export const SETTINGS = [
+  { key: 'coordinator.model', default: DEFAULT_MODEL, applies: 'nextTurn',
+    validate: (value, { models }) => typeof value === 'string' && /^[^/\s]+\/\S+$/.test(value.trim()) && modelOf(models, value.trim())
+      ? value.trim() : undefined,
+    allowed: ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
+      contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') }) },
+  { key: 'coordinator.thinking', default: 'low', applies: 'nextTurn',
+    validate: (value, { model }) => {
+      const level = choice(MODEL_THINKING_LEVELS)(value)
+      return level !== undefined && thinkingLevels(model).includes(level) ? level : undefined
+    },
+    allowed: ({ model }) => ({ values: thinkingLevels(model) }) },
+  { key: 'keepAlive.enabled', variable: KEEPALIVE_VARIABLE, default: true, applies: 'nextTurn',
+    // Each value of the variable other than `0` keeps the keep-alive requests, as before the settings.
+    fromEnvironment: text => text !== '0', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
+  { key: 'keepAlive.hours', variable: KEEPALIVE_HOURS_VARIABLE, default: DEFAULT_KEEPALIVE_HOURS, applies: 'nextTurn',
+    validate: value => {
+      const hours = toNumber(value)
+      return Number.isFinite(hours) && hours >= 0 && hours <= 168 ? hours : undefined
+    },
+    allowed: () => ({ minimum: 0, maximum: 168 }) },
+  { key: 'cache.ttl', variable: CACHE_TTL_VARIABLE, default: '1h', applies: 'nextTurn',
+    validate: choice(Object.keys(CACHE_RETENTION)), allowed: () => ({ values: Object.keys(CACHE_RETENTION) }) },
+  { key: 'compaction.tokens', variable: COMPACT_TOKENS_VARIABLE, default: DEFAULT_COMPACT_TOKENS, applies: 'nextTurn',
+    validate: value => {
+      const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+      return /^[1-9]\d{0,8}$/.test(text) ? Number(text) : undefined
+    },
+    allowed: () => ({ minimum: 1, maximum: 999999999 }) },
+  { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: false, applies: 'nextTurn',
+    fromEnvironment: text => text === '1' ? true : text === '0' ? false : undefined, validate: toBoolean,
+    allowed: () => ({ values: [true, false] }) },
+  { key: 'reply.language', default: 'auto', applies: 'nextTurn',
+    validate: value => typeof value !== 'string' ? undefined : /^auto$/i.test(value.trim()) ? 'auto'
+      : /^\p{L}[\p{L} ()-]{0,39}$/u.test(value.trim()) ? value.trim() : undefined,
+    allowed: () => ({ values: ['auto'], other: message('settings.language.other') }) },
+  { key: 'reply.length', default: 'short', applies: 'nextTurn',
+    validate: choice(['short', 'normal', 'detailed']), allowed: () => ({ values: ['short', 'normal', 'detailed'] }) },
+  { key: 'reply.quoteRequest', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
+]
+
+const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))
+
+/** The value of a variable for [definition], or `undefined` when the variable is unset, blank or invalid. */
+function environmentValue(definition, environment) {
+  const text = definition.variable ? environment[definition.variable]?.trim() : undefined
+  if (!text) return undefined
+  return definition.fromEnvironment ? definition.fromEnvironment(text) : definition.validate(text, {})
+}
+
+/** The value of [key] from the environment, else its default. A caller without the stored settings uses it. */
+export function environmentSetting(key, environment = process.env) {
+  const definition = definitions.get(key)
+  return environmentValue(definition, environment) ?? definition.default
+}
+
+const emptySettings = () => ({ schema: SCHEMA, onboarding: 'pending', values: {} })
+
+/** Gives the reason why [data] is no valid content of `settings.json`, or `undefined` for valid content. */
+function invalidReason(data) {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return 'shape'
+  if (data.schema !== SCHEMA) return 'schema'
+  if (!ONBOARDING_STATES.includes(data.onboarding)) return 'onboarding'
+  if (data.values === null || typeof data.values !== 'object' || Array.isArray(data.values)) return 'values'
+  return undefined
+}
+
+/**
+ * The file `settings.json` in the state directory. It is not in the conversation state, because the daemon needs the
+ * model and the cache settings before it opens the harness, and because a compaction cannot change it. The user can
+ * read it. Without a path, the settings stay in memory, for a test.
+ */
+export class SettingsStore {
+  /** A file that the daemon cannot read stays next to the path under another name, and the defaults apply. */
+  static async open(path) {
+    if (!path) return new SettingsStore(undefined, emptySettings())
+    let text
+    try { text = await readFile(path, 'utf8') }
+    catch (error) {
+      if (error.code === 'ENOENT') return new SettingsStore(path, emptySettings())
+      throw error
+    }
+    let data
+    let reason
+    try { data = JSON.parse(text); reason = invalidReason(data) }
+    catch { reason = 'json' }
+    if (!reason) return new SettingsStore(path, data)
+    const aside = `${path}.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}`
+    await rename(path, aside)
+    logEvent('log.settings.unreadable', reason, basename(aside))
+    return new SettingsStore(path, emptySettings())
+  }
+
+  constructor(path, data) {
+    this.path = path
+    this.data = data
+    this.queue = Promise.resolve()
+  }
+
+  get onboarding() { return this.data.onboarding }
+
+  stored(key) { return Object.hasOwn(this.data.values, key) ? this.data.values[key] : undefined }
+
+  /** Writes a changed copy. The temporary file and the rename keep a complete file also after a crash. */
+  change(operation) {
+    const next = this.queue.then(async () => {
+      const data = structuredClone(this.data)
+      operation(data)
+      if (this.path) {
+        const temporary = `${this.path}.${process.pid}.tmp`
+        await writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 })
+        if (process.platform !== 'win32') await chmod(temporary, 0o600)
+        await rename(temporary, this.path)
+      }
+      this.data = data
+    })
+    this.queue = next.catch(() => {})
+    return next
+  }
+}
+
+/**
+ * The effective settings: an explicit option of the caller, then the environment variable, then the stored setting,
+ * then the default. An option comes only from a test or a development caller. Each entry tells its source.
+ */
+export class MegachatSettings {
+  constructor(store, { environment = process.env, overrides = {}, models } = {}) {
+    Object.assign(this, { store, environment, overrides, models })
+  }
+
+  get onboarding() { return this.store.onboarding }
+
+  /** The context of a validation: the models, and the effective model of the main agent. */
+  context() {
+    const context = { models: this.models }
+    return { ...context, model: modelOf(this.models, this.entry('coordinator.model', context).value) }
+  }
+
+  entry(key, context = this.context()) {
+    const definition = definitions.get(key)
+    const stored = this.store.stored(key)
+    const valid = stored === undefined ? undefined : definition.validate(stored, context)
+    const fromEnvironment = environmentValue(definition, this.environment)
+    const [value, source] = Object.hasOwn(this.overrides, key) ? [this.overrides[key], 'option']
+      : fromEnvironment !== undefined ? [fromEnvironment, 'environment']
+        : valid !== undefined ? [valid, 'setting'] : [definition.default, 'default']
+    // A stored level that the model does not know becomes the nearest level of the model, so each request agrees.
+    const effective = key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
+    return { key, value: effective, source, default: definition.default,
+      ...(definition.variable ? { variable: definition.variable } : {}),
+      ...(stored === undefined ? {} : { stored }),
+      ...(stored !== undefined && valid === undefined ? { storedIgnored: true } : {}),
+      ...(valid !== undefined && source !== 'setting' ? { storedHidden: true } : {}) }
+  }
+
+  /** Each effective value by its key. */
+  values() {
+    const context = this.context()
+    return Object.fromEntries(SETTINGS.map(({ key }) => [key, this.entry(key, context).value]))
+  }
+
+  /** The output of `get`: each entry with its allowed values, its description and the time when a change applies. */
+  describe() {
+    const context = this.context()
+    return { onboarding: this.onboarding, settings: SETTINGS.map(definition => ({ ...this.entry(definition.key, context),
+      ...definition.allowed(context), description: message(`setting.${definition.key}`), applies: message(`settings.applies.${definition.applies}`) })) }
+  }
+
+  /** The output of `set` and `reset` for [key], with a note when a variable or an option hides the stored value. */
+  report(key) {
+    const entry = this.entry(key)
+    const hidden = entry.source === 'environment' ? message('settings.hidden', entry.variable)
+      : entry.source === 'option' ? message('settings.option') : undefined
+    return { ...entry, applies: message(`settings.applies.${definitions.get(key).applies}`), ...(hidden ? { note: hidden } : {}) }
+  }
+
+  async set(key, value) {
+    const definition = definitions.get(key)
+    requireCondition(definition, 'settingKey')
+    const normalized = definition.validate(value, this.context())
+    requireCondition(normalized !== undefined, 'settingValue')
+    await this.store.change(data => { data.values[key] = normalized })
+    return this.report(key)
+  }
+
+  async reset(key) {
+    requireCondition(definitions.has(key), 'settingKey')
+    await this.store.change(data => { delete data.values[key] })
+    return this.report(key)
+  }
+
+  async setOnboarding(status) {
+    requireCondition(ONBOARDING_STATES.includes(status), 'settingValue')
+    await this.store.change(data => { data.onboarding = status })
+    return { onboarding: status }
+  }
+}

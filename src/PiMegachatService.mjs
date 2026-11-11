@@ -2,14 +2,14 @@ import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
 import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
-import { int, obj, opt, str } from '@earendil-works/pi-schema'
-import { composeInstructions, ensurePrivateDirectory } from './MegachatHome.mjs'
+import { bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
+import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
-import { keepAliveSettings, PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
+import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
-import { suggestionsEnabled } from './Suggestions.mjs'
+import { CACHE_RETENTION, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -17,23 +17,20 @@ import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatS
 const context = BACKGROUND_CONTEXT
 const result = value => ({ output: [{ type: 'text', text: JSON.stringify(value) }] })
 
-/** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
-export const COMPACT_TOKENS_VARIABLE = 'MEGACHAT_COMPACT_TOKENS'
-export const DEFAULT_COMPACT_TOKENS = 100000
+export { COMPACT_TOKENS_VARIABLE, DEFAULT_COMPACT_TOKENS } from './Settings.mjs'
 /** A summary request reads the whole context that it replaces, so it gets more time than a reply. */
 const SUMMARY_TIMEOUT_MS = 600000
 const SUMMARY_MAX_TOKENS = 16000
 const SUMMARY_TOOL_RESULT_LIMIT = 2000
 const SUMMARY_TASK_LIMIT = 30
-/** The main agent and a keep-alive request think at the same level. Another level would miss the prompt cache. */
-const THINKING_LEVEL = 'low'
 const STREAM_TIMEOUT_MS = 60000
 /** The lifetimes of the prompt cache of a model that states none: those of Anthropic. */
 const CACHE_LIFETIME_SECONDS = { short: 300, long: 3600 }
+const resource = name => readFile(new URL(`../resources/${name}`, import.meta.url), 'utf8')
 
+/** The limit of a summary from the environment alone, without the stored settings. */
 export function compactTokens(environment = process.env) {
-  const value = environment[COMPACT_TOKENS_VARIABLE]
-  return value !== undefined && /^[1-9]\d{0,8}$/.test(value.trim()) ? Number(value.trim()) : DEFAULT_COMPACT_TOKENS
+  return environmentSetting('compaction.tokens', environment)
 }
 
 /**
@@ -45,6 +42,43 @@ export function compactTokens(environment = process.env) {
 export function compactionSettings(contextWindow, tokens) {
   const reserveTokens = contextWindow - tokens - DEFAULT_COMPACTION_POLICY.backgroundTokens
   return reserveTokens >= DEFAULT_COMPACTION_POLICY.reserveTokens ? { reserveTokens } : {}
+}
+
+/**
+ * The settings of the harness for the effective [values]. Pi Durable reads them at each use, so a new value applies to
+ * the next model request without a new harness.
+ */
+function harnessSettings(values, models) {
+  const { provider, modelId } = modelRef(values['coordinator.model'])
+  return {
+    retry: { enabled: false },
+    stream: { timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: CACHE_RETENTION[values['cache.ttl']] },
+    compaction: compactionSettings(models.getModel(provider, modelId)?.contextWindow ?? 0, values['compaction.tokens']),
+    // Pi Durable puts the partial reply into `pi.live` at this interval. The daemon sends it to the chat from there.
+    progress: { partialIntervalMs: STREAM_INTERVAL_MS },
+  }
+}
+
+/**
+ * The rules of the main agent that the settings give: the reply style, the suggestion rules, and the setup rules while
+ * the onboarding is pending. The defaults give the rules from before the settings. The rules are a section of their
+ * own, so a change sends only this section to the model again, and not the bundled rules.
+ */
+function settingsRules(values, onboarding, rules) {
+  const language = values['reply.language']
+  return [
+    message(`instructions.length.${values['reply.length']}`),
+    language === 'auto' ? message('instructions.language.auto') : message('instructions.language', language),
+    ...(values['reply.quoteRequest'] ? [message('instructions.quoteRequest')] : []),
+    values['reply.suggestions'] ? rules.suggestions.trimEnd() : message('instructions.noSuggestions'),
+    onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
+  ].join('\n')
+}
+
+/** The choices of the root conversation that the settings give. The rules of the user follow the bundled rules. */
+function agentOf(values, rules) {
+  return { model: modelRef(values['coordinator.model']), thinkingLevel: values['coordinator.thinking'],
+    instructions: withUserInstructions(rules.bundled, rules.user) }
 }
 
 const blockText = content => typeof content === 'string' ? content
@@ -68,45 +102,44 @@ function transcript(messages) {
 }
 
 export class PiMegachatService {
-  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens(), keepAlive: keepAliveOptions, workspacePath, stateDirectory, home, projectRoots, suggestions = suggestionsEnabled() } = {}) {
+  /**
+   * An explicit [model], `compactTokens`, `suggestions` or `keepAlive` setting wins over the environment and over
+   * `settings.json`, for a test. The daemon passes none of them.
+   */
+  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
-    const keepAlive = { ...keepAliveSettings(), ...keepAliveOptions }
+    const { windowMs, retention, enabled } = keepAliveOptions
+    const overrides = Object.fromEntries(Object.entries({
+      'coordinator.model': model && `${model.provider}/${model.modelId}`, 'compaction.tokens': limit, 'reply.suggestions': suggestions,
+      'keepAlive.enabled': enabled, 'keepAlive.hours': windowMs === undefined ? undefined : windowMs / 3600000,
+      'cache.ttl': retention === undefined ? undefined : retention === 'short' ? '5m' : '1h',
+    }).filter(([, value]) => value !== undefined))
+    const settings = new MegachatSettings(await SettingsStore.open(settingsPath), { environment, overrides, models })
+    const values = settings.values()
+    // The rules of the user come from the file at the start of the daemon only.
+    const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
+      onboarding: await resource('instructions-onboarding.md'), user: await readUserInstructions(userInstructionsPath) }
+    const live = { harness: harnessSettings(values, models) }
     const registry = createRegistry()
-    const contextWindow = models.getModel(model.provider, model.modelId)?.contextWindow ?? 0
     const harness = await Harness.open(storage, {
-      models, registry,
-      settings: { retry: { enabled: false }, stream: { timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: keepAlive.retention }, compaction: compactionSettings(contextWindow, limit),
-        // Pi Durable puts the partial reply into `pi.live` at this interval. The daemon sends it to the chat from there.
-        progress: { partialIntervalMs: STREAM_INTERVAL_MS } },
+      models, registry, settings: () => live.harness,
       // Pi Durable reports each failure of a task, an extension or the storage here, and nowhere else.
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
     }, context)
-    // Without suggestions, the rules have one line that stops a proposal. With suggestions, they have the suggestion rules.
-    const bundled = await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8')
-    const suggestionRules = suggestions ? await readFile(new URL('../resources/instructions-suggestions.md', import.meta.url), 'utf8')
-      : `${message('instructions.noSuggestions')}\n`
-    const instructions = await composeInstructions(`${bundled.trimEnd()}\n${suggestionRules}`, userInstructionsPath)
-    const root = await harness.root(context, { agent: { model, thinkingLevel: THINKING_LEVEL, maxTurns: 20, instructions } })
-    await root.configure({ model, instructions }, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions })
+    const agent = agentOf(values, rules)
+    const root = await harness.root(context, { agent: { ...agent, maxTurns: 20 } })
+    await root.configure(agent, context)
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'] })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
-    service.suggestions = suggestions
-    service.model = model
-    service.models = models
-    service.cacheRetention = keepAlive.retention
-    if (keepAlive.enabled) service.keepAlive = new PromptCacheKeepAlive({
-      ttlMs: (models.getModel(model.provider, model.modelId)?.promptCache?.[keepAlive.retention] ?? CACHE_LIFETIME_SECONDS[keepAlive.retention]) * 1000,
-      windowMs: keepAlive.windowMs, compactTokens: limit, clock: keepAlive.clock,
-      ...(keepAlive.minTokens === undefined ? {} : { minTokens: keepAlive.minTokens }),
-      tokens: () => service.contextTokens(), ping: signal => service.ping(signal), compact: () => service.compact(),
-    })
+    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions })
+    service.adopt(values)
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
-    const [system, ...rest] = (await readFile(new URL('../resources/compaction.md', import.meta.url), 'utf8')).trim().split('\n\n')
+    const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
     if (searchPath) service.search = await MegachatSearchIndex.open(searchPath, (minEntryId, cursor) =>
       root.entries({ order: 'ascending', minEntryId }, 200, cursor, context))
@@ -123,10 +156,96 @@ export class PiMegachatService {
     this.lifetime = new AbortController()
     this.eventPump = Promise.resolve()
     this.pendingUserInputs = 0
+    // The keep-alive objects that a change of a setting replaced. Their last request can still run.
+    this.retired = []
+    this.settingsPending = false
+    this.applying = Promise.resolve()
     // A storage error ends the harness. Each later request then fails, so the owner of this service must stop.
     this.failed = new Promise(resolve => {
       harness.closed.then(end => { if (end.kind === 'failed') resolve(end.error) }, () => {})
     })
+  }
+
+  /**
+   * Takes the effective [values] for each part of the service that reads a setting outside the stored choices of the
+   * root conversation: the harness settings, the rules of the section `settings`, the model of a summary and of a
+   * keep-alive request, the suggestion tools, and the keep-alive.
+   * Returns true when the keep-alive is new.
+   */
+  adopt(values) {
+    this.values = values
+    this.onboarding = this.settings.onboarding
+    this.live.harness = harnessSettings(values, this.models)
+    this.model = modelRef(values['coordinator.model'])
+    this.thinkingLevel = values['coordinator.thinking']
+    this.cacheRetention = CACHE_RETENTION[values['cache.ttl']]
+    this.suggestions = values['reply.suggestions']
+    // With suggestions, the prompt of an event turn lets the main agent offer a next step.
+    this.state.eventSuffix = this.suggestions ? '.suggest' : ''
+    const ttlSeconds = this.models.getModel(this.model.provider, this.model.modelId)?.promptCache?.[this.cacheRetention]
+      ?? CACHE_LIFETIME_SECONDS[this.cacheRetention]
+    const keepAlive = values['keepAlive.enabled'] ? { ttlMs: ttlSeconds * 1000, windowMs: values['keepAlive.hours'] * 3600000,
+      compactTokens: values['compaction.tokens'] } : null
+    if (JSON.stringify(keepAlive) === this.keepAliveKey) return false
+    this.keepAliveKey = JSON.stringify(keepAlive)
+    if (this.keepAlive) this.retired.push(this.keepAlive.close().catch(() => {}))
+    const { clock, minTokens } = this.keepAliveOptions
+    this.keepAlive = keepAlive ? new PromptCacheKeepAlive({ ...keepAlive, clock, ...(minTokens === undefined ? {} : { minTokens }),
+      tokens: () => this.contextTokens(), ping: signal => this.ping(signal), compact: () => this.compact() }) : undefined
+    return true
+  }
+
+  /**
+   * Applies the stored settings when no turn runs, else at the end of the turn. A change of the model, the thinking
+   * level or the tools in the middle of a turn is not safe: a tool call of one model would then go to another model.
+   */
+  async settingsChanged() {
+    this.settingsPending = true
+    if (!(await this.state.snapshot()).current) await this.applySettings()
+  }
+
+  /** Applies the effective settings to the root conversation, the tools and the keep-alive. Calls run one at a time. */
+  applySettings() {
+    const next = this.applying.then(async () => {
+      if (!this.settingsPending) return
+      this.settingsPending = false
+      const values = this.settings.values()
+      const renewed = this.adopt(values)
+      this.registry.install(this.extension())
+      const agent = agentOf(values, this.rules)
+      if (JSON.stringify(agent) !== JSON.stringify(this.agent)) {
+        await this.root.configure(agent, context)
+        this.agent = agent
+      }
+      logEvent('log.settings.applied')
+      // A new keep-alive of an idle daemon starts from the last model request, as after a restart.
+      if (renewed && this.keepAlive && this.resumed && !(await this.state.snapshot()).current) {
+        const last = await this.lastMessageTime()
+        if (last !== undefined) this.keepAlive.turnEnded(last)
+      }
+    })
+    this.applying = next.catch(() => {})
+    return next
+  }
+
+  /** The tool `agents_settings`. A project event or a child result cannot change a setting. */
+  async settingsTool(args) {
+    requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
+    if (args.action === 'get') return this.settings.describe()
+    requireCondition(!['event', 'report'].includes((await this.state.snapshot()).current?.kind), 'settingEvent')
+    let changed
+    if (args.action === 'onboarding') {
+      changed = await this.settings.setOnboarding(args.status)
+      // A new setup starts in the same turn, so the agent gets the setup rules now and not only in the next turn.
+      if (args.status === 'pending') changed.rules = this.rules.onboarding.trim()
+    }
+    else if (args.action === 'set') {
+      requireCondition(args.value !== undefined, 'settingValue')
+      changed = await this.settings.set(args.key, args.value)
+    }
+    else changed = await this.settings.reset(args.key)
+    await this.settingsChanged()
+    return changed
   }
 
   extension() {
@@ -134,7 +253,10 @@ export class PiMegachatService {
       name: `agents_${name}`, description: message(`tool.${name}`), parameters, replay: 'safe', execute,
     })
     const inspect = async args => result(await this.state.readRun(args.runId))
-    return defineExtension({ name: 'air.megachat', hooks: [
+    return defineExtension({ name: 'air.megachat', sections: [
+      // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules) },
+    ], hooks: [
       hook(CompactionTask, { beforeCompact: (compaction, api, hookContext) => this.summarize(compaction, api, hookContext) }),
     ], tools: [
       tool('list', obj({}), async () => {
@@ -144,6 +266,8 @@ export class PiMegachatService {
         return result({ agents: ['claude', 'codex'], workspaces: directoriesOf(state), runs,
           ...(this.suggestions ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
+      tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })), value: opt(union([str({ maxLength: 200 }), num(), bool()])),
+        status: opt(str({ maxLength: 20 })) }), async args => result(await this.settingsTool(args))),
       tool('history', obj({ beforeEntryId: opt(int({ minimum: 1 })), query: opt(str({ maxLength: 200 })), cursor: opt(str({ maxLength: 20 })) }),
         async args => result(await this.history(args))),
       tool('sessions', obj({ cwd: str(), agent: opt(str()), query: opt(str({ maxLength: 200 })), cursor: opt(str()) }),
@@ -251,7 +375,9 @@ export class PiMegachatService {
     const model = this.models.getModel(this.model.provider, this.model.modelId)
     const { messages } = await this.root.context(context)
     const answer = await this.models.completeSimple(model, { messages: [...messages] }, {
-      timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: this.cacheRetention, maxTokens: 1, reasoning: THINKING_LEVEL, signal,
+      timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: this.cacheRetention, maxTokens: 1, signal,
+      // Pi Durable sends no reasoning option for the level `off`, so the keep-alive request does the same.
+      ...(this.thinkingLevel === 'off' ? {} : { reasoning: this.thinkingLevel }),
       sessionId: (await this.harness.snapshot(ProviderDoc, this.root.id, context))?.sessionId,
     })
     if (answer.stopReason === 'error') throw new Error('keep-alive')
@@ -308,6 +434,7 @@ export class PiMegachatService {
     observe(this.eventWatch.value)
     this.eventWatch.start(call => { if (call.kind === 'value') observe(call.value) })
     this.harness.resume()
+    this.resumed = true
   }
 
   async submit(requestId, text) {
@@ -343,6 +470,8 @@ export class PiMegachatService {
       if (settled.status !== 'done') reason = settled.reason
     }
     catch { this.lifetime.signal.throwIfAborted(); status = 'interrupted' }
+    // The turn still holds the state, so the next turn starts with the new settings.
+    if (this.settingsPending) await this.applySettings().catch(error => logFailure('log.settings.failed', error))
     await this.state.settleInput(receipt.mainRunId, status, reason)
     this.search?.catchUp().catch(() => {
       if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.search')}\n`)
@@ -424,6 +553,7 @@ export class PiMegachatService {
     this.lifetime.abort()
     clearTimeout(this.reportTimer)
     await this.keepAlive?.close()
+    await Promise.allSettled(this.retired)
     await this.eventWatch?.stop()
     await this.eventPump.catch(() => {})
     await this.search?.close()

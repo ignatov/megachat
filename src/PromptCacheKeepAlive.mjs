@@ -1,23 +1,18 @@
 import { logEvent, logFailure } from './messages.mjs'
+import { CACHE_RETENTION, environmentSetting } from './Settings.mjs'
 
-/** The lifetime of the prompt cache that each model request asks for: `1h` or `5m`. */
-export const CACHE_TTL_VARIABLE = 'MEGACHAT_CACHE_TTL'
-/** The value `0` stops each keep-alive request and each summary of an idle conversation. */
-export const KEEPALIVE_VARIABLE = 'MEGACHAT_KEEPALIVE'
-/** The time after the last turn, in hours, in which keep-alive requests go out. */
-export const KEEPALIVE_HOURS_VARIABLE = 'MEGACHAT_KEEPALIVE_HOURS'
-export const DEFAULT_KEEPALIVE_HOURS = 6
+export { CACHE_TTL_VARIABLE, DEFAULT_KEEPALIVE_HOURS, KEEPALIVE_HOURS_VARIABLE, KEEPALIVE_VARIABLE } from './Settings.mjs'
 /** Below this size of the model context, a cold cache costs too little for a keep-alive request. */
 export const KEEPALIVE_MIN_TOKENS = 20000
 /** The part of the cache lifetime after which the idle daemon acts. `tokprof bench` measured this part. */
 const LIFETIME_PART = 5 / 6
 
+/** The keep-alive settings from the environment alone, without the stored settings. */
 export function keepAliveSettings(environment = process.env) {
-  const hours = Number(environment[KEEPALIVE_HOURS_VARIABLE]?.trim() || NaN)
   return {
-    retention: environment[CACHE_TTL_VARIABLE]?.trim() === '5m' ? 'short' : 'long',
-    enabled: environment[KEEPALIVE_VARIABLE]?.trim() !== '0',
-    windowMs: (Number.isFinite(hours) && hours >= 0 && hours <= 168 ? hours : DEFAULT_KEEPALIVE_HOURS) * 3600000,
+    retention: CACHE_RETENTION[environmentSetting('cache.ttl', environment)],
+    enabled: environmentSetting('keepAlive.enabled', environment),
+    windowMs: environmentSetting('keepAlive.hours', environment) * 3600000,
   }
 }
 

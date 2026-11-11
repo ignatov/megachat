@@ -30,8 +30,8 @@ The later work on Megachat, in the order of the work. Each item gives its reason
    each release, and nobody tested Linux. The installed copy does not use `package-lock.json`, so its indirect
    dependencies can differ from the tested ones. npm also ignores an `npm-shrinkwrap.json` in a package from git: a
    test installed 18 packages of 223 in a later version. So the lock needs another form of the release.
-6. **A choice of the model for the main agent and for the children.** Today the code sets Claude Opus 5.5 for the
-   main agent and Claude Sonnet 5.5 for each Claude child.
+6. **A choice of the model for the children.** The setting `coordinator.model` selects the model of the main agent.
+   Today the code sets Claude Sonnet 5.5 for each Claude child.
 7. **IDE tools for the children.** Today a child cannot use the tools of the IDE, so it cannot use the code insight
    of the project.
 8. **Types: TypeScript, or `tsc --checkJs`.** Today no type check runs, so a wrong field name shows only in a test or
