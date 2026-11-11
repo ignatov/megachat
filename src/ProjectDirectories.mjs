@@ -83,19 +83,28 @@ async function plannedPath(path) {
   }
 }
 
+const exists = path => lstat(path).then(() => true, () => false)
+const emptyDirectory = path => readdir(path).then(entries => entries.length === 0, () => false)
+
 /**
  * Makes the directory of a new project: `<root>/<name>`, or `<root>/<name>-2` and so on when the name is taken. The root
  * must be a place for a known repository or the home directory, and the daemon makes it when it does not exist.
  * `mkdir` refuses an existing directory, so two calls cannot get the same directory.
+ * [reserve] records a path before its `mkdir`. A call again after a stop gives the recorded path as [reserved]: an empty
+ * directory there is the directory of the first call, and the call uses it again.
  */
-export async function createProjectDirectory(root, name, { home = homedir(), roots = projectRoots(), stateDirectory } = {}) {
+export async function createProjectDirectory(root, name, { home = homedir(), roots = projectRoots(), stateDirectory } = {},
+  { reserve = async () => {}, reserved } = {}) {
   requireCondition(typeof name === 'string' && PROJECT_NAME.test(name), 'projectName')
   requireCondition(typeof root === 'string' && isAbsolute(expandHome(root, home)), 'newRoot')
   const planned = await plannedPath(resolve(expandHome(root, home)))
   requireCondition(planned && await allowedLocation(planned, { home, roots, stateDirectory, newProjects: true }), 'newRoot')
   await mkdir(planned, { recursive: true })
-  for (let count = 1; count <= 100; count++) {
-    const path = join(planned, count === 1 ? name : `${name}-${count}`)
+  const names = Array.from({ length: 100 }, (_, index) => index ? `${name}-${index + 1}` : name)
+  if (reserved && dirname(reserved) === planned && names.includes(basename(reserved)) && await emptyDirectory(reserved)) return reserved
+  for (const path of names.map(item => join(planned, item))) {
+    if (await exists(path)) continue
+    await reserve(path)
     try {
       await mkdir(path)
       return path

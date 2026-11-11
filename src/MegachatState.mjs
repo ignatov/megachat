@@ -72,6 +72,7 @@ function retain(state) {
   }
   if (Object.keys(state.initiative.decisions).length >= 2000) dropOldest(state.initiative.decisions, 1000, decision => decision.decidedAt)
   if (Object.keys(state.serviceSessions).length >= 5000) dropOldest(state.serviceSessions, 4000, session => session.recordedAt)
+  if (Object.keys(state.projectCreations ?? {}).length >= 200) dropOldest(state.projectCreations, 100, creation => creation.createdAt)
 }
 
 /** Keeps the address of a delegated session after a prune of its runs, so Air still hides that session. */
@@ -147,6 +148,7 @@ export class MegachatState {
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {}, projects: {}, pending: {} }
       state.serviceSessions ??= serviceSessionsOf(state.runs)
       state.projects ??= []
+      state.projectCreations ??= {}
       // The task of an import pass ends with its daemon. A summary that waits for its event turn stays.
       state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null }
       // The workspace of Megachat follows the state directory of this start, so the state does not keep an old one.
@@ -185,8 +187,11 @@ export class MegachatState {
     return isDirectoryOf(state, cwd) ? cwd : listedDirectory(state, cwd, this.home)
   }
 
-  /** Adds a repository that the user named to the known list. An automatic turn cannot add one. */
-  async addProject(path) {
+  /**
+   * Adds a repository that the user named to the known list. An automatic turn cannot add one. With [requestId], the
+   * same transaction records the end of the creation of that request.
+   */
+  async addProject(path, requestId) {
     const cwd = await resolveRepository(path, this.repositoryOptions)
     return this.change(state => {
       requireCondition(!['event', 'report'].includes(state.current?.kind), 'proposalOnly')
@@ -194,6 +199,7 @@ export class MegachatState {
         requireCondition(state.projects.length < KNOWN_PROJECTS_LIMIT, 'limit')
         state.projects.push(cwd)
       }
+      if (requestId) state.projectCreations[requestId] = { path, cwd, createdAt: state.projectCreations[requestId]?.createdAt ?? Date.now() }
       return { cwd }
     })
   }
@@ -208,13 +214,25 @@ export class MegachatState {
   /**
    * Makes the directory of a new project in [root], the setting `projects.newRoot`, and adds it to the known list. An
    * automatic turn cannot make one. When the list refuses the directory, the empty directory goes away again.
+   * The tool call runs again after a restart that cut it off, so [requestId] keys the creation: the state records the
+   * path before its `mkdir`, and the directory with the known list after it. A second call gives the recorded directory,
+   * or it uses again the empty directory of the first call.
    */
-  async createProject(name, root) {
-    requireCondition(!['event', 'report'].includes((await this.snapshot()).current?.kind), 'proposalOnly')
-    const path = await createProjectDirectory(root, name, this.repositoryOptions)
-    try { return await this.addProject(path) }
+  async createProject(requestId, name, root) {
+    requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
+    const state = await this.snapshot()
+    requireCondition(!['event', 'report'].includes(state.current?.kind), 'proposalOnly')
+    const record = state.projectCreations[requestId]
+    if (record?.cwd) return { cwd: record.cwd }
+    const path = await createProjectDirectory(root, name, this.repositoryOptions, { reserved: record?.path,
+      reserve: path => this.change(state => {
+        retain(state)
+        state.projectCreations[requestId] = { path, createdAt: Date.now() }
+      }) })
+    try { return await this.addProject(path, requestId) }
     catch (error) {
       await rmdir(path).catch(() => {})
+      await this.change(state => { delete state.projectCreations[requestId] }).catch(() => {})
       throw error
     }
   }

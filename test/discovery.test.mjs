@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -49,8 +50,9 @@ async function open(t, directories) {
     home: directories.home, projectRoots: directories.roots, keepAlive: { enabled: false },
   })
   t.after(() => service.close())
-  const tool = async (name, args) => JSON.parse((await service.extension().tools.find(item => item.name === `agents_${name}`)
-    .execute(args)).output[0].text)
+  // Each call is a tool task of its own, unless the test gives the task of a call again, as a replay after a restart does.
+  const tool = async (name, args, taskId = randomUUID()) => JSON.parse((await service.extension().tools.find(item => item.name === `agents_${name}`)
+    .execute(args, { taskId })).output[0].text)
   return { service, tool }
 }
 
@@ -107,4 +109,38 @@ test('create makes a new project in projects.newRoot with a number when the name
   await assert.rejects(tool('projects', { action: 'create', name: 'automatic' }), { code: 'proposalOnly' })
   await service.state.change(state => { state.current = null })
   assert.ok(!(await readdir(join(home, 'src'))).includes('automatic'))
+})
+
+test('create is idempotent for one tool call: a replay gives the same project, also after a stop between the mkdir and the commit', { timeout: 10000 }, async t => {
+  const directories = await tree(t)
+  const { home } = directories
+  const { service, tool } = await open(t, directories)
+  const projects = async () => (await service.state.snapshot()).projects
+  const first = await tool('projects', { action: 'create', name: 'app' }, 'call-1')
+  assert.equal(first.created, join(home, 'src', 'app'))
+  // pi-durable runs the cut-off call again with the same task.
+  assert.equal((await tool('projects', { action: 'create', name: 'app' }, 'call-1')).created, join(home, 'src', 'app'))
+  assert.deepEqual(await projects(), [join(home, 'src', 'app')])
+  assert.ok(!(await readdir(join(home, 'src'))).includes('app-2'))
+  // A stop after the mkdir and before the commit leaves an empty directory and its recorded path.
+  const web = join(home, 'src', 'web')
+  await mkdir(web)
+  await service.state.change(state => { state.projectCreations['tool:call-2:create'] = { path: web, createdAt: Date.now() } })
+  assert.equal((await tool('projects', { action: 'create', name: 'web' }, 'call-2')).created, web)
+  // A stop after the record and before the mkdir leaves only the recorded path.
+  const api = join(home, 'src', 'api')
+  await service.state.change(state => { state.projectCreations['tool:call-3:create'] = { path: api, createdAt: Date.now() } })
+  assert.equal((await tool('projects', { action: 'create', name: 'api' }, 'call-3')).created, api)
+  // A recorded directory that is not empty is not the directory of the call, so the call makes another one.
+  await writeFile(join(home, 'src', 'old', 'file.txt'), 'data')
+  await service.state.change(state => { state.projectCreations['tool:call-4:create'] = { path: join(home, 'src', 'old'), createdAt: Date.now() } })
+  assert.equal((await tool('projects', { action: 'create', name: 'old' }, 'call-4')).created, join(home, 'src', 'old-2'))
+  assert.deepEqual(await projects(), [join(home, 'src', 'app'), web, api, join(home, 'src', 'old-2')])
+  assert.deepEqual((await readdir(join(home, 'src'))).sort(), ['.hidden', 'api', 'app', 'link', 'old', 'old-2', 'org', 'web'])
+  // The records of the creations stay bounded.
+  await service.state.change(state => {
+    for (let index = 0; index < 300; index++) state.projectCreations[`tool:old-${index}:create`] = { path: '/x', cwd: '/x', createdAt: index }
+  })
+  await tool('projects', { action: 'create', name: 'last' })
+  assert.ok(Object.keys((await service.state.snapshot()).projectCreations).length <= 101)
 })
