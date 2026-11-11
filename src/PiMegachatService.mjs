@@ -13,7 +13,7 @@ const context = BACKGROUND_CONTEXT
 const result = value => ({ output: [{ type: 'text', text: JSON.stringify(value) }] })
 
 export class PiMegachatService {
-  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, userInstructionsPath } = {}) {
+  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath } = {}) {
     const registry = createRegistry()
     const harness = await Harness.open(storage, {
       models, registry,
@@ -23,7 +23,7 @@ export class PiMegachatService {
       await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8'), userInstructionsPath)
     const root = await harness.root(context, { agent: { model, thinkingLevel: 'low', maxTurns: 20, instructions } })
     await root.configure({ model, instructions }, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs })
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
@@ -98,7 +98,18 @@ export class PiMegachatService {
     this.eventWatch = await this.state.watch()
     const observe = snapshot => {
       if (snapshot.current) return
-      const resultsPending = Object.values(snapshot.runs).some(run => terminalStates.has(run.status) && !run.reported)
+      const now = Date.now()
+      const unreported = Object.values(snapshot.runs).filter(run => terminalStates.has(run.status) && !run.reported)
+      const resultsPending = unreported.some(run => (run.reportAfter ?? 0) <= now)
+      // A report that waits for its repeat changes no state when its time comes. So a timer looks again.
+      const waiting = unreported.filter(run => run.reportAfter > now).map(run => run.reportAfter)
+      if (waiting.length && !this.reportTimer && !this.lifetime.signal.aborted) {
+        this.reportTimer = setTimeout(() => {
+          this.reportTimer = null
+          this.state.snapshot().then(observe).catch(() => {})
+        }, Math.min(...waiting) - now)
+        this.reportTimer.unref()
+      }
       const projectPending = !snapshot.initiative.silenced && Object.keys(snapshot.initiative.pending).length > 0
       if (!resultsPending && !projectPending) return
       this.eventPump = this.eventPump.then(async () => {
@@ -139,13 +150,15 @@ export class PiMegachatService {
 
   async finish(receipt) {
     let status
+    let reason
     try {
       const submission = await this.harness.submission(receipt.continuationId ?? receipt.submissionId, context)
       const settled = await submission.wait(context)
       status = settled.status === 'done' ? 'completed' : 'interrupted'
+      if (settled.status !== 'done') reason = settled.reason
     }
     catch { this.lifetime.signal.throwIfAborted(); status = 'interrupted' }
-    await this.state.settleInput(receipt.mainRunId, status)
+    await this.state.settleInput(receipt.mainRunId, status, reason)
     this.search?.catchUp().catch(() => {
       if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.search')}\n`)
     })
@@ -222,6 +235,7 @@ export class PiMegachatService {
 
   async close() {
     this.lifetime.abort()
+    clearTimeout(this.reportTimer)
     await this.eventWatch?.stop()
     await this.eventPump.catch(() => {})
     await this.search?.close()

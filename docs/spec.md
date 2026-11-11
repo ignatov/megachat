@@ -107,6 +107,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - An event reply must appear in an attached idle view.
 - History replay must hide internal event prompts.
   [@test] ../test/integration.test.mjs
+- A result report that fails on a model error or on a daemon stop must be sent once more, after a delay.
+- A second failure must end the reports of that result. The result must stay in the history, and the main agent must still be able to read the run.
+- A report that the user stopped, or that reached its limit of tool rounds, must not be sent again.
+  [@test] ../test/integration.test.mjs
+  [@test] ../test/state.test.mjs
+  [@test] ../test/recovery.test.mjs
 - Session search must include Claude Code and Codex unless the caller selects one provider.
 - Search must match session titles and message text in the selected project.
 - Reading a stored session must start no model turn and must not resume that session.
@@ -174,6 +180,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The daemon must retain the output of an interrupted task.
 - A failed Central configuration must start no child agent.
 - Stored conversation data must contain no Central credentials.
+- A reply that fails on a model error must tell the user "The model did not answer. Send the message again."
+- The state must keep only the reason code of a failed reply, not the error text of the provider.
   [@test] ../test/integration.test.mjs
 - A child agent must not stay alive after its daemon. This also applies when the agent still writes output.
   [@test] ../test/recovery.test.mjs

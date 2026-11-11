@@ -118,6 +118,56 @@ test('an interrupted dispatch continues its provider session and the report link
   assert.equal((await state.readRun(run.id)).resumedBy, next.id)
 })
 
+
+test('a result report cut by a daemon stop is sent once more, and a cancelled or limited report is not', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  let turn = 0
+  const finishedRun = async () => {
+    const main = await state.submit(`main-${++turn}`, 'Work')
+    const run = await state.admitChild(`tool-${turn}`, { cwd: '/workspace', prompt: 'Implement it' })
+    await state.transition(run.id, ['admitted'], { status: 'completed' })
+    await state.settleInput(main.mainRunId, 'completed')
+    return run
+  }
+  const report = async id => (await state.snapshot()).inputs[`children:${id}`]
+  const reported = async run => (await state.snapshot()).runs[run.id].reported
+
+  state.reportRetryDelayMs = 0
+  const stopped = await finishedRun()
+  const first = await state.nextChildResults()
+  await state.settleInput(first.mainRunId, 'interrupted', 'interrupted')
+  assert.equal((await report(first.mainRunId)).reason, 'interrupted')
+  assert.equal(await reported(stopped), false)
+  const second = await state.nextChildResults()
+  assert.deepEqual(second.resultRunIds, [stopped.id])
+  await state.settleInput(second.mainRunId, 'interrupted', 'interrupted')
+  assert.equal(await reported(stopped), true)
+  assert.equal(await state.nextChildResults(), null)
+
+  const limited = await finishedRun()
+  const third = await state.nextChildResults()
+  await state.settleInput(third.mainRunId, 'interrupted', 'turn_limit')
+  assert.equal((await report(third.mainRunId)).reason, 'turn_limit')
+  assert.equal(await reported(limited), true)
+
+  const cancelled = await finishedRun()
+  const fourth = await state.nextChildResults()
+  await state.cancel(fourth.mainRunId)
+  await state.settleInput(fourth.mainRunId, 'interrupted', 'aborted')
+  assert.equal((await report(fourth.mainRunId)).status, 'cancelled')
+  assert.equal(await reported(cancelled), true)
+
+  state.reportRetryDelayMs = 60000
+  const delayed = await finishedRun()
+  const before = Date.now()
+  const fifth = await state.nextChildResults()
+  await state.settleInput(fifth.mainRunId, 'interrupted', 'model_error')
+  assert.equal(await reported(delayed), false)
+  assert.ok((await state.snapshot()).runs[delayed.id].reportAfter >= before + 60000)
+  assert.equal(await state.nextChildResults(), null)
+})
+
 test('a run that never reached its provider is dispatched again and continuations are capped', { timeout: 10000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))

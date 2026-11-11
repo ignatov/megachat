@@ -6,6 +6,11 @@ import { message, requireCondition } from './messages.mjs'
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
 export const maxAutomaticResumes = 2
 const sentStates = new Set(['dispatched', 'running', 'approval'])
+/**
+ * The reasons of Pi Durable for a turn without an answer that can go away: an error of the model, and a stop of the
+ * daemon while the model answered. A turn that fails for another reason fails the same way again.
+ */
+const repeatableReasons = new Set(['model_error', 'interrupted'])
 export const MegachatDoc = defineDoc({
   kind: 'air.megachat', version: 1, scope: 'conversation', history: 'latest', fork: 'initial',
   initial: () => ({ schema: 1, workspaces: [], inputs: {}, runs: {}, permissions: {}, serviceSessions: {}, current: null }),
@@ -115,10 +120,11 @@ function scheduleResume(state, run, previousStatus, delayMs) {
 
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
-  constructor(harness, root, { resumeDelayMs = 5000 } = {}) {
+  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000 } = {}) {
     this.harness = harness
     this.root = root
     this.resumeDelayMs = resumeDelayMs
+    this.reportRetryDelayMs = reportRetryDelayMs
   }
 
   async initialize() {
@@ -264,7 +270,9 @@ export class MegachatState {
   async nextChildResults() {
     return this.change(async (state, tx) => {
       if (state.current) return null
-      const runs = Object.values(state.runs).filter(run => terminalStates.has(run.status) && !run.reported)
+      const now = Date.now()
+      const runs = Object.values(state.runs).filter(run => terminalStates.has(run.status) && !run.reported
+        && (run.reportAfter ?? 0) <= now)
       if (runs.length === 0) return null
       retain(state)
       const results = runs.map(run => ({ runId: run.id, cwd: run.cwd, prompt: run.prompt,
@@ -286,11 +294,30 @@ export class MegachatState {
     })
   }
 
-  async settleInput(mainRunId, status) {
+  /**
+   * Ends the current turn. [reason] is the reason code of Pi Durable for a turn without an answer. A result report
+   * that fails for a reason that can go away is sent once more, after a delay. A cancelled report is not: the user
+   * stopped it, or `interruptAutomaticTurn` already asked for a new report.
+   */
+  async settleInput(mainRunId, status, reason) {
     await this.change(state => {
       if (state.current?.id !== mainRunId) return
+      const input = state.inputs[state.current.requestId]
       if (state.current.cancelling) status = 'cancelled'
-      state.inputs[state.current.requestId].status = status
+      input.status = status
+      if (status === 'interrupted') {
+        // The state keeps only the reason code. The detail of the reason can hold the text of a provider.
+        if (typeof reason === 'string') input.reason = reason.slice(0, 64)
+        if (reason === undefined || repeatableReasons.has(reason)) {
+          for (const id of input.resultRunIds ?? []) {
+            const run = state.runs[id]
+            if (!run || run.reportRepeated) continue
+            run.reported = false
+            run.reportRepeated = true
+            run.reportAfter = Date.now() + this.reportRetryDelayMs
+          }
+        }
+      }
       state.current = null
     })
   }

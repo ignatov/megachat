@@ -39,7 +39,8 @@ async function fixture(t, prompt = 'approval', agent = 'claude') {
   const model = fake.getModel()
   const histories = { codex: new CodexSessionHistoryService({ command: process.execPath,
     args: [fileURLToPath(new URL('./fake-codex-app-server.mjs', import.meta.url)), await realpath(cwd)] }) }
-  const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, histories)
+  const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, histories,
+    { reportRetryDelayMs: 20 })
   await service.state.addWorkspace(cwd)
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
@@ -546,6 +547,73 @@ test('a user message interrupts a result report and the result is reported later
   assert.equal(history.entries.filter(entry => entry.text === 'User reply.').length, 1)
   assert.equal(history.entries.filter(entry => entry.text === 'The completed task result.').length, 1)
   assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), 'hello\n')
+})
+
+
+const modelError = () => fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'The provider is overloaded.' })
+const settledReports = count => state => {
+  const reports = Object.values(state.inputs).filter(input => input.resultRunIds)
+  return reports.length === count && reports.every(report => report.status !== 'running') ? state : undefined
+}
+
+test('a result report that fails on a model error is sent once more', { timeout: 10000 }, async t => {
+  const { cwd, fake, service } = await fixture(t, 'hello')
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'hello' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    modelError(),
+    fauxAssistantMessage('The completed task result.'),
+  ])
+  await service.submit('work', 'Work')
+  const state = await waitForState(service.state, settledReports(2))
+  const reports = Object.values(state.inputs).filter(input => input.resultRunIds)
+  assert.deepEqual(reports.map(report => [report.status, report.reason]), [['interrupted', 'model_error'], ['completed', undefined]])
+  assert.deepEqual(reports[1].resultRunIds, reports[0].resultRunIds)
+  assert.ok(!JSON.stringify(state.inputs).includes('overloaded'))
+  assert.equal(Object.values(state.runs)[0].reported, true)
+  const history = await service.history()
+  assert.equal(history.entries.filter(entry => entry.text === 'The completed task result.').length, 1)
+  assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), 'hello\n')
+})
+
+test('a second failure of a result report ends the reports and keeps the result', { timeout: 10000 }, async t => {
+  const { cwd, fake, service } = await fixture(t, 'hello')
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'hello' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    modelError(),
+    modelError(),
+    fauxAssistantMessage('A third report.'),
+  ])
+  await service.submit('work', 'Work')
+  await waitForState(service.state, settledReports(2))
+  // The delay of a repeat is 20 ms in this fixture. So a third report would start in this time.
+  await new Promise(resolve => setTimeout(resolve, 200))
+  const state = await service.state.snapshot()
+  const reports = Object.values(state.inputs).filter(input => input.resultRunIds)
+  assert.deepEqual(reports.map(report => [report.status, report.reason]), [['interrupted', 'model_error'], ['interrupted', 'model_error']])
+  const [run] = Object.values(state.runs)
+  assert.equal(run.reported, true)
+  assert.equal(state.current, null)
+  assert.equal((await service.state.readRun(run.id)).status, 'completed')
+  const events = (await service.root.entries({ order: 'ascending' }, 100, undefined, BACKGROUND_CONTEXT)).items
+    .filter(entry => entry.kind === 'air.megachat.event')
+  assert.equal(events.length, 2)
+  assert.equal(events[0].data.results[0].runId, run.id)
+})
+
+test('a reply that fails on a model error tells the user that the model did not answer', { timeout: 10000 }, async t => {
+  const { daemon, cwd, fake } = await fixture(t)
+  fake.setResponses([modelError()])
+  const viewer = await attach(daemon, cwd, { native: true })
+  t.after(() => viewer.connection.close())
+  const reply = await viewer.connection.agent.request(methods.agent.session.prompt, {
+    sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Hello' }],
+  })
+  assert.equal(reply.stopReason, 'cancelled')
+  const texts = viewer.updates.map(event => event.update.content?.text)
+  assert.ok(texts.includes(message('error.model')))
+  assert.ok(!texts.includes(message('error.interrupted')))
 })
 
 

@@ -116,6 +116,23 @@ test('bridge exit preserves work and SIGKILL continues the child session without
   assert.equal(await readFile(join(directory, 'dispatches'), 'utf8'), `approval\n${continuationPrompt('child.continue')}\n`)
 })
 
+test('a result report that SIGKILL of the daemon cuts is sent once more after the restart', { timeout: 30000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-report-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const run = mode => fork(new URL('./report-daemon.mjs', import.meta.url), [mode, join(directory, 'conversation.sqlite')],
+    { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+  const first = run('first')
+  t.after(() => first.kill('SIGKILL'))
+  await once(first, 'message')
+  const exited = once(first, 'exit')
+  first.kill('SIGKILL')
+  await exited
+  const second = run('second')
+  t.after(() => second.kill('SIGKILL'))
+  const [result] = await once(second, 'message')
+  assert.deepEqual(result, { reports: [['interrupted', 'interrupted'], ['completed', null]], reported: [true] })
+})
+
 test('the supervisor stops a child that writes after the daemon closed the output', { timeout: 10000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-supervisor-'))
   t.after(() => rm(directory, { force: true, recursive: true }))

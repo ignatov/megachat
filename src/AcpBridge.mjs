@@ -100,7 +100,9 @@ class AcpBridgeSession {
       const state = await this.daemon.json('/state')
       await this.enqueue(async () => { await this.conversation(view, false); await this.tasks(state) })
       if (settled.status === 'interrupted') {
-        await this.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: message('error.interrupted') } })
+        // A daemon from before the reason field gives no reason. Then the text of a stopped process stays.
+        const text = message(settled.reason === 'model_error' ? 'error.model' : 'error.interrupted')
+        await this.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
       }
       return { stopReason: settled.status === 'completed' ? 'end_turn' : 'cancelled' }
     }
