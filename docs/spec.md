@@ -171,7 +171,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - At 256 permission requests, it must drop the oldest requests of finished runs until 128 stay. A pending request must stay.
 - At 2,000 proposal decisions, it must drop the oldest decisions until 1,000 stay.
 - A stored record without its admission time must count as older than each record with one.
-- Child output must stop growing at the configured retention limit.
+- Child output must stop growing at the configured retention limit. The daemon must keep the end of a longer output.
+- The state must keep only the text that a child agent wrote. An open of the state must drop the stored updates of an earlier build.
 - Project events must coalesce into bounded batches and trigger at most one proposal per project per minute.
 - Changes during delegated work must not trigger another proposal.
 - Permission waits must suspend the child execution deadline.

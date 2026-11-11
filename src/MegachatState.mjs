@@ -113,7 +113,7 @@ function scheduleResume(state, run, previousStatus, delayMs) {
     id: randomUUID(), childSessionId: run.childSessionId, mainRunId: run.mainRunId, agent: run.agent ?? 'claude',
     requestId: `resume:${run.id}`, digest: digest({ resumeOf: run.id, prompt }), prompt, cwd: run.cwd, status: 'admitted',
     providerSessionId: run.providerSessionId ?? null, serviceSession: run.serviceSession,
-    generation: null, pid: null, output: '', truncated: false, updates: [], updateBytes: 0,
+    generation: null, pid: null, output: '', truncated: false,
     cancelRequested: false, createdAt: now, closed: false,
     resumeOf: run.id, resumeAttempt: run.plannedStop ? attempt : attempt + 1, notBefore: now + delayMs * 4 ** attempt,
     ...(task === undefined ? {} : { task }),
@@ -137,6 +137,12 @@ export class MegachatState {
       requireCondition(state.schema === 1, 'schema')
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {}, projects: {}, pending: {} }
       state.serviceSessions ??= serviceSessionsOf(state.runs)
+      // A build from before the output limit of the tail kept each update of a run. Nothing read these updates, and
+      // they were most of the document.
+      for (const run of Object.values(state.runs)) {
+        delete run.updates
+        delete run.updateBytes
+      }
     })
   }
 
@@ -372,7 +378,7 @@ export class MegachatState {
         ...(args.title === undefined ? {} : { title: args.title.trim() }),
         providerSessionId,
         serviceSession: previous?.serviceSession ?? !args.providerSessionId,
-        generation: null, pid: null, output: '', truncated: false, updates: [], updateBytes: 0,
+        generation: null, pid: null, output: '', truncated: false,
         cancelRequested: false, createdAt: Date.now(), closed: false,
       }
       state.runs[run.id] = run
@@ -404,21 +410,23 @@ export class MegachatState {
     })
   }
 
+  /**
+   * Keeps the text that the agent wrote, at most the last 64,000 characters: the result of a long run is at its end.
+   * Each other update changes no state, so it costs no commit of the document.
+   */
   async appendUpdate(runId, generation, update) {
+    if (update.sessionUpdate !== 'agent_message_chunk' || update.content?.type !== 'text') return
     await this.change(state => {
       const run = state.runs[runId]
       if (!run || run.generation !== generation || terminalStates.has(run.status)) return
-      if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-        const remaining = Math.max(0, 64000 - run.output.length)
-        run.output += update.content.text.slice(0, remaining)
-        run.truncated ||= update.content.text.length > remaining
+      let output = run.output + update.content.text
+      if (output.length > 64000) {
+        run.truncated = true
+        output = output.slice(-64000)
+        // The cut must not leave the second half of a character at the start.
+        if (/^[\uDC00-\uDFFF]/.test(output)) output = output.slice(1)
       }
-      const bytes = Buffer.byteLength(JSON.stringify(update))
-      if (run.updates.length < 500 && bytes <= 32000 && (run.updateBytes ?? 0) + bytes <= 64000) {
-        run.updates.push(update)
-        run.updateBytes = (run.updateBytes ?? 0) + bytes
-      }
-      else run.truncated = true
+      run.output = output
     })
   }
 

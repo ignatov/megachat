@@ -273,12 +273,22 @@ test('cancellation wins the dispatch boundary and retained output stays bounded'
   const run = await state.admitChild('tool', { cwd: '/workspace', prompt: 'Work' })
   await state.transition(run.id, ['admitted'], { status: 'ready', generation: 'process' })
   for (let index = 0; index < 8; index++) {
-    await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'a'.repeat(16000) } })
+    await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: String(index).repeat(16000) } })
   }
+  // An update without text of the agent, such as a tool call, changes no state.
+  const before = await state.snapshot()
+  await state.appendUpdate(run.id, 'process', { sessionUpdate: 'tool_call', toolCallId: 'call', title: 'x'.repeat(1000) })
   const snapshot = await state.snapshot()
-  assert.equal(snapshot.runs[run.id].output.length, 64000)
-  assert.ok(snapshot.runs[run.id].updateBytes <= 64000)
+  assert.deepEqual(snapshot, before)
+  // The end of the output stays: the result of a long run is at its end.
+  assert.equal(snapshot.runs[run.id].output, ['4', '5', '6', '7'].map(digit => digit.repeat(16000)).join(''))
   assert.equal(snapshot.runs[run.id].truncated, true)
+  assert.equal('updates' in snapshot.runs[run.id], false)
+  assert.equal('updates' in await state.readRun(run.id), false)
+  await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '😀'.repeat(32001) } })
+  const emoji = (await state.snapshot()).runs[run.id].output
+  assert.ok(emoji.length <= 64000)
+  assert.equal(emoji.replaceAll('😀', ''), '')
   await state.cancel(main.mainRunId)
   assert.equal(await state.transition(run.id, ['ready'], { status: 'dispatched' }), false)
   assert.equal((await state.snapshot()).runs[run.id].status, 'cancelled')
@@ -605,7 +615,7 @@ test('a state document without time fields prunes without an error', { timeout: 
       const id = `run-${index}`
       state.runs[id] = { id, childSessionId: id, mainRunId: 'old-0', agent: 'claude', requestId: id, digest: id, prompt: 'Old task',
         cwd: '/workspace', status: 'completed', providerSessionId: `provider-${index}`, serviceSession: index !== 0,
-        generation: 'old', pid: null, output: '', truncated: false, updates: [], updateBytes: 0, cancelRequested: false,
+        generation: 'old', pid: null, output: '', truncated: false, updates: [{ sessionUpdate: 'tool_call' }], updateBytes: 30, cancelRequested: false,
         createdAt: index + 1, finishedAt: index + 1, closed: false, reported: true }
     }
     delete state.runs['run-1'].finishedAt
@@ -623,6 +633,8 @@ test('a state document without time fields prunes without an error', { timeout: 
   const { state } = opened
   const addresses = Object.values((await state.snapshot()).serviceSessions).map(session => session.providerSessionId)
   assert.deepEqual(addresses, Array.from({ length: 63 }, (_, index) => `provider-${index + 1}`))
+  // The open drops the stored updates of each run.
+  assert.ok(Object.values((await state.snapshot()).runs).every(run => !('updates' in run) && !('updateBytes' in run)))
   await state.submit('new-input', 'Work')
   const run = await state.admitChild('new-run', { cwd: '/workspace', prompt: 'New task' })
   await state.transition(run.id, ['admitted'], { status: 'running', generation: 'process' })
