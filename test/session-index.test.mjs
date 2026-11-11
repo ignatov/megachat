@@ -193,6 +193,34 @@ test('the import reads only complete appended lines, and imports a file again af
   assert.equal((await hits(index, 'claude', project, 'iota')).length, 1)
 })
 
+test('a file that a writer rewrote in place, also to a larger size, is imported again from its start', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const path = await claudeSession(home, project, 'one', [
+    claudeLine('u1', 'user', 'alpha juniper', project), claudeLine('a1', 'assistant', 'beta answer', project)])
+  const { index } = await service(t, directories, fakeState({ workspaces: [project] }))
+  await index.apply(ON)
+  await index.idle()
+  const before = await stat(path)
+  await writeFile(path, [claudeLine('u7', 'user', 'kappa first', project), claudeLine('a7', 'assistant', 'lambda second', project),
+    claudeLine('u8', 'user', 'zeta third', project)].join(''))
+  const after = await stat(path)
+  assert.equal(after.ino, before.ino)
+  assert.ok(after.size > before.size)
+  await index.catchUp(project)
+  assert.equal((await hits(index, 'claude', project, 'juniper')).length, 0, 'The old entries leave the index')
+  for (const word of ['kappa', 'lambda', 'third']) assert.equal((await hits(index, 'claude', project, word)).length, 1, word)
+  assert.equal((await index.store.counts()).entries, 3)
+
+  // A rewrite to the same size with another last line.
+  const same = (await readFile(path, 'utf8')).replace('zeta third', 'iota third')
+  await writeFile(path, same)
+  await utimes(path, new Date(NOW), new Date(NOW))
+  await index.catchUp(project)
+  assert.equal((await hits(index, 'claude', project, 'zeta')).length, 0)
+  assert.equal((await hits(index, 'claude', project, 'iota')).length, 1)
+})
+
 test('a fork with copied entries keeps each entry one time', async t => {
   const directories = await fixture(t)
   const { home, project } = directories
@@ -522,6 +550,35 @@ test('a version change makes the index again from the session files without a se
   assert.equal((await hits(second.index, 'claude', project, 'juniper')).length, 1)
   assert.equal((await second.index.store.counts()).entries, 1)
   assert.equal(state.summaries.length, 1)
+})
+
+test('a file of the version 1 is made again with the live table, and the live table reads the session files again', async t => {
+  const directories = await fixture(t)
+  const { home, project, path } = directories
+  const log = await claudeSession(home, project, 'one', [claudeLine('u1', 'user', 'juniper', project)])
+  const state = fakeState({ workspaces: [project] })
+  const first = await service(t, directories, state)
+  await first.index.apply(ON)
+  await first.index.idle()
+  await first.index.close()
+  // A file of the version 1: the table files has no hash, the live table has a row of a file that is gone, and the
+  // row of the session file has a title that an older parser could have given.
+  const raw = new DatabaseSync(path)
+  raw.exec(`UPDATE meta SET version = 1; ALTER TABLE files DROP COLUMN tail; UPDATE logs SET title = 'old title';
+    INSERT INTO logs (path, agent, ino, size, offset) VALUES ('${join(home, 'gone.jsonl')}', 'claude', '1', 1, 1)`)
+  raw.close()
+  const second = await service(t, directories, state)
+  await second.index.apply(ON)
+  await second.index.idle()
+  const check = new DatabaseSync(path, { readOnly: true })
+  const rows = check.prepare('SELECT path, session_id, title FROM logs').all().map(row => [row.path, row.session_id, row.title])
+  const columns = check.prepare("SELECT name FROM pragma_table_info('files')").all().map(row => row.name)
+  check.close()
+  assert.deepEqual(rows, [[log, 'one', null]], 'The rows of the live table come from the session files again')
+  assert.equal(second.index.logs.records.get(log).title, undefined)
+  assert.deepEqual([...second.index.logs.records.keys()], [log])
+  assert.ok(columns.includes('tail'))
+  assert.equal((await hits(second.index, 'claude', project, 'juniper')).length, 1)
 })
 
 /** A live source of Claude Code that records its calls. */

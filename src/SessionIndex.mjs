@@ -3,7 +3,7 @@ import { corrupt, deleteSidecar, fold, FTS_TABLE, matchExpression, openSidecar }
 import { indexedTitle } from './SessionText.mjs'
 
 /** A change of the tables or of the parsers needs a new version. A file of another version is made again. */
-export const VERSION = 1
+export const VERSION = 2
 /**
  * The matches that bm25 ranks together: the matches with the highest entry IDs first, then older ones window by
  * window, as in the conversation index. bm25 costs up to about 50 µs for each match of a common term, so the window is
@@ -39,8 +39,9 @@ const LOGS_TABLE = `CREATE TABLE IF NOT EXISTS logs (path TEXT PRIMARY KEY, agen
 const TABLES = [
   'CREATE TABLE meta (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL, first_pass_at INTEGER, announce INTEGER NOT NULL)',
   // The import state of each session file. `state` is `indexed`, or `outside` for a session in no listed directory.
+  // `tail` is a hash of the last bytes before `offset`, so the import finds a file that a writer rewrote in place.
   `CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, agent TEXT NOT NULL, session INTEGER, cwd TEXT,
-    size INTEGER NOT NULL, mtime_ms INTEGER NOT NULL, ino TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL)`,
+    size INTEGER NOT NULL, mtime_ms INTEGER NOT NULL, ino TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL, tail TEXT)`,
   'CREATE INDEX files_session ON files (session)',
   'CREATE TABLE scopes (id INTEGER PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT NOT NULL, next INTEGER NOT NULL DEFAULT 0, UNIQUE (agent, cwd))',
   `CREATE TABLE sessions (id INTEGER PRIMARY KEY, agent TEXT NOT NULL, session_id TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT,
@@ -135,7 +136,7 @@ export class SessionIndex {
   outside(file, cwd) {
     return this.#guard(() => this.db.run(`INSERT INTO files (path, agent, session, cwd, size, mtime_ms, ino, offset, state)
       VALUES (?, ?, NULL, ?, ?, ?, ?, 0, 'outside') ON CONFLICT (path) DO UPDATE SET session = NULL, cwd = excluded.cwd,
-      size = excluded.size, mtime_ms = excluded.mtime_ms, ino = excluded.ino, offset = 0, state = 'outside'`,
+      size = excluded.size, mtime_ms = excluded.mtime_ms, ino = excluded.ino, offset = 0, state = 'outside', tail = NULL`,
     file.path, file.agent, cwd ?? null, file.size, Math.floor(file.mtimeMs), file.ino))
   }
 
@@ -146,7 +147,8 @@ export class SessionIndex {
 
   /**
    * Writes one batch of a file in one transaction: the session data of [meta], the entries, and the import state up to
-   * [offset]. An entry with a key that the index has already is skipped. Gives the count of the new entries.
+   * [offset], with the hash `file.tail` of the bytes before it. An entry with a key that the index has already is
+   * skipped. Gives the count of the new entries.
    */
   write(file, meta, entries, offset) {
     return this.#guard(() => this.db.transaction(async tx => {
@@ -162,10 +164,11 @@ export class SessionIndex {
       const named = meta.title === undefined ? undefined : indexedTitle(meta.title)
       let title = named !== undefined && meta.titleRank >= session.titleRank && named !== session.title
         ? { text: named, rank: meta.titleRank } : undefined
-      const { id: fileId } = await tx.get(`INSERT INTO files (path, agent, session, cwd, size, mtime_ms, ino, offset, state)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'indexed') ON CONFLICT (path) DO UPDATE SET session = excluded.session, cwd = excluded.cwd,
-        size = excluded.size, mtime_ms = excluded.mtime_ms, ino = excluded.ino, offset = excluded.offset, state = 'indexed' RETURNING id`,
-      file.path, file.agent, session.id, meta.cwd, file.size, mtime, file.ino, offset)
+      const { id: fileId } = await tx.get(`INSERT INTO files (path, agent, session, cwd, size, mtime_ms, ino, offset, state, tail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?) ON CONFLICT (path) DO UPDATE SET session = excluded.session, cwd = excluded.cwd,
+        size = excluded.size, mtime_ms = excluded.mtime_ms, ino = excluded.ino, offset = excluded.offset, state = 'indexed',
+        tail = excluded.tail RETURNING id`,
+      file.path, file.agent, session.id, meta.cwd, file.size, mtime, file.ino, offset, file.tail ?? null)
       let added = 0
       let last
       for (const entry of entries) {

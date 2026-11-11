@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { watch as watchFiles } from 'node:fs'
 import * as fileSystem from 'node:fs/promises'
 import { basename, join, relative, sep } from 'node:path'
@@ -25,6 +26,8 @@ const SUMMARY_UNFINISHED = 5
 /** The lines of one transaction of the import. The trigram index of an entry of 2 KB takes about 1 ms. */
 const BATCH_LINES = 8
 const BATCH_BYTES = 128 * 1024
+/** The bytes before the offset of the import that the hash of a file covers. */
+const TAIL_BYTES = 128
 
 /** Gives the event loop to other work, such as a turn of the chat, between two batches of the import. */
 const pause = () => new Promise(resolve => setImmediate(resolve))
@@ -342,6 +345,19 @@ export class SessionIndexService {
     return undefined
   }
 
+  /** A hash of the [TAIL_BYTES] bytes before [offset], or null at the start of the file. */
+  async #tail(path, offset) {
+    if (offset <= 0) return null
+    const length = Math.min(TAIL_BYTES, offset)
+    const handle = await this.fs.open(path, 'r')
+    try {
+      const buffer = Buffer.alloc(length)
+      const { bytesRead } = await handle.read(buffer, 0, length, offset - length)
+      return createHash('sha256').update(buffer.subarray(0, bytesRead)).digest('base64url').slice(0, 22)
+    }
+    finally { await handle.close() }
+  }
+
   #parse(source, line, path) {
     let value
     try { value = JSON.parse(line) }
@@ -350,8 +366,9 @@ export class SessionIndexService {
   }
 
   /**
-   * Imports the new complete lines of one file. A smaller file or another inode means a truncation or a rotation: the
-   * import then takes the whole file again. Gives false when [deadline] or a stop ended the import before the end.
+   * Imports the new complete lines of one file. A smaller file or another inode means a truncation or a rotation, and
+   * other bytes before the offset mean a rewrite in place: the import then takes the whole file again. Gives false when
+   * [deadline] or a stop ended the import before the end.
    */
   async #importFile(file, directories, { signal, deadline }) {
     const { source, path } = file
@@ -365,7 +382,8 @@ export class SessionIndexService {
       if (row.ino === file.ino && row.cwd && !directoryOf(row.cwd, directories)) { await this.index.touch({ ...file, agent }); return true }
       row = undefined
     }
-    if (row && (row.ino !== file.ino || file.size < row.offset || row.size >= 0 && file.size < row.size)) {
+    if (row && (row.ino !== file.ino || file.size < row.offset || row.size >= 0 && file.size < row.size
+      || await this.#tail(path, row.offset) !== row.tail)) {
       await this.index.dropFile(path, pause)
       row = undefined
     }
@@ -377,7 +395,7 @@ export class SessionIndexService {
       meta = { cwd }
     }
     // The size of a file is stored only after the import reached its end, so a stopped import continues later.
-    const partial = { ...file, agent, size: -1 }
+    const partial = { ...file, agent, size: -1, tail: row?.tail ?? null }
     let offset = row?.offset ?? 0
     for await (const batch of readLines(this.fs, path, { start: offset, end: file.size, batchBytes: BATCH_BYTES, batchLines: BATCH_LINES })) {
       const entries = []
@@ -391,6 +409,7 @@ export class SessionIndexService {
         if (parsed.entry) entries.push({ ...parsed.entry, ...indexedText(parsed.entry.text) })
       }
       meta.sessionId ??= basename(path, '.jsonl')
+      partial.tail = await this.#tail(path, batch.end)
       await this.index.write(partial, meta, entries, batch.end)
       while (await this.index.mergeStep()) await pause()
       delete meta.title
