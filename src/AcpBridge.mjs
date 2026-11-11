@@ -201,6 +201,8 @@ class AcpBridgeSession {
     for (const entry of view.entries) {
       if (this.entries.has(entry.id)) continue
       this.entries.add(entry.id)
+      // A summary of older entries is a user message for the model only. The chat does not show it.
+      if (entry.head !== undefined) continue
       for (const model of entry.model ?? []) {
         if (model.role === 'user' && replayUsers && entry.kind !== 'air.megachat.event') {
           const text = typeof model.content === 'string' ? model.content

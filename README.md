@@ -79,6 +79,7 @@ optional directory selects a state directory of its own, for a test or for devel
 | `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. It also replaces a daemon with other agent commands, when this command passes agent commands. |
 | `status` | Prints the current task and the state of each child run as JSON. |
 | `stop` | Stops the daemon. |
+| `compact` | Asks the running daemon to replace the older part of the model context with a summary. The daemon waits for the end of the current turn. The history keeps each message. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
 | `daemon` | Runs the daemon in the foreground. `start` runs this command. It ends with the exit code 3 when another daemon owns the directory. |
 | `install` | Checks the machine and adds the entry `Megachat` of this copy to `~/.jetbrains/acp.json`. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
@@ -101,6 +102,15 @@ Each directory has the mode 0700, and each file has the mode 0600. When the shar
 daemon copies it once from `~/Library/Application Support/JetBrains/AirMegachat`. `MEGACHAT_LEGACY_DIRS` replaces that
 list.
 
+## The size of the model context
+
+The daemon sends the conversation to the model with each request. Above 100,000 tokens, it replaces the older part
+with a summary, and it keeps about 20,000 recent tokens as they are. `MEGACHAT_COMPACT_TOKENS` in the environment of
+the daemon replaces the limit. The summary keeps your standing agreements, the open child tasks, the questions that
+wait for you, and the recent decisions. `resources/compaction.md` holds its instructions. The conversation and the
+search index keep each message, so the agent still finds the earlier details. `node src/main.mjs compact` writes a
+summary at once.
+
 ## Code map
 
 | Files | Content |
@@ -109,7 +119,7 @@ list.
 | `src/main.mjs` | The commands. `start` connects to the daemon, replaces a daemon of another build, uses a live daemon of a legacy directory, or starts a new daemon. |
 | `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
-| `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules. |
+| `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The child runs, one at a time. The supervisor stops the child when the daemon exits. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |

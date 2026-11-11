@@ -118,6 +118,13 @@ export class DaemonServer {
         send({ cancelled: await this.service.cancel(body.mainRunId) })
         return
       }
+      case '/compact': {
+        // A summary of a large conversation takes minutes, so the response stays open as `/wait` does.
+        response.setHeader('content-type', 'application/json')
+        this.keepAlive(response, ' ')
+        response.end(JSON.stringify(await this.service.compact()))
+        return
+      }
       case '/shutdown': send({ stopping: true }); setImmediate(this.shutdown); return
       default: throw new MegachatError('invalid')
     }

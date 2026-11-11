@@ -77,6 +77,15 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/home.test.mjs
 - The agent must read retained messages when earlier details are absent from its active context.
 - History lookup must survive context replacement and a daemon restart.
+- A summary must replace the older part of the model context when the context is above 100,000 tokens. `MEGACHAT_COMPACT_TOKENS` may replace this limit. A daemon restart applies a changed value.
+- Above the limit, the daemon must write the summary in the background. Above the limit plus 32,768 tokens, the next model request must wait for the summary.
+- A context below the limit must get no summary.
+- A summary must keep the standing agreements and preferences of the user, the open child tasks, the questions that wait for the user, and the recent decisions. `resources/compaction.md` holds these instructions.
+- A summary must list each child task of the state that is unfinished or unreported, with its status, title, agent and project. This list must come from the state, not from the model.
+- A summary must not remove an entry from the retained conversation or from the search index.
+- The chat must not show a summary as a message.
+- The command `compact` must ask the running daemon for a summary now. The daemon must wait for the end of the current turn first. The command must not start a daemon.
+  [@test] ../test/compaction.test.mjs
 - History lookup must return timestamps and mark partial results.
 - Retrieved messages must grant no new permission.
   [@test] ../test/state.test.mjs

@@ -195,6 +195,13 @@ try {
       break
     }
     case 'stop': await (await connect()).json('/shutdown', {}); break
+    case 'compact': {
+      // The daemon owns the conversation, so it writes the summary. The request has no time limit of its own.
+      const outcome = await (await connect()).json('/compact', {}, AbortSignal.timeout(3600000))
+      process.stdout.write(`${message(outcome.compacted ? 'compact.done' : outcome.reason === 'nothing' ? 'compact.nothing' : 'compact.failed', outcome.reason)}\n`)
+      if (!outcome.compacted && outcome.reason !== 'nothing') process.exitCode = 1
+      break
+    }
     case 'install': process.exitCode = await install(); break
     case 'acp': {
       const bridge = new AcpBridge(await start())

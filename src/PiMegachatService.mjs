@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
-import { createRegistry, defineExtension, defineTool, Harness } from '@earendil-works/pi-durable'
+import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook } from '@earendil-works/pi-durable'
 import { int, obj, opt, str } from '@earendil-works/pi-schema'
 import { composeInstructions } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
@@ -12,12 +12,58 @@ import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatS
 const context = BACKGROUND_CONTEXT
 const result = value => ({ output: [{ type: 'text', text: JSON.stringify(value) }] })
 
+/** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
+export const COMPACT_TOKENS_VARIABLE = 'MEGACHAT_COMPACT_TOKENS'
+export const DEFAULT_COMPACT_TOKENS = 100000
+/** A summary request reads the whole context that it replaces, so it gets more time than a reply. */
+const SUMMARY_TIMEOUT_MS = 600000
+const SUMMARY_MAX_TOKENS = 16000
+const SUMMARY_TOOL_RESULT_LIMIT = 2000
+const SUMMARY_TASK_LIMIT = 30
+
+export function compactTokens(environment = process.env) {
+  const value = environment[COMPACT_TOKENS_VARIABLE]
+  return value !== undefined && /^[1-9]\d{0,8}$/.test(value.trim()) ? Number(value.trim()) : DEFAULT_COMPACT_TOKENS
+}
+
+/**
+ * Pi Durable has no absolute limit. It starts a summary in the background above
+ * `contextWindow - reserveTokens - backgroundTokens`, and a request waits for a summary above
+ * `contextWindow - reserveTokens`. So the reserve puts the background limit at [tokens]. A model with a window that is
+ * too small for this keeps the limits of Pi Durable.
+ */
+export function compactionSettings(contextWindow, tokens) {
+  const reserveTokens = contextWindow - tokens - DEFAULT_COMPACTION_POLICY.backgroundTokens
+  return reserveTokens >= DEFAULT_COMPACTION_POLICY.reserveTokens ? { reserveTokens } : {}
+}
+
+const blockText = content => typeof content === 'string' ? content
+  : content.filter(block => block.type === 'text').map(block => block.text).join('\n')
+
+/** The messages as plain text, so that the model reads a transcript and does not continue it. */
+function transcript(messages) {
+  const parts = []
+  for (const model of messages) {
+    if (model.role === 'user' && blockText(model.content)) parts.push(`[User]: ${blockText(model.content)}`)
+    if (model.role === 'assistant') {
+      if (blockText(model.content)) parts.push(`[Assistant]: ${blockText(model.content)}`)
+      const calls = model.content.filter(block => block.type === 'toolCall')
+        .map(block => `${block.name}(${JSON.stringify(block.arguments ?? {})})`)
+      if (calls.length) parts.push(`[Assistant tool calls]: ${calls.join('; ')}`)
+    }
+    if (model.role === 'toolResult' && blockText(model.content))
+      parts.push(`[Tool result]: ${blockText(model.content).slice(0, SUMMARY_TOOL_RESULT_LIMIT)}`)
+  }
+  return parts.join('\n\n')
+}
+
 export class PiMegachatService {
-  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath } = {}) {
+  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens() } = {}) {
     const registry = createRegistry()
+    const contextWindow = models.getModel(model.provider, model.modelId)?.contextWindow ?? 0
     const harness = await Harness.open(storage, {
       models, registry,
-      settings: { retry: { enabled: false }, stream: { timeoutMs: 60000, maxRetries: 0 } },
+      settings: { retry: { enabled: false }, stream: { timeoutMs: 60000, maxRetries: 0 }, compaction: compactionSettings(contextWindow, limit) },
       // Pi Durable reports each failure of a task, an extension or the storage here, and nowhere else.
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
@@ -30,6 +76,10 @@ export class PiMegachatService {
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
+    service.model = model
+    // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
+    const [system, ...rest] = (await readFile(new URL('../resources/compaction.md', import.meta.url), 'utf8')).trim().split('\n\n')
+    service.summaryPrompt = { system, instructions: rest.join('\n\n') }
     if (searchPath) service.search = await MegachatSearchIndex.open(searchPath, (minEntryId, cursor) =>
       root.entries({ order: 'ascending', minEntryId }, 200, cursor, context))
     registry.install(service.extension())
@@ -56,7 +106,9 @@ export class PiMegachatService {
       name: `agents_${name}`, description: message(`tool.${name}`), parameters, replay: 'safe', execute,
     })
     const inspect = async args => result(await this.state.readRun(args.runId))
-    return defineExtension({ name: 'air.megachat', tools: [
+    return defineExtension({ name: 'air.megachat', hooks: [
+      hook(CompactionTask, { beforeCompact: (compaction, api, hookContext) => this.summarize(compaction, api, hookContext) }),
+    ], tools: [
       tool('list', obj({}), async () => {
         const state = await this.state.snapshot()
         const { declines, silenced, suggestion } = state.initiative
@@ -97,6 +149,49 @@ export class PiMegachatService {
         return result({ closed: true })
       }),
     ] })
+  }
+
+  /**
+   * Writes the summary of each compaction. Pi Durable gives its own instructions only to a manual compaction, so this
+   * hook gives the instructions of Megachat to each one. The tasks come from the state, not from the model, so the
+   * summary cannot lose them. Without a result, Pi Durable writes its own summary.
+   */
+  async summarize(compaction, api, hookContext) {
+    const model = api.models.getModel(this.model.provider, this.model.modelId)
+    if (!model) return undefined
+    const focus = compaction.instructions ? `\n\nAdditional focus: ${compaction.instructions}` : ''
+    const text = `<conversation>\n${transcript(compaction.messages)}\n</conversation>\n\n${this.summaryPrompt.instructions}${focus}`
+    const answer = await api.models.completeSimple(model, { messages: [
+      { role: 'system', content: this.summaryPrompt.system, timestamp: Date.now() },
+      { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() },
+    ] }, { timeoutMs: SUMMARY_TIMEOUT_MS, maxRetries: 0, cacheRetention: 'none', signal: hookContext?.abortSignal,
+      maxTokens: model.maxTokens > 0 ? Math.min(SUMMARY_MAX_TOKENS, model.maxTokens) : SUMMARY_MAX_TOKENS })
+    const summary = answer.stopReason === 'stop' && !answer.content.some(block => block.type === 'toolCall')
+      ? blockText(answer.content).trim() : ''
+    if (!summary) return undefined
+    const state = await this.state.snapshot()
+    const tasks = Object.values(state.runs)
+      .filter(run => !terminalStates.has(run.status) || !run.reported)
+      .slice(-SUMMARY_TASK_LIMIT)
+      .map(run => `- ${run.status}: ${run.title ?? run.prompt.slice(0, 80)} (${run.agent ?? 'claude'}, ${run.cwd})`)
+    return { summary: tasks.length ? `${summary}\n\n## Child tasks in the daemon state\n${tasks.join('\n')}` : summary }
+  }
+
+  /**
+   * Replaces the older part of the model context with a summary, between turns. The retained conversation and the
+   * search index keep each entry. A second call while one runs gets the result of the first.
+   */
+  compact() {
+    return this.compacting ??= (async () => {
+      await waitForState(this.state, state => !state.current ? true : undefined, { signal: this.lifetime.signal, timeoutMs: null })
+      const taskId = await this.root.compact(undefined, context)
+      const { outcome } = (await this.harness.waitForTask(taskId, context)).state
+      if (outcome.status !== 'completed') return { compacted: false, reason: outcome.status }
+      // No submission means that the context has nothing older than the part that stays.
+      if (outcome.result.submissionId === undefined) return { compacted: false, reason: 'nothing' }
+      const placed = await (await this.harness.submission(outcome.result.submissionId, context)).wait(context)
+      return placed.status === 'done' ? { compacted: true } : { compacted: false, reason: placed.reason ?? placed.status }
+    })().finally(() => { this.compacting = undefined })
   }
 
   async resume() {
