@@ -308,7 +308,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   for more than an hour. A read must take only the appended complete lines. A smaller file or
   another inode must make the table read the file again.
 - Each row must get its session log only by a certain link: the session ID of a Megachat run; an open log of the process
-  (Codex keeps its log open, one row for each open log of a `codex app-server`); the process file
+  (Codex keeps its log open, one row for each open log of a `codex app-server`; an open `.jsonl` file of another
+  agent must give no link); the process file
   `~/.claude/sessions/<PID>.json` of Claude Code with the PID and the same start time; else the only log of the agent
   in the `cwd` that began in the first 30 seconds of the process, when no other row of the agent in that directory
   could have begun it. Two processes of one agent in one directory that start at nearly the same time must not get a

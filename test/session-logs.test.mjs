@@ -510,6 +510,31 @@ test('a process file of Claude Code maps a process to its log, and a file of a r
   assert.deepEqual(answer.incomplete, [message('running.incomplete.unlinked', 2)])
 })
 
+test('an open .jsonl file of a Claude Code process does not replace its process file, also when it was a log of its session', async t => {
+  const home = await temporary(t)
+  await claudeLog(home, '/work/notes', 'notes-one', [claude.title('Notes'), claude.prompt(), claude.reply(), claude.end()], { mtime: NOW - 5 * MINUTE })
+  const first = await claudeLog(home, '/work/pin', 'pin-one', [claude.title('First session'), claude.prompt(), claude.reply(), claude.end()], { mtime: NOW - 5 * MINUTE })
+  await claudeLog(home, '/work/pin', 'pin-two', [claude.title('Second session'), claude.prompt(), claude.call()], { mtime: NOW - MINUTE })
+  const processes = join(home, '.claude', 'sessions')
+  await mkdir(processes, { recursive: true })
+  const started = pid => NOW - 2 * HOUR + pid * 1000
+  const processFile = (pid, sessionId, cwd) => writeFile(join(processes, `${pid}.json`), JSON.stringify({ pid, sessionId, cwd, procStart: lstart(started(pid)) }))
+  await processFile(20, 'notes-one', '/work/notes')
+  await processFile(21, 'pin-one', '/work/pin')
+  const { catalog } = await catalogOf(t, home)
+  // Process 20 has a .jsonl file open that is no session log. lsof saw the log of process 21 open one time.
+  const table = fakeTable([proc(20, 2, 'claude'), proc(21, 2, 'claude')],
+    { 20: { cwd: '/work/notes', files: [join(home, 'data', 'items.jsonl')] }, 21: { cwd: '/work/pin', files: [first] } })
+  const clock = fakeClock()
+  const view = running(catalog, table, clock)
+  const rows = async () => Object.fromEntries((await view.query()).sessions.map(row => [row.pid, [row.sessionId, row.title, row.status]]))
+  assert.deepEqual(await rows(), { 20: ['notes-one', 'Notes', 'waiting_for_user'], 21: ['pin-one', 'First session', 'waiting_for_user'] })
+  // The process moves to another session. Its process file tells it.
+  await processFile(21, 'pin-two', '/work/pin')
+  clock.time += SNAPSHOT_TTL_MS
+  assert.deepEqual((await rows())[21], ['pin-two', 'Second session', 'working'])
+})
+
 test('two processes of one agent in one directory do not get the title of the other', async t => {
   const home = await temporary(t)
   const started = pid => NOW - 2 * HOUR + pid * 1000

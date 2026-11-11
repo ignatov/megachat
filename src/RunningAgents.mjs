@@ -73,8 +73,10 @@ export class RunningAgents {
     for (const row of sessions) if (row.cpu >= ACTIVE_CPU_PERCENT) this.busy.set(row.pid, { startedAt: row.startedAt, at: scannedAt })
     const catalog = this.logs()
     await this.#resolve(sessions, catalog)
+    // Only an agent that keeps its log open gives a link by an open file. Another agent, such as Claude Code, can have a
+    // .jsonl file open that is no log of its session now, and `lsof` does not run again for its process.
     const rows = sessions.map(row => ({ ...row, cwd: row.run ? row.run.cwd : this.directories.get(row.pid)?.cwd ?? null,
-      files: this.directories.get(row.pid)?.files ?? [] }))
+      files: catalog?.source(row.agent)?.keepsOpen ? this.directories.get(row.pid)?.files ?? [] : [] }))
     const unreadable = rows.filter(row => row.cwd === null).length
     if (unreadable) incomplete.push(message('running.incomplete.cwd', unreadable))
     const view = catalog ? await this.#withLogs(rows, catalog, scannedAt, incomplete)
@@ -113,7 +115,7 @@ export class RunningAgents {
   /** Links each row to its logs. A row of a process with several open logs becomes one row for each session. */
   async #withLogs(rows, catalog, now, incomplete) {
     for (const row of rows) {
-      if (!row.run && !row.files.length && catalog.source(row.agent)?.processSession)
+      if (!row.run && !row.files.some(path => catalog.get(path)?.agent === row.agent) && catalog.source(row.agent)?.processSession)
         row.process = await catalog.processSession(row.agent, row.pid, row.startedAt)
     }
     // A log that a row names and that the table has not read yet is read now, so a new session shows at once.
