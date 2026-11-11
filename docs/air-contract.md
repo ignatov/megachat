@@ -9,7 +9,8 @@ A change of an extension needs the same change in Air. Change this file in the s
 
 - The `acp.json` entry of the user has the name `Megachat`. Air derives the agent ID `acp.megachat` from that name.
 - Air shows the Gothic M icon and the first row of the session list for the agent `acp.megachat`.
-- An IDE build without that derivation reads `"application_session": true` in the entry instead.
+- An IDE build without the Air support for Megachat starts it as an ordinary custom ACP agent. That build sends no
+  capability, so Megachat sends no `_workspaces/list` and no `_session/service/record`. Nobody tested that case.
 - Megachat gives the agent name `air-megachat` in `agentInfo`, and the version of `package.json`.
 - Megachat accepts the session IDs `megachat` and `megachat-<UUID>`. `session/new` gives a new `megachat-<UUID>`.
 

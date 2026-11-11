@@ -14,40 +14,75 @@ Run this line once in a terminal, then open Megachat in the IDE:
 npx -y "github:ignatov/megachat#semver:x" install
 ```
 
-The line installs a copy of the last release of Megachat in the npm cache. A release is a tag `v<version>` of this
-repository, and `#semver:x` selects the tag with the highest version. Keep the quotation marks: a zsh with the option
-`extendedglob` reads `#` as a pattern.
+A release is a tag `v<version>` of this repository, and `#semver:x` selects the tag with the highest version. Keep the
+quotation marks: a zsh with the option `extendedglob` reads `#` as a pattern.
 
-The line checks what the machine needs, and prints one line for each result. Then it adds the entry `Megachat` to
-`agent_servers` in `~/.jetbrains/acp.json`. The entry starts the installed copy directly with Node.js, not with `npx`.
-The last line gives the version and the directory of the copy. The exit code is 0 only when the entry is in place and
-each check passed.
+The line checks what the machine needs, and prints one line for each result. Then it adds this entry to
+`agent_servers` in `~/.jetbrains/acp.json`:
+
+```json
+"Megachat": { "command": "npx", "args": ["-y", "github:ignatov/megachat#semver:x", "acp"] }
+```
+
+The IDE starts the command `npx` with its own Node.js and its own npm cache. So each start of the agent in the IDE
+starts the last release. The exit code of the line is 0 only when the entry is in place and each check passed. The
+last line gives the version and the directory of the copy that ran the install. That copy is in the npm cache of the
+terminal, and the IDE does not use it.
 
 The machine needs:
 
+- An IDE build with the Air support for Megachat. No released IDE build has it yet: only a build from the current
+  sources of the IDE has it. An IDE build without it starts Megachat as an ordinary custom ACP agent. Then Megachat
+  gets no list of the open projects and cannot hide its delegated sessions from the session list. That IDE also does
+  not know that the session persists, so it can cancel or close the session when a window releases it. Nobody tested
+  Megachat on such a build. When the policy of the organization does not allow custom agents, the IDE does not show
+  Megachat.
 - git, and access to `github.com`. The repository is public, so the line needs no GitHub account.
-- Node.js 22.19 or later.
+- Node.js 22.19 or later for the install line. The IDE runs Megachat with its own Node.js.
 - The Central command at `~/.local/bin/central`, with a login: `central login`.
 - Claude Code at `~/.local/bin/claude`, set up through Central: `central add claude-code`.
 - The Codex command, `codex`, on the `PATH`.
 - macOS. Nobody tested Megachat on another platform.
 
-The first run takes about a minute, and the copy takes about 870 MB in the npm cache. On each run, `npx` asks GitHub
-for the tags, and it installs the package again only after a new release. So the entry does not use `npx`.
+**The start in the IDE.** These numbers come from the npm 11.19.1 of the IDE on one Mac, with an empty npm cache of a
+test and the release 0.2.0 on GitHub:
+
+- The first start installs the release. It took 27 seconds in one measurement and 105 seconds in another one. The copy
+  takes 870 MB in the directory `_npx` of the npm cache, and the npm cache takes 1.3 GB.
+- Each later start asks GitHub for the tags with `git ls-remote`, and it clones the tag of the release to read its
+  `package.json`. When the release is the same, npm writes no file of the copy again. Five later starts gave the first
+  ACP answer after 2.5 to 4.2 seconds. That time includes the start of the daemon.
+- Two other later starts, directly after the first start, ended after 0.3 and 0.4 seconds with the exit code 128
+  and printed nothing. A failed git command gives this result, but the npm log does not give the reason.
+- A path of the npm cache through a symbolic link, such as `/tmp` on macOS, makes npm reject the lock file of the
+  copy. Then each start writes all 20,640 files of the copy again, and a later start took 18 seconds. The npm cache of
+  the IDE is in `~/Library/Caches`, and that path had no symbolic link on the Mac of the test.
+
+Without the network, `npx` cannot ask GitHub for the tags, so Megachat does not start, also when the copy is in the
+cache. With a proxy that refused each connection, `npx` ended after 1.3 to 2.4 seconds with the exit code 128 and
+printed nothing. With a proxy that accepted each connection and never answered, `npx` did not end in 180 seconds. The
+IDE waits for the first answer of an agent without a time limit. Nobody found a reliable time limit for this case yet.
+
+**Disk use.** The IDE keeps its copy in its own npm cache, in the Node.js directory of the IDE, such as
+`~/Library/Caches/JetBrains/<product>/acp-agents/.runtimes/node/<version>/npm-cache`. The install line keeps another
+copy in the npm cache of the terminal, `~/.npm`. So the two copies take about 2.6 GB together.
 
 The installed copy does not use `package-lock.json`. So its indirect dependencies can differ from the tested ones.
 
-The entry has no `application_session` key. An IDE build from before the Air change needs that key. Nobody verified
-Megachat on such a build.
+When `acp.json` has an entry `Megachat` that the install line of Megachat 0.2.0 wrote, the line replaces it with the
+new entry. That earlier entry starts a copy in an `_npx` directory directly with Node.js. The line copies the file to
+`acp.json.before-megachat-<UTC time>` first, and prints the earlier entry. When `acp.json` has another entry
+`Megachat`, the line does not change the file. It prints both entries and what to do. Two copies of Megachat on one
+machine replace the daemon of each other.
 
-When `acp.json` has another entry `Megachat`, the line does not change the file. It prints both entries and what to
-do. Two copies of Megachat on one machine replace the daemon of each other.
+**Update.** The update is automatic. The next start of the agent after a release installs the new release, and its
+daemon replaces the daemon of the earlier release. In two runs of a test with a local repository, that start took 10.6 and 12 seconds.
+Nobody measured it against GitHub. Nobody tested what happens to an unfinished delegated task when a new release
+replaces the daemon.
 
-**Update.** Run the same line. It installs the last release in the same directory, so the entry stays. The daemon of
-the earlier copy stops at the next attach of the IDE, and the daemon of the new copy starts.
-
-**Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then run `npx clear-npx-cache`, or delete the
-directory `_npx/<hash>` in the path that `install` printed in its last line.
+**Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then delete the directory `_npx/<hash>` that
+holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. `install` printed the directory of the
+terminal copy in its last line.
 
 ## Install from a checkout
 
@@ -62,9 +97,9 @@ node src/main.mjs install
 name, so it skips the scripts of `esbuild`, `protobufjs` and `@google/genai`. The build still works, because npm
 installs `@esbuild/darwin-arm64` as an optional dependency.
 
-`install` adds the entry `Megachat`, which starts `bin/megachat.mjs acp` of the checkout. Keep the name `Megachat`:
-Air derives the agent ID `acp.megachat` from it. An IDE build from before the Air change also needs
-`"application_session": true` in the entry. After that change, Air knows Megachat by its ID and ignores the key.
+In a checkout, `install` adds the entry `Megachat` that starts `bin/megachat.mjs acp` of the checkout directly with
+Node.js, not the entry with `npx`. Keep the name `Megachat`: Air derives the agent ID `acp.megachat` from it. The
+checkout needs the same IDE build as a colleague.
 
 A checkout has the build `dev`, so a pull does not replace a running daemon. Run `node src/main.mjs stop` to start the
 new code at the next attach.
@@ -82,7 +117,7 @@ optional directory selects a state directory of its own, for a test or for devel
 | `compact` | Asks the running daemon to replace the older part of the model context with a summary. The daemon waits for the end of the current turn. The history keeps each message. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
 | `daemon` | Runs the daemon in the foreground. `start` runs this command. It ends with the exit code 3 when another daemon owns the directory. |
-| `install` | Checks the machine and adds the entry `Megachat` of this copy to `~/.jetbrains/acp.json`. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
+| `install` | Checks the machine and adds the entry `Megachat` to `~/.jetbrains/acp.json`. The entry starts the last release with `npx`, or in a checkout the checkout directly. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
 
 ## The state directory
 
@@ -148,6 +183,7 @@ of each keep-alive request and of each summary request.
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
+| `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, and the origins of the list. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the proposals. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
@@ -169,8 +205,11 @@ npm run test:package
 `npm run test:bundle` builds the bundle into `out/bundle/` and runs `test/bundle.test.mjs` on it.
 
 `npm run test:package` runs `npm pack`, installs the package into a temporary prefix with a temporary npm cache, and
-tests that copy: its daemon, its Claude and Codex agents, and its `install`. It takes about a minute and 870 MB, so
-`npm test` does not run it.
+tests that copy: its daemon, its Claude and Codex agents, and its `install`. Then it runs the `npx` entry on a
+temporary git repository with release tags, as the IDE does, and adds a higher tag. Each of the two tests takes about
+1 GB and one to two minutes, so `npm test` does not run them. In one run, the network failed, npm installed the copy
+without the optional package `@openai/codex-darwin-arm64`, and the Codex agent of the copy failed with
+`Missing optional dependency`. The next run passed.
 
 In a fresh clone, `npm test` skips the bundle test, because `out/bundle/` does not exist. After a build, `npm test`
 tests the last build, and that build can be older than the source. Only `npm run test:bundle` tests a new build.

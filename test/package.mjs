@@ -1,26 +1,33 @@
-// `npm run test:package` runs this file. It packs Megachat with `npm pack`, installs the tarball into a temporary prefix
-// with a temporary npm cache, and tests the installed copy. The install takes about 870 MB and about a minute, so
-// `npm test` does not run this file. The test sends no prompt, so it calls no model.
+// `npm run test:package` runs this file. The first test packs Megachat with `npm pack`, installs the tarball into a
+// temporary prefix with a temporary npm cache, and tests the installed copy. The second test runs the entry of
+// `acp.json` through npx from a temporary git repository with release tags. Each test takes about 1 GB and about a
+// minute, so `npm test` does not run this file. The tests send no prompt, so they call no model.
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
+import { RELEASE_ENTRY, RELEASE_SPEC } from '../src/MegachatInstall.mjs'
+import { IDE_NPM_VARIABLES, npmPathEntry } from '../src/npmEnvironment.mjs'
+import { commandOnPath, processEnvironment } from './process-environment.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
 const execute = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
 const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: {} } }
 
-/** Starts [command], sends one ACP `initialize`, and returns its response. Then it closes the input and waits for the exit. */
-async function initialized(command, args, options) {
+/**
+ * Starts [command], sends one ACP `initialize`, and returns its response. Then it closes the input and waits for the
+ * exit. [lines] gets each line of the standard output.
+ */
+async function initialized(command, args, options, { timeoutMs = 60000, lines = [] } = {}) {
   const child = spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] })
   const exited = once(child, 'exit')
   let stderr = ''
@@ -28,13 +35,14 @@ async function initialized(command, args, options) {
   child.stdin.write(`${JSON.stringify(initialize)}\n`)
   try {
     return await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`No answer from ${command}: ${stderr}`)), 60000)
+      const timer = setTimeout(() => reject(new Error(`No answer from ${command}: ${stderr}`)), timeoutMs)
       let buffer = ''
       child.stdout.on('data', chunk => {
         buffer += chunk
         for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
           const line = buffer.slice(0, end)
           buffer = buffer.slice(end + 1)
+          lines.push(line)
           if (JSON.parse(line).id === 1) { clearTimeout(timer); resolve(JSON.parse(line)) }
         }
       })
@@ -57,7 +65,7 @@ async function processesIn(directory) {
   return stdout.split('\n').filter(line => line.includes(directory))
 }
 
-test('the packed copy starts its daemon and both agents, and install writes an entry that starts it', { timeout: 900000 }, async t => {
+test('the packed copy starts its daemon and both agents, and install writes the npx entry of the last release', { timeout: 900000 }, async t => {
   // The shims compare real paths, and the temporary directory of macOS is a symbolic link.
   const scratch = await realpath(await mkdtemp(join(tmpdir(), 'megachat-package-')))
   const state = join(scratch, 'state')
@@ -120,20 +128,113 @@ test('the packed copy starts its daemon and both agents, and install writes an e
   const codexAnswer = await initialized(join(copy, 'bin', 'codex'), [], { env: { ...codex.env, CODEX_HOME: join(scratch, 'codex-home') }, cwd: scratch })
   assert.equal(codexAnswer.result?.agentInfo?.name, '@agentclientprotocol/codex-acp', JSON.stringify(codexAnswer))
 
-  // `install` writes an entry that starts the same copy. The checks depend on the machine, so only the entry counts.
+  // A copy without .git gets the npx entry of the last release. The checks depend on the machine, so only the entry
+  // counts. The second test runs that entry.
   const acpConfig = join(scratch, 'acp.json')
   const install = await execute(process.execPath, [launcher, 'install', state], { env: { ...daemonEnvironment, MEGACHAT_ACP_CONFIG: acpConfig } })
     .catch(error => error)
   t.diagnostic(`install exited with ${install.code ?? 0}:\n${install.stdout}`)
-  const { Megachat: entry } = JSON.parse(await readFile(acpConfig, 'utf8')).agent_servers
-  assert.deepEqual(entry.args, [launcher, 'acp'])
-  assert.equal(await realpath(entry.command), await realpath(process.execPath))
-  const entryAnswer = await initialized(entry.command, [...entry.args, state], { env: daemonEnvironment })
-  assert.equal(entryAnswer.result.agentInfo.version, manifest.version)
-  // The same build keeps the daemon: the entry started the same copy.
-  assert.deepEqual(JSON.parse(await readFile(join(state, 'daemon', 'connection.json'), 'utf8')), descriptor)
+  assert.deepEqual(JSON.parse(await readFile(acpConfig, 'utf8')).agent_servers.Megachat, RELEASE_ENTRY)
 
   await stopDaemon(state)
   for (let attempt = 0; attempt < 100 && (await processesIn(scratch)).length > 0; attempt++) await delay(100)
   assert.deepEqual(await processesIn(scratch), [])
 })
+
+/** The process ID in the connection file of the daemon of [state]. */
+async function daemonPid(state) {
+  return JSON.parse(await readFile(join(state, 'daemon', 'connection.json'), 'utf8')).pid
+}
+
+function alive(pid) {
+  try { process.kill(pid, 0); return true }
+  catch (error) { return error.code === 'EPERM' }
+}
+
+test('the npx entry starts the highest release tag, its daemon gets no environment of npm, and a higher tag replaces the daemon',
+  { timeout: 900000 }, async t => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), 'megachat-npx-')))
+    const state = join(scratch, 'state')
+    t.after(async () => {
+      try { await stopDaemon(state) }
+      finally { await rm(scratch, { recursive: true, force: true }) }
+    })
+    // The environment that the IDE gives an npx entry: no variable of npm, the npm variables of Air with a temporary
+    // cache, a home without Central, and a user with codex and claude on the PATH. The test sends no prompt, so these
+    // commands only show what the daemon finds. git must not read the configuration of the user.
+    const user = join(scratch, 'user', 'bin')
+    for (const directory of [user, join(scratch, 'home'), join(scratch, 'project')]) await mkdir(directory, { recursive: true })
+    for (const command of ['codex', 'claude']) await writeFile(join(user, command), '#!/bin/sh\n', { mode: 0o755 })
+    const ide = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^npm_/i.test(name) && !['INIT_CWD', 'NODE', 'COLOR'].includes(name)))
+    Object.assign(ide, {
+      HOME: join(scratch, 'home'), PATH: [user, dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter),
+      MEGACHAT_LEGACY_DIRS: '', MEGACHAT_ACP_CONFIG: join(scratch, 'acp.json'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      NPM_CONFIG_CACHE: join(scratch, 'npm-cache'), NPM_CONFIG_MIN_RELEASE_AGE: '0', NPM_CONFIG_GLOBAL: 'false', NPM_CONFIG_DRY_RUN: 'false',
+      NPM_CONFIG_INCLUDE: 'optional', NPM_CONFIG_ENGINE_STRICT: 'false', NPM_CONFIG_STRICT_PEER_DEPS: 'false', NODE_USE_SYSTEM_CA: '1',
+    })
+
+    // A repository with the files of this checkout, as GitHub has them, and the release tag of the version.
+    const repository = join(scratch, 'repository')
+    const gitEnvironment = { ...ide, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.com' }
+    const git = (...args) => execute('git', args, { cwd: repository, env: gitEnvironment })
+    const files = (await execute('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { cwd: root })).stdout.split('\0').filter(Boolean)
+    for (const file of files.filter(file => existsSync(join(root, file)))) {
+      await mkdir(dirname(join(repository, file)), { recursive: true })
+      await copyFile(join(root, file), join(repository, file))
+      await chmod(join(repository, file), (await stat(join(root, file))).mode & 0o777)
+    }
+    await git('init', '--quiet', '--initial-branch=main')
+    await git('add', '--all')
+    await git('commit', '--quiet', '--message', 'The release')
+    await git('tag', `v${manifest.version}`)
+
+    const npx = join(dirname(process.execPath), 'npx')
+    const args = RELEASE_ENTRY.args.map(arg => arg === RELEASE_SPEC ? `git+file://${repository}#semver:x` : arg)
+    const start = async (version, timeoutMs = 600000) => {
+      const lines = []
+      const started = Date.now()
+      const answer = await initialized(npx, [...args, state], { env: ide, cwd: join(scratch, 'project') }, { timeoutMs, lines })
+      assert.equal(answer.result?.agentInfo?.version, version, JSON.stringify(answer))
+      // The IDE reads the standard output as ACP, so npm must not write to it.
+      assert.deepEqual(lines.filter(line => JSON.parse(line).jsonrpc !== '2.0'), [])
+      return Math.round((Date.now() - started) / 100) / 10
+    }
+    const daemon = async () => {
+      const pid = await daemonPid(state)
+      const environment = await processEnvironment(pid)
+      assert.deepEqual(environment.names.filter(name => /^npm_/.test(name) || [...IDE_NPM_VARIABLES, 'INIT_CWD', 'NODE', 'COLOR'].includes(name)), [])
+      assert.ok(environment.names.includes('NODE_USE_SYSTEM_CA'))
+      assert.deepEqual(environment.path.split(delimiter).filter(entry => npmPathEntry(entry)), [])
+      // npx puts the node_modules/.bin directory of the copy first on its PATH, and that directory holds the codex of
+      // a dependency. The daemon finds the commands of the user.
+      assert.equal(await commandOnPath('codex', environment.path), join(user, 'codex'))
+      assert.equal(await commandOnPath('claude', environment.path), join(user, 'claude'))
+      return pid
+    }
+
+    t.diagnostic(`the first start took ${await start(manifest.version)} s`)
+    const first = await daemon()
+    const install = await execute(npx, ['-y', args[1], 'install', state], { env: ide, cwd: join(scratch, 'project') }).catch(error => error)
+    assert.match(install.stdout, /The IDE starts Megachat with npx and with its own Node\.js/)
+    const entry = await readFile(ide.MEGACHAT_ACP_CONFIG, 'utf8')
+    assert.deepEqual(JSON.parse(entry), { agent_servers: { Megachat: RELEASE_ENTRY } })
+    t.diagnostic(`a later start of the same release took ${await start(manifest.version)} s`)
+    assert.equal(await daemonPid(state), first)
+
+    // A higher tag is a new release. The next start installs it and replaces the daemon of the earlier release.
+    const [major, minor, patch] = manifest.version.split('.').map(Number)
+    const next = `${major}.${minor}.${patch + 1}`
+    await writeFile(join(repository, 'package.json'), `${JSON.stringify({ ...JSON.parse(await readFile(join(repository, 'package.json'), 'utf8')), version: next }, null, 2)}\n`)
+    await git('commit', '--quiet', '--all', '--message', 'The next release')
+    await git('tag', `v${next}`)
+    t.diagnostic(`the start of the new release took ${await start(next)} s`)
+    const second = await daemon()
+    assert.notEqual(second, first)
+    for (let attempt = 0; attempt < 100 && alive(first); attempt++) await delay(100)
+    assert.equal(alive(first), false)
+    assert.equal(await readFile(ide.MEGACHAT_ACP_CONFIG, 'utf8'), entry)
+
+    await stopDaemon(state)
+    for (let attempt = 0; attempt < 100 && (await processesIn(scratch)).length > 0; attempt++) await delay(100)
+    assert.deepEqual(await processesIn(scratch), [])
+  })

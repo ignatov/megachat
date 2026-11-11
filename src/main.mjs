@@ -20,8 +20,17 @@ import { install } from './MegachatInstall.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { ProjectWatchService } from './ProjectWatchService.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
+import { withoutNpm } from './npmEnvironment.mjs'
 
 process.umask(0o077)
+// The entry of `acp.json` starts Megachat with npx. The daemon and each other process that Megachat starts must get the
+// environment of the IDE, without the variables and the PATH entries of npm. The modules keep a reference to
+// `process.env`, so this changes the object in place.
+const environment = withoutNpm(process.env)
+if (environment !== process.env) {
+  for (const name of Object.keys(process.env)) delete process.env[name]
+  Object.assign(process.env, environment)
+}
 const command = process.argv[2]
 // An explicit directory selects isolated state for tests and development. Only the shared home migrates legacy state.
 const explicit = process.argv[3] !== undefined
@@ -124,8 +133,8 @@ async function connectLegacy() {
 
 /**
  * Connects to the daemon of the state directory, and starts a daemon when none runs. The daemon gets the environment of
- * this process, and `central run pi` gets all of it. So start the shared daemon from the environment of the IDE, not
- * from an agent shell that has its own Claude or Anthropic variables.
+ * this process without the environment of npm, and `central run pi` gets all of it. So start the shared daemon from the
+ * environment of the IDE, not from an agent shell that has its own Claude or Anthropic variables.
  */
 async function start() {
   let running

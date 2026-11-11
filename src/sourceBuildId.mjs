@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 
+/** Whether [root] is a git checkout: a package root with a `.git` entry. A worktree of git has a `.git` file. */
+export function gitCheckout(root) {
+  return existsSync(join(root, '.git'))
+}
+
 /**
  * The build id of the package in [root], when it is not the bundle. A git checkout, which is a root with a `.git`
  * entry, gives `dev`, so a pull keeps the running daemon. A copy without `.git`, such as an install of npm, gives the
@@ -11,7 +16,7 @@ import { join, relative, sep } from 'node:path'
  * This module has only `node:` imports, so a test can run it on a temporary copy.
  */
 export function sourceBuildId(root) {
-  if (existsSync(join(root, '.git'))) return 'dev'
+  if (gitCheckout(root)) return 'dev'
   const files = ['bin', 'resources', 'src'].flatMap(directory => readdirSync(join(root, directory), { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile()).map(entry => relative(root, join(entry.parentPath, entry.name)).split(sep).join('/')))
   const hash = createHash('sha256')
