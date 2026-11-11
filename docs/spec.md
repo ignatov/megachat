@@ -199,6 +199,11 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Saved source changes in registered projects may trigger a project-event turn while the IDE is closed. The turn may hold a proposal only with `MEGACHAT_SUGGESTIONS=1`.
 - The watcher must ignore generated files and read no source contents.
   [@test] ../test/project-watch.test.mjs
+- Without the setting `events.enabled`, Megachat must report no project event. It must drop the events that wait for a turn, so they do not come later as a burst.
+- Megachat must not report a path that matches a pattern of the setting `events.ignore`. The default patterns are `*.tmbundle`, `build/download` and `.claude/settings.local.json`. The built-in ignore list of the watcher must stay.
+- A pattern must be a glob on the project-relative path: `*` in one segment, `**` across segments, `?` for one character. A pattern without a slash must match a name at each depth. A path in a matching directory must match too.
+- An event of which each path matches must not be recorded. A change of these settings must apply to the next file event, in the watcher and for an event from a client.
+  [@test] ../test/event-filter.test.mjs
 
 ## Data & Backend
 

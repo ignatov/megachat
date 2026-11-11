@@ -34,6 +34,9 @@ export class ProjectWatchService {
         entry.watcher = watch(cwd, { recursive: true, persistent: false }, (_event, file) => {
           const path = projectSourcePath(file)
           if (!path || this.closed) return
+          // The settings of the project events apply to each file event. The state applies them again to the batch.
+          const filter = this.state.projectFilter?.()
+          if (filter && (!filter.enabled || filter.ignored(path))) return
           if (entry.paths.size < 100) entry.paths.add(path)
           entry.timer ??= setTimeout(() => this.flush(cwd, entry), this.debounceMs)
         })

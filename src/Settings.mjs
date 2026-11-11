@@ -3,6 +3,7 @@ import { basename } from 'node:path'
 import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai/models'
 import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
 import { logEvent, message, requireCondition } from './messages.mjs'
+import { DEFAULT_EVENT_IGNORE, eventPatterns } from './ProjectEventFilter.mjs'
 
 /** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
 export const COMPACT_TOKENS_VARIABLE = 'MEGACHAT_COMPACT_TOKENS'
@@ -99,6 +100,9 @@ export const SETTINGS = [
   { key: 'children.push', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS),
     allowed: () => ({ values: CHILD_PERMISSIONS }) },
+  { key: 'events.enabled', default: true, applies: 'nextEvent', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
+  { key: 'events.ignore', default: DEFAULT_EVENT_IGNORE, applies: 'nextEvent', validate: eventPatterns,
+    allowed: () => ({ other: message('settings.ignore.other') }) },
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))

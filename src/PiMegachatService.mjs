@@ -2,11 +2,12 @@ import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
 import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
-import { bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
+import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
+import { eventMatcher } from './ProjectEventFilter.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
@@ -145,6 +146,7 @@ export class PiMegachatService {
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
+    state.projectFilter = () => service.projectFilter()
     Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions })
     service.adopt(values)
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
@@ -237,6 +239,14 @@ export class PiMegachatService {
     return next
   }
 
+  /** The settings of the project events for the next file event. The matcher is made again only after a change. */
+  projectFilter() {
+    const patterns = this.settings.entry('events.ignore').value
+    const key = JSON.stringify(patterns)
+    if (this.ignoredKey !== key) Object.assign(this, { ignoredKey: key, ignored: eventMatcher(patterns) })
+    return { enabled: this.settings.entry('events.enabled').value, ignored: this.ignored }
+  }
+
   /** The rules paragraph of the next child. It reads the stored settings, so a change in a turn reaches the next child. */
   childRules() {
     return childRulesText(this.settings.values())
@@ -280,7 +290,8 @@ export class PiMegachatService {
         return result({ agents: ['claude', 'codex'], defaultAgent: this.settings.values()['children.agent'], workspaces: directoriesOf(state), runs,
           ...(this.suggestions ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
-      tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })), value: opt(union([str({ maxLength: 200 }), num(), bool()])),
+      tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
+        value: opt(union([str({ maxLength: 2000 }), num(), bool(), arr(str({ maxLength: 200 }), { maxItems: 50 })])),
         status: opt(str({ maxLength: 20 })) }), async args => result(await this.settingsTool(args))),
       tool('history', obj({ beforeEntryId: opt(int({ minimum: 1 })), query: opt(str({ maxLength: 200 })), cursor: opt(str({ maxLength: 20 })) }),
         async args => result(await this.history(args))),

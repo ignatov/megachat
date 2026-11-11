@@ -136,6 +136,8 @@ export class MegachatState {
     this.root = root
     this.resumeDelayMs = resumeDelayMs
     this.reportRetryDelayMs = reportRetryDelayMs
+    // The service replaces this with the settings `events.enabled` and `events.ignore`. It reads them at each call.
+    this.projectFilter = () => ({ enabled: true, ignored: () => false })
   }
 
   async initialize() {
@@ -270,10 +272,17 @@ export class MegachatState {
     })
   }
 
-  async projectChanged({ cwd, revision, paths }) {
+  /**
+   * Records a change of a project. Without project events, or when each path matches a pattern of `events.ignore`, the
+   * change is not recorded, so it cannot start a turn later.
+   */
+  async projectChanged({ cwd, revision, paths: changed }) {
     requireCondition(typeof revision === 'string' && revision.length > 0 && revision.length <= 200)
-    requireCondition(Array.isArray(paths) && paths.length > 0 && paths.length <= 100
-      && paths.every(path => typeof path === 'string' && path.length > 0 && path.length <= 4096))
+    requireCondition(Array.isArray(changed) && changed.length > 0 && changed.length <= 100
+      && changed.every(path => typeof path === 'string' && path.length > 0 && path.length <= 4096))
+    const filter = this.projectFilter()
+    const paths = filter.enabled ? changed.filter(path => !filter.ignored(path)) : []
+    if (!paths.length) return { accepted: false, ignored: true }
     return this.change(state => {
       requireCondition(state.workspaces.includes(cwd), 'workspace')
       const initiative = state.initiative
@@ -292,6 +301,11 @@ export class MegachatState {
   async nextProjectEvent() {
     return this.change(async (state, tx) => {
       if (state.current || state.initiative.silenced) return null
+      // A user who turns the project events off does not want the waiting events later as a burst.
+      if (!this.projectFilter().enabled) {
+        state.initiative.pending = {}
+        return null
+      }
       const event = Object.values(state.initiative.pending)[0]
       if (!event) return null
       retain(state)
