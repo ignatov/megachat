@@ -310,7 +310,7 @@ export class PiMegachatService {
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: 'air.megachat', sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
-      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.notice) },
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice)) },
     ], hooks: [
       // Each reply of the model, also a reply with tool calls, is one request that costs money.
       hook(GenerationTask, { afterResponse: (answer, api) => this.countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
@@ -545,9 +545,10 @@ export class PiMegachatService {
       if (settled.status !== 'done') reason = settled.reason
     }
     catch { this.lifetime.signal.throwIfAborted(); status = 'interrupted' }
-    // The turn had the warning about the spend in its rules. A failed turn keeps it for the next turn.
+    // The turn had the warning about the spend in its rules. A failed turn keeps it for the next turn. A warning of an
+    // earlier day changes no record of today, and the new settings drop it.
     if (this.notice && status === 'completed') {
-      this.spend.shown()
+      this.spend.shown(this.notice.day)
       this.settingsPending = true
     }
     // The turn still holds the state, so the next turn starts with the new settings.

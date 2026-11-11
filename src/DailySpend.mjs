@@ -72,17 +72,25 @@ export class DailySpend {
     return true
   }
 
-  /** The warning for the next turn, or `undefined`. A lower limit can make a warning pending, and a higher one hides it. */
+  /**
+   * The warning for the next turn with its day, or `undefined`. A lower limit can make a warning pending, and a higher
+   * one hides it.
+   */
   notice(limit) {
     if (this.check(limit)) this.save()
     const data = this.today()
-    return data.warning === 'pending' && limit > 0 && data.usd > limit ? { usd: data.usd, limit } : undefined
+    return data.warning === 'pending' && limit > 0 && data.usd > limit ? { day: data.day, usd: data.usd, limit } : undefined
   }
 
-  /** The turn with the warning ended, so the warning does not come again today. */
-  shown() {
+  /** Gives [notice] when it is a warning of today, else `undefined`. The spend of an earlier day is not the spend of today. */
+  current(notice) {
+    return notice && notice.day === localDay(this.clock.now()) ? notice : undefined
+  }
+
+  /** The turn with the warning of [day] ended, so the warning does not come again on that day. */
+  shown(day) {
     const data = this.today()
-    if (data.warning !== 'pending') return
+    if (data.day !== day || data.warning !== 'pending') return
     data.warning = 'shown'
     this.save()
   }

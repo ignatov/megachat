@@ -42,11 +42,11 @@ test('the count of a day stays in a private file across a restart, starts again 
   const second = await DailySpend.open(path, clock)
   assert.deepEqual(second.report(1), { day: localDay(clock.now()), usd: 0.8, limit: 1, warned: false })
   assert.equal(second.add(0.4, 1), true)
-  assert.deepEqual(second.notice(1), { usd: 1.2000000000000002, limit: 1 })
+  assert.deepEqual(second.notice(1), { day: localDay(clock.now()), usd: 1.2000000000000002, limit: 1 })
   // A higher limit hides the warning, and a lower one brings it back.
   assert.equal(second.notice(5), undefined)
   assert.ok(second.notice(1))
-  second.shown()
+  second.shown(localDay(clock.now()))
   assert.equal(second.add(1, 1), false)
   assert.equal(second.notice(1), undefined)
   await second.save()
@@ -143,6 +143,35 @@ test('the main agent warns one time each day when the spend of its requests pass
   await say('fifth', 'A question.')
   assert.match(requests.at(-1).system, WARNING)
   assert.equal((await tool({ action: 'get' })).spend.day, localDay(clock.now()))
+})
+
+test('a warning that waits at the midnight is not shown on the next day, and the next day gets its own warning', { timeout: 30000 }, async t => {
+  const directory = await temporary(t)
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done',
+    values: { 'coordinator.model': 'faux/priced', 'budget.dailyUsd': 0.000001 } }), { mode: 0o600 })
+  const clock = fakeClock()
+  const { service, requests, say } = await open(t, directory, clock)
+  // A late turn passes the limit, and the warning waits for the next turn.
+  await say('late', 'A question.')
+  assert.ok(service.notice)
+  clock.advance(3 * HOUR)
+  // The first turn of the next day has no line with the spend of the earlier day.
+  await say('morning', 'A question.')
+  assert.doesNotMatch(requests.at(-1).system, WARNING)
+  // That turn passed the limit of the new day, so the next turn has the warning of the new day.
+  await say('next', 'A question.')
+  assert.match(requests.at(-1).system, WARNING)
+  await say('after', 'A question.')
+  assert.doesNotMatch(requests.at(-1).system, WARNING)
+  // A warning of an earlier day does not mark the record of today.
+  const spend = await DailySpend.open(undefined, clock)
+  spend.add(1, 0.5)
+  const notice = spend.notice(0.5)
+  clock.advance(24 * HOUR)
+  assert.equal(spend.current(notice), undefined)
+  spend.add(1, 0.5)
+  spend.shown(notice.day)
+  assert.equal(spend.data.warning, 'pending')
 })
 
 test('a summary request counts, and a restart of the daemon keeps the count of the day', { timeout: 30000 }, async t => {

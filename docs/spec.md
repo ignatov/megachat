@@ -179,6 +179,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Megachat must count the cost of each model request of the main agent on the local day: each reply, also a reply with tool calls, each summary and each keep-alive request. A request without a cost from its provider must get the cost from the prices of its model data. The cost of the children must not be in the count.
 - The count must stay in `spend.json` in the state directory with the mode 0600, so a daemon restart keeps it. The count must start again at the local midnight.
 - When the count passes the limit, the rules of the next turn must hold one line with the spend and the limit, which asks for one short warning. The line must go away after a completed turn that had it. The user must get at most one warning on each day. Megachat must not stop the work.
+- A warning that waits at the local midnight must not go into a turn of the next day, and it must not mark the warning of the next day as shown.
 - `agents_settings get` must give the spend of the day, the limit, whether the warning went out, and a note that the children are not in the count.
   [@test] ../test/spend.test.mjs
 - The tool `agents_accounts` must check Claude Code and Codex in parallel. It must start each agent as a child starts, ask for `initialize` and `session/new` in the workspace of Megachat, send no prompt, and close the process after the check.
