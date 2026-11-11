@@ -74,3 +74,22 @@ test('the daemon accepts an input of 100,000 characters that are not ASCII, and 
   await assert.rejects(daemon.json('/input', { requestId: 'larger', text: 'x'.repeat(1000001) }))
   assert.equal(received.length, 1)
 })
+
+test('the daemon answers /health while more than 32 views hold an event stream', { timeout: 20000 }, async t => {
+  // Each stream starts a watch of its own.
+  const server = new DaemonServer({ root: { watch: async () => new Watch({ entries: [] }, () => {}, assert.fail) },
+    state: { watch: async () => new Watch({ current: null }, () => {}, assert.fail) } })
+  const daemon = new DaemonClient(await server.listen())
+  const abort = new AbortController()
+  t.after(async () => { abort.abort(); await server.close() })
+  // One bridge has at most 32 views, and each view holds one stream. A second bridge adds its own views.
+  const streams = Array.from({ length: 40 }, () => {
+    const opened = Promise.withResolvers()
+    const watching = daemon.watch(event => { if (event.type === 'tasks') opened.resolve() }, abort.signal)
+    watching.catch(opened.reject)
+    watching.catch(() => {})
+    return opened.promise
+  })
+  await Promise.all(streams)
+  assert.equal((await daemon.json('/health')).version, 1)
+})

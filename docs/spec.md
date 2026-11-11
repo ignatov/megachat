@@ -31,6 +31,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A large conversation must not disconnect a client while it receives updates.
 - An idle client connection must stay open while the daemon is available.
 - Waiting for a long task must keep the connection open until the task ends or the client disconnects.
+- The daemon must accept 1,024 connections at a time. The event streams of many views must not block `/health`, a new
+  view or a command.
   [@test] ../test/transport.test.mjs
 - A permission request must stay pending without a connected client.
 - Reconnection must show the pending request without starting the task again.

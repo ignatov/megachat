@@ -28,7 +28,12 @@ export class DaemonServer {
     })
     this.server.requestTimeout = 15000
     this.server.headersTimeout = 10000
-    this.server.maxConnections = 32
+    // Each view holds one `/events` stream, and one `/wait` while its prompt runs. One bridge has at most 32 views, and
+    // each product window and each command connects too. At the limit, the server closes each new connection, so
+    // `start` finds no daemon. So the real use must not reach the limit: 1,024 is 16 bridges with 32 busy views each.
+    // The limit stays far below the file limit that Node.js sets for itself. The server listens on 127.0.0.1 only, and
+    // it checks the token before it reads a body.
+    this.server.maxConnections = 1024
   }
 
   async listen() {
