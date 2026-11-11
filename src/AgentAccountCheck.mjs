@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk'
+import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
 import { MegachatError, message } from './messages.mjs'
 import { CHILD_AGENTS } from './Settings.mjs'
@@ -29,7 +30,7 @@ async function checkAgent(configuration, agent, { cwd, timeoutMs, launch: overri
   let connection
   const child = spawn(process.execPath, [fileURLToPath(new URL('./child-supervisor.mjs', import.meta.url)),
     launch.command ?? process.execPath, ...launch.args ?? []], {
-    cwd: launch.cwd ?? cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    cwd: launch.cwd ?? cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
   })
   // The output of the agent can hold a secret, so the check reads none of it.
   child.stderr.resume()

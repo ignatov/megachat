@@ -4,6 +4,7 @@ import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { waitForState } from './waitForState.mjs'
+import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 
@@ -90,7 +91,7 @@ export class AcpRunService {
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
       child = spawn(process.execPath, [fileURLToPath(new URL('./child-supervisor.mjs', import.meta.url)),
         launch.command ?? process.execPath, ...launch.args], {
-        cwd: launch.cwd ?? run.cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+        cwd: launch.cwd ?? run.cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       })
       child.once('error', () => { child.stdout.destroy(); child.stdin.destroy() })
       child.once('exit', () => connection?.close())

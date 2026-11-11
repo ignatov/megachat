@@ -1,8 +1,11 @@
 import { spawn } from 'node:child_process'
 import { Socket } from 'node:net'
+import { applyFileMask } from './fileMask.mjs'
 
 // The private pipe closes when the daemon exits, including after SIGKILL.
 const lifetime = new Socket({ fd: 3, readable: true, writable: false })
+// The daemon has the mask 077. The agent gets the mask of the user, as in a terminal.
+applyFileMask()
 const child = spawn(process.argv[2], process.argv.slice(3), {
   stdio: ['pipe', 'pipe', 'pipe'], detached: true,
 })

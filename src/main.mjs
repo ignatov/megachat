@@ -15,6 +15,7 @@ import { AcpRunService } from './AcpRunService.mjs'
 import { DaemonClient } from './DaemonClient.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
+import { restrictFileMask } from './fileMask.mjs'
 import { daemonBuild, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
 import { install } from './MegachatInstall.mjs'
@@ -23,7 +24,8 @@ import { ProjectWatchService } from './ProjectWatchService.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { withoutNpm } from './npmEnvironment.mjs'
 
-process.umask(0o077)
+// The files of Megachat are private to the user. A child agent gets the first mask of the user, see `fileMask.mjs`.
+restrictFileMask()
 // The entry of `acp.json` starts Megachat with npx. The daemon and each other process that Megachat starts must get the
 // environment of the IDE, without the variables and the PATH entries of npm. The modules keep a reference to
 // `process.env`, so this changes the object in place.

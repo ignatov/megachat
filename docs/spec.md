@@ -386,6 +386,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Without these variables, Megachat must start the agents that npm installed with it. The module system finds them in
   `node_modules` of a checkout and next to an installed copy.
 - The node that runs Megachat must come before the other directories on the `PATH` of its children. For Codex, the `bin` directory of Megachat comes before that node, because it holds the `codex` command that Central starts.
+- A child agent must get the file mask (umask) that the user had when Megachat started, so a file that a task writes
+  gets the mode that the same agent gives it in a terminal. A daemon that `start` started must get that mask from
+  `start`, not from its own mask. The daemon must keep the mask 077 for its own files.
   [@test] ../test/launch.test.mjs
   [@test] ../test/package.mjs
 - The daemon must publish its build and a digest of the agent commands in its connection file.

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +11,7 @@ import manifest from '../package.json' with { type: 'json' }
 import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from '../src/CentralConfigurationService.mjs'
 import { daemonBuild, needsReplacement } from '../src/MegachatBuild.mjs'
 import { sourceBuildId } from '../src/sourceBuildId.mjs'
+import { stopDaemon } from './stop-daemon.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 
@@ -134,4 +137,33 @@ test('the environment of a Claude child has the Central configuration and no bac
   await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'https://example.com/wire/test' } }))
   t.mock.method(process.stderr, 'write', () => true)
   await assert.rejects(configuration.childEnvironment(), { code: 'central' })
+})
+
+test('a child agent gets the file mask of the user, and the daemon keeps the mask 077 for its own files', { timeout: 60000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-mask-'))
+  const agents = await realpath(await mkdtemp(join(tmpdir(), 'megachat-mask-agents-')))
+  t.after(async () => {
+    try { await stopDaemon(directory) }
+    finally {
+      await rm(directory, { force: true, recursive: true })
+      await rm(agents, { force: true, recursive: true })
+    }
+  })
+  for (const name of ['claude', 'codex', 'workspace']) await mkdir(join(agents, name))
+  // The mask 027 differs from the usual 022 of the test runner and from the 077 of Megachat. `start` sets 077 before it
+  // starts the daemon, so only the mask that `start` got can reach the agent.
+  const starting = spawn('/bin/sh', ['-c', 'umask 027; exec "$0" "$@"', process.execPath, join(root, 'src', 'main.mjs'), 'start', directory], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env: { ...process.env, NODE_OPTIONS: `--import "${join(root, 'test', 'mask-daemon.mjs')}"`, MEGACHAT_TEST_MASK_AGENTS: agents },
+  })
+  let errors = ''
+  starting.stderr.on('data', chunk => { errors += chunk })
+  const [code] = await once(starting, 'exit')
+  assert.equal(code, 0, errors)
+  const { accounts } = JSON.parse(await readFile(join(agents, 'accounts.json'), 'utf8'))
+  assert.deepEqual(accounts.map(account => account.status), ['started', 'started'])
+  for (const agent of ['claude', 'codex']) {
+    assert.equal((await stat(join(agents, agent, 'session-request.json'))).mode & 0o777, 0o640, agent)
+  }
+  assert.equal((await stat(join(directory, 'conversation.sqlite'))).mode & 0o777, 0o600)
 })
