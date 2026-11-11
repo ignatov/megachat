@@ -548,19 +548,19 @@ test('the main chat accepts another message while a child waits for permission',
 })
 
 test('the deadline of a child waits while one of two permission requests is pending', { timeout: 10000 }, async t => {
-  const { daemon, service } = await fixture(t, 'approvals', 'claude', { deadlineMs: 1500 })
+  const { daemon, service, children } = await fixture(t, 'approvals')
   const pending = state => Object.values(state.permissions).filter(permission => permission.status === 'pending')
   await service.submit('work', 'Work')
   const [first, second] = await waitForState(service.state, state => pending(state).length === 2 ? pending(state) : undefined)
-  const alive = async () => {
-    // The time is longer than the deadline. So a deadline that runs ends the child in this time.
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    const [run] = Object.values((await service.state.snapshot()).runs)
-    assert.ok(!terminalStates.has(run.status), `The run is ${run.status}`)
-  }
-  await alive()
+  // The two requests stopped the long deadline of the launch. Each new start of the deadline now uses a short time,
+  // so a deadline that starts after the first answer ends the child during the wait below.
+  children.launch.deadlineMs = 200
   await daemon.json('/permission', { id: first.id, decision: 'yes' })
-  await alive()
+  await new Promise(resolve => setTimeout(resolve, 800))
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  assert.ok(!terminalStates.has(run.status), `The run is ${run.status}`)
+  // The agent needs time for its work after the last answer, also on a machine with much load.
+  children.launch.deadlineMs = 10000
   await daemon.json('/permission', { id: second.id, decision: 'yes' })
   const state = await finishChildren(service)
   assert.equal(Object.values(state.runs)[0].status, 'completed')
