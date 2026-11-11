@@ -26,9 +26,11 @@ const SECRET_PATTERNS = [
 ]
 /**
  * An assignment such as `password=...`, `"api_key": "..."` or `TOKEN: ...` with a value of at least 8 characters and
- * at least one letter. A number, such as a count of tokens, stays.
+ * at least one letter. A number, such as a count of tokens, stays. A quote can have a backslash before it, as in the
+ * JSON text of the arguments of a tool call: `\"password\": \"...\"`. A value has no backslash. The name has at
+ * most 64 characters before the word, so a long line of hex with dashes takes a linear time.
  */
-const ASSIGNMENT = /\b((?:[A-Za-z0-9_-]*(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)s?)["']?\s*[:=]\s*["']?)((?=[^\s"'`,;&]*[A-Za-z])[^\s"'`,;&]{8,})/gi
+const ASSIGNMENT = /\b((?:[A-Za-z0-9_-]{0,64}?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential)s?)\\?["']?\s*[:=]\s*\\?["']?)((?=[^\s"'`,;&\\]*[A-Za-z])[^\s"'`,;&\\]{8,})/gi
 
 /** Replaces each text that looks like a secret with a marker. */
 export function redactSecrets(text) {

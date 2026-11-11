@@ -15,6 +15,7 @@ import { taskRows } from '../src/AcpBridge.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { RANK_WINDOW } from '../src/SessionIndex.mjs'
 import { sessionSources } from '../src/SessionSources.mjs'
+import { redactSecrets } from '../src/SessionText.mjs'
 import { entryText } from '../src/MegachatSearchIndex.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
@@ -446,6 +447,38 @@ test('the index keeps about 2 KB of an entry and replaces what looks like a secr
   assert.equal((await hits(index, 'claude', project, 'hunter2')).length, 0)
   assert.equal((await hits(index, 'claude', project, 'tailmarker')).length, 0)
   assert.equal((await hits(index, 'claude', project, 'xxxx')).length, 1)
+})
+
+test('the secret filter finds an assignment in a JSON text with escaped quotes, as in a tool call', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  await claudeSession(home, project, 'write', [claudeLine('a1', 'assistant', [{ type: 'tool_use', id: 't1', name: 'Write',
+    input: { file_path: 'config.json', content: '{"password": "hunter2hunter2", "api_key": "Zq9vX2mL7pR4tY8w"}' } }], project)])
+  const codex = await codexSession(home, project, 'curl', ['juniper question', 'answer'])
+  await appendFile(codex, `${JSON.stringify({ timestamp: iso(NOW - DAY), type: 'response_item', payload: { type: 'function_call', id: 'curl-call',
+    call_id: 'c2', name: 'shell', arguments: JSON.stringify({ cmd: `curl -d '{"password":"s3cr3tvalue9"}' https://x` }) } })}\n`)
+  const { index } = await service(t, directories, fakeState({ workspaces: [project] }))
+  await index.apply(ON)
+  await index.idle()
+  const texts = []
+  for (const [agent, id] of [['claude', 'write'], ['codex', 'curl']]) {
+    const session = await index.store.session(agent, project, id)
+    texts.push(...(await index.store.entries(session.id)).entries.map(entry => entry.text))
+  }
+  const all = texts.join('\n')
+  for (const secret of ['hunter2hunter2', 'Zq9vX2mL7pR4tY8w', 's3cr3tvalue9']) assert.ok(!all.includes(secret), secret)
+  assert.ok(all.includes(`\\"password\\": \\"${message('sessions.secret')}`), 'The name of the field stays')
+  assert.ok(all.includes('config.json'))
+  const marker = message('sessions.secret')
+  assert.equal(redactSecrets('DB_PASSWORD=s3cr3tvalue'), `DB_PASSWORD=${marker}`)
+  assert.equal(redactSecrets('https://x/?access_token=abcd1234efgh5678&x=1'), `https://x/?access_token=${marker}&x=1`)
+  assert.equal(redactSecrets('SPRING_DATASOURCE_HIKARI_CONNECTION_POOL_PASSWORD=s3cr3tvalue'), `SPRING_DATASOURCE_HIKARI_CONNECTION_POOL_PASSWORD=${marker}`)
+  assert.equal(redactSecrets('total_tokens: 123456789'), 'total_tokens: 123456789')
+  // A long line of hex with dashes took about 17 ms with an unbounded name before the bound of the name.
+  const line = 'a1f-'.repeat(1000)
+  const start = performance.now()
+  redactSecrets(line)
+  assert.ok(performance.now() - start < 50)
 })
 
 test('a title of a session goes through the secret filter and the limit of a title', async t => {
