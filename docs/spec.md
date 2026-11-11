@@ -347,6 +347,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - An entry with the entry ID of an entry in the index, such as a copy in a fork, must be in the index one time.
 - The index must keep at most about 2 KB of the text of each entry, tool calls and tool results included.
 - Before the index keeps a text, it must replace each text that looks like a secret with a marker: an API key with a well-known prefix, a Bearer token, a private key block, a JWT, and an assignment such as `password=` with a long value. This is a best effort: a secret of another shape can stay in the index.
+- Each title of a session, from the session file or from the first prompt, must go through the same filter, and the index must keep at most 200 characters of it.
 - The first pass must import the files of the projects of an IDE first, and the newest files first. The import must run in bounded batches with a pause between them, so the chat stays usable.
 - A file that the import cannot read must not stop a pass. The import must log the failure without a path or a text, skip the file until the file changes, and continue with the other files. A pass that failed must run again on the next change of a session file.
 - When Air sent `asyncTasks`, the chat must show the first pass, and a later pass of 20 files or more, as a background task with its progress. The output of `agents_settings` with `get` and of the session tools must give the state and the progress of the index.

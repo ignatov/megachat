@@ -7,6 +7,8 @@ export const ENTRY_TEXT_LIMIT = 2000
  * large line costs no large string. The secret filter then reads a bounded text.
  */
 export const SOURCE_TEXT_LIMIT = 8000
+/** The characters of a title that the session index keeps. */
+export const TITLE_LIMIT = 200
 
 /**
  * The patterns of the text that looks like a secret. Each one replaces the whole match, or for an assignment only the
@@ -48,4 +50,14 @@ export function indexedText(text) {
   // The cut must not leave the first half of a character at the end.
   if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1)
   return { text: kept, clipped }
+}
+
+/**
+ * A title as the session index keeps it: without secrets, and cut to [TITLE_LIMIT] characters. A title of a session
+ * file, such as a custom title of Claude Code or a thread name of Codex, can be long and can hold a secret.
+ */
+export function indexedTitle(title) {
+  let kept = redactSecrets(title.slice(0, 2 * ENTRY_TEXT_LIMIT)).slice(0, TITLE_LIMIT)
+  if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1)
+  return kept
 }

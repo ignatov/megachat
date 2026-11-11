@@ -1,5 +1,6 @@
 import { sep } from 'node:path'
 import { corrupt, deleteSidecar, fold, FTS_TABLE, matchExpression, openSidecar } from './SqliteSidecar.mjs'
+import { indexedTitle } from './SessionText.mjs'
 
 /** A change of the tables or of the parsers needs a new version. A file of another version is made again. */
 export const VERSION = 1
@@ -153,8 +154,10 @@ export class SessionIndex {
       const session = await tx.get('SELECT id, cwd, title, title_rank AS titleRank FROM sessions WHERE agent = ? AND session_id = ?', file.agent, meta.sessionId)
       await tx.run('INSERT INTO scopes (agent, cwd) VALUES (?, ?) ON CONFLICT (agent, cwd) DO NOTHING', file.agent, session.cwd)
       session.scope = (await tx.get('SELECT id FROM scopes WHERE agent = ? AND cwd = ?', file.agent, session.cwd)).id
-      let title = meta.title !== undefined && meta.titleRank >= session.titleRank && meta.title !== session.title
-        ? { text: meta.title, rank: meta.titleRank } : undefined
+      // Each title of a session file goes through the secret filter and the limit here, before the store keeps it.
+      const named = meta.title === undefined ? undefined : indexedTitle(meta.title)
+      let title = named !== undefined && meta.titleRank >= session.titleRank && named !== session.title
+        ? { text: named, rank: meta.titleRank } : undefined
       const { id: fileId } = await tx.get(`INSERT INTO files (path, agent, session, cwd, size, mtime_ms, ino, offset, state)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'indexed') ON CONFLICT (path) DO UPDATE SET session = excluded.session, cwd = excluded.cwd,
         size = excluded.size, mtime_ms = excluded.mtime_ms, ino = excluded.ino, offset = excluded.offset, state = 'indexed' RETURNING id`,

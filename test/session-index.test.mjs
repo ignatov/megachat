@@ -448,6 +448,28 @@ test('the index keeps about 2 KB of an entry and replaces what looks like a secr
   assert.equal((await hits(index, 'claude', project, 'xxxx')).length, 1)
 })
 
+test('a title of a session goes through the secret filter and the limit of a title', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz012345'
+  const custom = `Deploy with ${key} ${'y'.repeat(5000)}`
+  await claudeSession(home, project, 'titled', [
+    `${JSON.stringify({ type: 'custom-title', customTitle: custom, sessionId: 'titled' })}\n`,
+    claudeLine('u1', 'user', 'juniper prompt', project),
+  ])
+  const state = fakeState({ workspaces: [project] })
+  const { index } = await service(t, directories, state)
+  await index.apply(ON)
+  await index.idle()
+  const [hit] = await hits(index, 'claude', project, 'Deploy')
+  assert.ok(hit.session.title.startsWith(`Deploy with ${message('sessions.secret')}`), hit.session.title.slice(0, 80))
+  assert.ok(hit.session.title.length <= 200)
+  assert.ok(hit.entry.text.length <= 200)
+  assert.equal((await hits(index, 'claude', project, 'abcdefghijklmnop')).length, 0)
+  assert.ok(!JSON.stringify(state.summaries).includes('abcdefghijklmnop'), 'The summary has no secret')
+  assert.ok(state.summaries[0].unfinished[0].title.length <= 200)
+})
+
 test('a version change makes the index again from the session files without a second summary', async t => {
   const directories = await fixture(t)
   const { home, project, path } = directories
