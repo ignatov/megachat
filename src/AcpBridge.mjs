@@ -158,7 +158,9 @@ class AcpBridgeSession {
     // A later attach of the same ID, or the end of the connection, can close this view during the attach. Then the
     // attach ends at its next step, so the closed view starts no watch and no timer.
     const open = () => requireCondition(!this.closed, 'missing')
-    await this.daemon.json('/workspace', { cwd: ctx.params.cwd })
+    // The daemon refuses a directory that it cannot read, such as a deleted project. The view attaches without it.
+    try { await this.daemon.json('/workspace', { cwd: ctx.params.cwd }) }
+    catch (error) { if (!(error instanceof MegachatError)) throw error }
     open()
     await this.refreshWorkspaces()
     open()

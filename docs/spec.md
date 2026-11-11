@@ -325,6 +325,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The root of a new project must be in the home directory or in a root of `MEGACHAT_PROJECT_ROOTS`, out of a hidden directory and out of the state directory. The daemon may make a root that does not exist. Only a turn of the user may make a project.
   [@test] ../test/discovery.test.mjs
 - A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
+  This also applies to the working directory of `session/new` and `session/load`.
 - The daemon must run at most one child at a time.
 - It may retain at most eight unfinished child tasks, including queued tasks.
 - Claude background tasks must be disabled. A child run ends with its ACP prompt.

@@ -617,6 +617,18 @@ test('a project directory that does not exist does not stop the attach or the ot
   assert.ok(!workspaces.some(directory => directory.endsWith('deleted')))
 })
 
+test('a working directory of the view that the daemon cannot read does not stop session/new or session/load', { timeout: 10000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t)
+  const deleted = join(cwd, 'deleted')
+  const opened = await attach(daemon, deleted, { native: true })
+  t.after(() => opened.connection.close())
+  assert.match(opened.sessionId, /^megachat-/)
+  const loaded = await attach(daemon, deleted, { native: true, loading: true })
+  t.after(() => loaded.connection.close())
+  assert.ok(loaded.updates.some(event => event.update.sessionUpdate === 'session_info_update'))
+  assert.ok(!(await service.state.snapshot()).workspaces.some(directory => directory.endsWith('deleted')))
+})
+
 test('the main chat accepts another message while a child waits for permission', { timeout: 10000 }, async t => {
   const { daemon, cwd, fake, service } = await fixture(t)
   fake.setResponses([
