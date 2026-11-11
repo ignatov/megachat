@@ -455,3 +455,18 @@ test('the setup rules name each setting of this build and no other setting', asy
   const named = new Set(rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g))
   assert.deepEqual([...named].sort(), SETTINGS.map(setting => setting.key).sort())
 })
+
+test('each setting of the children, the events, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {
+  const directory = await temporary(t)
+  const values = { 'children.agent': 'codex', 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
+    'events.enabled': false, 'events.ignore': ['gen/**'], 'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
+  const first = await open(t, directory)
+  for (const [key, value] of Object.entries(values)) await first.tool({ action: 'set', key, value })
+  await first.close()
+  const second = await open(t, directory)
+  const described = (await second.tool({ action: 'get' })).settings
+  for (const [key, value] of Object.entries(values)) {
+    const entry = described.find(item => item.key === key)
+    assert.deepEqual([entry.value, entry.source], [value, 'setting'], key)
+  }
+})

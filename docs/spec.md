@@ -165,6 +165,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - `allow` must let the child do the step. `deny` must forbid the step, also when the task asks for it. `ask` must forbid the step unless the task says that the user approved it. The child must then say in its result that the step is necessary.
 - The rules of the main agent must give the default agent and the three values, so the agent does not promise the user other rules.
 - A project event or a child result must not change these settings.
+- A daemon restart must keep each setting of the children, the project events, the known repositories and the spend limit.
+  [@test] ../test/settings.test.mjs
   [@test] ../test/child-settings.test.mjs
 - The setting `budget.dailyUsd` must be a daily spend limit of the main agent in USD, from 0 to 100,000. The default 0 means no limit.
 - Megachat must count the cost of each model request of the main agent on the local day: each reply, also a reply with tool calls, each summary and each keep-alive request. A request without a cost from its provider must get the cost from the prices of its model data. The cost of the children must not be in the count.
