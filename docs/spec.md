@@ -144,6 +144,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Only one daemon may own a storage directory.
 - A second daemon must fail at once. A second product must connect to the running daemon.
 - A start that loses the race with a concurrent start must stop its own daemon.
+- A start must wait for its daemon while the daemon process lives, at most 2 minutes. It must not stop after a count of attempts.
+- A start must end at once when its daemon ends with an error.
+- A daemon that finds another daemon on its directory must end with the exit code 3.
+- When that other daemon does not answer, the start must start a daemon again after a delay. One start must make at most five daemon processes.
 - When the shared directory has no conversation, the daemon must copy the conversation once from an earlier directory: `~/Library/Application Support/JetBrains/AirMegachat` on macOS.
 - `MEGACHAT_LEGACY_DIRS` may replace the list of earlier directories. An empty value gives an empty list.
 - The copy must include committed WAL content and pass an integrity check before the daemon uses it.

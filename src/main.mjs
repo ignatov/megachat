@@ -28,6 +28,10 @@ const explicit = process.argv[3] !== undefined
 const directory = explicit ? resolve(process.argv[3]) : defaultStateDirectory()
 const build = daemonBuild()
 const log = text => process.stderr.write(`${new Date().toISOString()} ${text}\n`)
+/** The exit code of a daemon that found another daemon on its directory. `start` reads it. */
+const LOCK_EXIT_CODE = 3
+/** The longest wait of `start` for a daemon. The first start after a move of the state copies the conversation. */
+const START_TIMEOUT_MS = 120000
 
 async function daemon() {
   await ensurePrivateDirectory(directory)
@@ -68,9 +72,9 @@ async function daemon() {
   catch (error) { await shutdown(); throw error }
 }
 
-async function connect(target = directory) {
+async function connect(target = directory, signal) {
   const client = await DaemonClient.connect(target)
-  client.health = await client.json('/health')
+  client.health = await client.json('/health', undefined, signal)
   return client
 }
 
@@ -123,24 +127,54 @@ async function start() {
   if (legacy) return legacy
   assertSupportedState(join(directory, 'conversation.sqlite'))
   await ensurePrivateDirectory(join(directory, 'daemon'))
+  const deadline = Date.now() + START_TIMEOUT_MS
+  // The daemon of this start can find another daemon on the directory, and that daemon can be at its end. Then a new
+  // daemon is necessary. The count and the longer delays keep one start from many daemon processes.
+  for (let spawns = 1, retryMs = 500; ; spawns++, retryMs *= 2) {
+    const child = await spawnDaemon()
+    const client = await waitForDaemon(child, () => child.ended !== undefined || Date.now() >= deadline)
+    if (client) return client
+    if (child.ended !== LOCK_EXIT_CODE || Date.now() >= deadline) break
+    const retryAt = spawns < 5 ? Math.min(deadline, Date.now() + retryMs) : deadline
+    const owner = await waitForDaemon(child, () => Date.now() >= retryAt)
+    if (owner) return owner
+    if (Date.now() >= deadline) break
+  }
+  throw new MegachatError('unavailable')
+}
+
+/** Starts a daemon process in the background. `ended` gets its exit code when it ends. */
+async function spawnDaemon() {
   const output = await open(join(directory, 'daemon', 'daemon.log'), 'a', 0o600)
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', ...(explicit ? [directory] : [])], {
     detached: true, stdio: ['ignore', output.fd, output.fd], env: { ...process.env, ...(explicit ? {} : { MEGACHAT_HOME: directory }) },
   })
   await output.close()
-  let failed = false
-  child.once('error', () => { failed = true })
+  child.once('error', () => { child.ended ??= 1 })
+  child.once('exit', code => { child.ended ??= code ?? 1 })
   child.unref()
-  for (let attempt = 0; attempt < 100 && !failed; attempt++) {
+  return child
+}
+
+/**
+ * Connects to the daemon of the directory, and tries again until [done] says to stop. The wait has no count of
+ * attempts: a daemon that copies or indexes a large conversation needs more than a few seconds for its start.
+ */
+async function waitForDaemon(child, done) {
+  for (;;) {
     let client
-    try { client = await connect() }
-    catch { await delay(100); continue }
-    // When a concurrent start won, its daemon holds the lock. The daemon of this start then waits only for the lock.
-    // It takes over the directory when the other daemon stops, also after a removal of the directory. So stop it now.
-    if (client.health.pid !== child.pid) child.kill()
-    return client
+    // A daemon that does not answer must not hold one attempt for the usual 15 seconds.
+    try { client = await connect(directory, AbortSignal.timeout(2000)) }
+    catch { /* No daemon answers yet. */ }
+    if (client) {
+      // When a concurrent start won, its daemon holds the lock. A daemon of this start that did not look at the lock
+      // yet ends on the lock, also after a removal of the directory. So stop it now.
+      if (client.health.pid !== child.pid) child.kill()
+      return client
+    }
+    if (done()) return undefined
+    await delay(100)
   }
-  throw new MegachatError('unavailable')
 }
 
 try {
@@ -166,5 +200,5 @@ try {
 }
 catch (error) {
   process.stderr.write(`${error instanceof MegachatError ? error.message : message('error.unavailable')}\n`)
-  process.exitCode = 1
+  process.exitCode = command === 'daemon' && error.code === 'lock' ? LOCK_EXIT_CODE : 1
 }

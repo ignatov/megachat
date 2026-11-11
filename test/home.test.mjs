@@ -158,7 +158,7 @@ async function sharedDaemon(home, env) {
   assert.deepEqual(JSON.parse(await readFile(join(home, 'daemon', 'connection.json'), 'utf8')), descriptor)
   const started = Date.now()
   const duplicate = await run(['daemon'], env)
-  assert.equal(duplicate.code, 1)
+  assert.equal(duplicate.code, 3)
   assert.match(duplicate.output, /Another Megachat daemon owns this directory/)
   assert.ok(Date.now() - started < 5000)
   if (process.platform !== 'win32') assert.equal(await mode(home), 0o700)
@@ -246,4 +246,60 @@ test('a start that cannot open the state does not stop the running daemon', { ti
   assert.match(refused.output, /created by a newer Megachat build/)
   assert.equal(alive(daemon.pid), true)
   assert.deepEqual(await published(home), daemon)
+})
+
+const slowDaemon = `--import=${JSON.stringify(new URL('./slow-daemon.mjs', import.meta.url).href)}`
+
+test('a start ends at once when its daemon ends with an error', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
+  const root = await temporary(t, 'megachat-failed-start-')
+  const home = join(root, 'home')
+  const pids = join(root, 'daemons')
+  const started = Date.now()
+  const result = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '', NODE_OPTIONS: slowDaemon,
+    MEGACHAT_TEST_SLOW_DAEMON: pids, MEGACHAT_TEST_SLOW_DAEMON_EXIT: '1' })
+  assert.equal(result.code, 1)
+  assert.match(result.output, /could not connect to its local daemon/)
+  // A wait of a fixed count of attempts took 10 seconds.
+  assert.ok(Date.now() - started < 5000, `The start took ${Date.now() - started} ms`)
+  assert.equal((await readFile(pids, 'utf8')).trim().split('\n').length, 1)
+})
+
+test('a start waits for a daemon that needs more than 10 seconds for its start', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'megachat-slow-start-'))
+  const home = join(root, 'home')
+  t.after(async () => {
+    try { await stopDaemon(home, { startMs: 20000 }) }
+    finally { await rm(root, { force: true, recursive: true }) }
+  })
+  const started = Date.now()
+  const result = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '', NODE_OPTIONS: slowDaemon,
+    MEGACHAT_TEST_SLOW_DAEMON: join(root, 'daemons'), MEGACHAT_TEST_SLOW_DAEMON_MS: '11000' })
+  assert.equal(result.code, 0, result.output)
+  assert.ok(Date.now() - started >= 11000)
+  assert.equal(alive((await published(home)).pid), true)
+})
+
+test('a start during the end of another daemon starts a daemon again, with a limit', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'megachat-ending-'))
+  const home = join(root, 'home')
+  const pids = join(root, 'daemons')
+  t.after(async () => {
+    try { await stopDaemon(home) }
+    finally { await rm(root, { force: true, recursive: true }) }
+  })
+  // The test holds the lock without a connection file, as a daemon at its end does.
+  const ending = await DaemonDirectory.acquire(home)
+  const env = { MEGACHAT_LEGACY_DIRS: '', NODE_OPTIONS: slowDaemon, MEGACHAT_TEST_SLOW_DAEMON: pids, MEGACHAT_TEST_SLOW_DAEMON_MS: '0' }
+  const starting = run(['start', home], env)
+  const spawned = async () => (await readFile(pids, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(Number)
+  for (let attempt = 0; attempt < 500 && (await spawned()).length < 2; attempt++) await delay(20)
+  const lost = await spawned()
+  assert.ok(lost.length >= 2, 'The start did not start a daemon again')
+  await ending.close()
+  const result = await starting
+  assert.equal(result.code, 0, result.output)
+  const all = await spawned()
+  assert.ok(all.length <= 5, `The start made ${all.length} daemon processes`)
+  assert.equal((await published(home)).pid, all.at(-1))
+  for (const pid of all.slice(0, -1)) assert.equal(alive(pid), false)
 })

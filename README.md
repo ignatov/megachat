@@ -80,7 +80,7 @@ optional directory selects a state directory of its own, for a test or for devel
 | `status` | Prints the current task and the state of each child run as JSON. |
 | `stop` | Stops the daemon. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
-| `daemon` | Runs the daemon in the foreground. `start` runs this command. |
+| `daemon` | Runs the daemon in the foreground. `start` runs this command. It ends with the exit code 3 when another daemon owns the directory. |
 | `install` | Checks the machine and adds the entry `Megachat` of this copy to `~/.jetbrains/acp.json`. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
 
 ## The state directory

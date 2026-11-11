@@ -50,8 +50,8 @@ async function exited(pid, timeoutMs) {
  * Call it from a `t.after` hook before the removal of [directory]. On a timeout, `node:test` runs the hooks before the
  * `finally` blocks of the test. A stop in such a block then finds no connection file, and the daemon stays.
  *
- * This cannot find a daemon that did not take the lock yet. That occurs only when `start` stops its wait after 10
- * seconds, before its daemon took the lock.
+ * This cannot find a daemon that did not take the lock yet. That occurs only when `start` stops its wait after 2
+ * minutes, before its daemon took the lock.
  */
 export async function stopDaemon(directory, { startMs = 15000, exitMs = 10000 } = {}) {
   const descriptor = await published(directory, startMs)
