@@ -119,7 +119,7 @@ list.
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the proposals. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |
-| `src/messages.mjs`, `resources/Megachat.properties` | The user-visible strings and the errors. |
+| `src/messages.mjs`, `resources/Megachat.properties` | The user-visible strings, the errors, and the log lines about a failure. |
 | `build.mjs` | The bundle in `out/bundle/`. |
 | `release.mjs` | The release of the version in `package.json`: the tag and the GitHub release. |
 

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
-import { MegachatError, requireCondition } from './messages.mjs'
+import { logFailure, MegachatError, requireCondition } from './messages.mjs'
 
 const execute = promisify(execFile)
 
@@ -55,6 +55,8 @@ export class CentralConfigurationService {
     }
     catch (error) {
       if (signal?.aborted) throw signal.reason
+      // The error of the command holds its output, and that can hold the key. The log gets no message of an error.
+      logFailure('log.central', error, 'the main agent')
       throw new MegachatError('central')
     }
   }
@@ -93,7 +95,8 @@ export class CentralConfigurationService {
         CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
       }
     }
-    catch {
+    catch (error) {
+      logFailure('log.central', error, 'Claude Code')
       throw new MegachatError('central')
     }
   }

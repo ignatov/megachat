@@ -4,7 +4,7 @@ import { createRegistry, defineExtension, defineTool, Harness } from '@earendil-
 import { int, obj, opt, str } from '@earendil-works/pi-schema'
 import { composeInstructions } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
-import { message, requireCondition } from './messages.mjs'
+import { logFailure, message, requireCondition } from './messages.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -18,6 +18,9 @@ export class PiMegachatService {
     const harness = await Harness.open(storage, {
       models, registry,
       settings: { retry: { enabled: false }, stream: { timeoutMs: 60000, maxRetries: 0 } },
+      // Pi Durable reports each failure of a task, an extension or the storage here, and nowhere else.
+      onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
+        .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
     }, context)
     const instructions = await composeInstructions(
       await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8'), userInstructionsPath)
@@ -42,6 +45,10 @@ export class PiMegachatService {
     this.lifetime = new AbortController()
     this.eventPump = Promise.resolve()
     this.pendingUserInputs = 0
+    // A storage error ends the harness. Each later request then fails, so the owner of this service must stop.
+    this.failed = new Promise(resolve => {
+      harness.closed.then(end => { if (end.kind === 'failed') resolve(end.error) }, () => {})
+    })
   }
 
   extension() {
@@ -116,8 +123,10 @@ export class PiMegachatService {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
         const receipt = await this.state.nextChildResults() ?? await this.state.nextProjectEvent()
         if (receipt) this.follow(receipt)
-      }).catch(() => {
-        if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.event')}\n`)
+      }).catch(error => {
+        if (this.lifetime.signal.aborted) return
+        process.stderr.write(`${message('error.event')}\n`)
+        logFailure('log.event', error)
       })
     }
     observe(this.eventWatch.value)

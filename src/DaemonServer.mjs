@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { waitForState } from './waitForState.mjs'
-import { MegachatError, requireCondition } from './messages.mjs'
+import { logFailure, MegachatError, requireCondition } from './messages.mjs'
 import { MegachatHistoryServer } from './MegachatHistoryServer.mjs'
 
 export class DaemonServer {
@@ -16,6 +16,8 @@ export class DaemonServer {
     this.history = new MegachatHistoryServer(service)
     this.server = createServer((request, response) => {
       this.handle(request, response).catch(error => {
+        // A refusal has a code for the client. Each other error is a fault of the daemon, and only the log shows it.
+        if (!(error instanceof MegachatError)) logFailure('log.request', error, String(request.url).split('?')[0].slice(0, 40))
         if (response.headersSent) { response.destroy(); return }
         response.writeHead(error.code === 'unauthorized' ? 401 : error instanceof MegachatError ? 409 : 500)
         response.end(JSON.stringify({ error: error instanceof MegachatError ? error.code : 'internal' }))
@@ -100,7 +102,8 @@ export class DaemonServer {
     switch (url.pathname) {
       case '/workspace': {
         requireCondition(typeof body.cwd === 'string')
-        const cwd = await realpath(body.cwd)
+        // A directory that the daemon cannot read is a refusal for the client, not a fault of the daemon.
+        const cwd = await realpath(body.cwd).catch(() => { throw new MegachatError('invalid') })
         requireCondition((await stat(cwd)).isDirectory())
         await this.service.state.addWorkspace(cwd)
         send({ cwd })

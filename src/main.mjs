@@ -19,7 +19,7 @@ import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, le
 import { install } from './MegachatInstall.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { ProjectWatchService } from './ProjectWatchService.mjs'
-import { MegachatError, message, requireCondition } from './messages.mjs'
+import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 
 process.umask(0o077)
 const command = process.argv[2]
@@ -60,6 +60,14 @@ async function daemon() {
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
       undefined, undefined, { searchPath: join(directory, 'search.sqlite'), userInstructionsPath: join(directory, 'instructions.md') })
     await service.search.catchUp()
+    // After a storage error each request fails, but the process and its lock stay. So the daemon stops, and the next
+    // start opens the state again. The timer ends a stop that does not return.
+    service.failed.then(error => {
+      logFailure('log.storage', error)
+      process.exitCode = 1
+      setTimeout(() => process.exit(1), 10000).unref()
+      return shutdown()
+    }).catch(() => {})
     server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build })
     const descriptor = await server.listen()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration() })
@@ -199,6 +207,8 @@ try {
   }
 }
 catch (error) {
+  // The daemon writes to its log, so the reason of its stop goes there. Each other command writes for the user.
+  if (command === 'daemon' && !(error instanceof MegachatError)) logFailure('log.daemon', error)
   process.stderr.write(`${error instanceof MegachatError ? error.message : message('error.unavailable')}\n`)
   process.exitCode = command === 'daemon' && error.code === 'lock' ? LOCK_EXIT_CODE : 1
 }

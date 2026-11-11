@@ -201,6 +201,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/integration.test.mjs
 - A child agent must not stay alive after its daemon. This also applies when the agent still writes output.
   [@test] ../test/recovery.test.mjs
+- After a storage error, the daemon must write the reason to its log and stop. The next start opens the state again.
+- The log of the daemon must name each failure of a child run, of a request, of an automatic turn, and of the Central configuration.
+- A log line about an error must not contain the message of that error, because the message can hold a credential.
+  [@test] ../test/failure.test.mjs
 
 ## Non-goals
 

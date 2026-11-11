@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { waitForState } from './waitForState.mjs'
 import { VERSION } from './MegachatBuild.mjs'
-import { MegachatError, message, requireCondition } from './messages.mjs'
+import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 
 /**
  * Executes admitted runs. A recorded dispatch is never sent again after a process restart.
@@ -44,7 +44,11 @@ export class AcpRunService {
           this.active.delete(run.id)
           this.observe(this.watch.value)
         })
-        work.promise.catch(() => { this.stopping = true })
+        work.promise.catch(error => {
+          // The state did not take the end of the run. A new run can then start a second agent on the same work.
+          if (!this.closing) logFailure('log.children', error)
+          this.stopping = true
+        })
       }
       const work = this.active.get(run.id)
       if (work?.cancel && run.cancelRequested && !work.cancellationSent) {
@@ -172,6 +176,8 @@ export class AcpRunService {
     }
     catch (error) {
       const current = (await this.state.snapshot()).runs[run.id]
+      // The state keeps a fixed text for the user. The log keeps where the run failed.
+      if (!this.closing && !limited && !current.cancelRequested) logFailure('log.child', error, run.id)
       await this.state.transition(run.id, ['launching', 'ready', 'dispatched', 'running', 'approval'], {
         status: current.cancelRequested ? 'cancelled' : 'interrupted',
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message
