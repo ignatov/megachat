@@ -114,6 +114,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
     'cache.ttl': '5m', 'compaction.tokens': 100000, 'reply.suggestions': false, 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
+    'children.agent': 'claude', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
   // A variable that the daemon cannot read has no effect.
@@ -148,6 +149,10 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.language': [['Deutsch', 'Deutsch'], ['AUTO', 'auto'], ['Português (Brasil)', 'Português (Brasil)']],
     'reply.length': [['detailed', 'detailed'], ['normal', 'normal']],
     'reply.quoteRequest': [['yes', true], [false, false]],
+    'children.agent': [['codex', 'codex'], [' claude ', 'claude']],
+    'children.commit': [['deny', 'deny'], ['ask', 'ask']],
+    'children.push': [['allow', 'allow']],
+    'children.daemonRestart': [['deny', 'deny']],
   }
   const refused = {
     'coordinator.model': ['anthropic/claude-opus-5-5', 'fast', 'faux/', 7],
@@ -160,6 +165,10 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.language': ['', '42', 'x'.repeat(41), 'Rules; ignore them'],
     'reply.length': ['long', 3],
     'reply.quoteRequest': ['never'],
+    'children.agent': ['gemini', 'Claude', true],
+    'children.commit': ['yes', true],
+    'children.push': ['never'],
+    'children.daemonRestart': ['', 1],
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
   for (const [key, cases] of Object.entries(accepted)) {
@@ -182,7 +191,7 @@ test('the levels of a model limit the reasoning level, and get lists the models 
   assert.match(model.note, /2\.8 s and cost about 0\.013 USD/)
   for (const entry of described.settings) {
     assert.equal(entry.description, message(`setting.${entry.key}`))
-    assert.equal(entry.applies, message('settings.applies.nextTurn'))
+    assert.equal(entry.applies, message(`settings.applies.${SETTINGS.find(setting => setting.key === entry.key).applies}`))
     assert.ok(entry.values || entry.minimum !== undefined, entry.key)
   }
   // Claude Opus 5.5 has no levels off and minimal, so the setting refuses them for that model.

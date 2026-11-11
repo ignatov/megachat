@@ -10,15 +10,18 @@ import { logFailure, MegachatError, message, requireCondition } from './messages
 /**
  * Executes admitted runs. A recorded dispatch is never sent again after a process restart.
  * An automatic continuation waits until its `notBefore` time; later queued runs may start first.
+ * [childRules] gives the rules paragraph of the user at the time of each dispatch. The prompt gets it as a block of its
+ * own before the task, and the state keeps only the task, so a report quotes the task alone.
  */
 export class AcpRunService {
   constructor(state, configuration, {
-    command, args, model, deadlineMs = 1800000, historyServer,
+    command, args, model, deadlineMs = 1800000, historyServer, childRules,
   } = {}) {
     this.state = state
     this.configuration = configuration
     this.launch = { command, args, model, deadlineMs }
     this.historyServer = historyServer
+    this.childRules = childRules
     this.active = new Map()
     this.stopping = false
     this.closing = false
@@ -160,9 +163,11 @@ export class AcpRunService {
       }
       if (!await this.state.transition(run.id, ['ready'], { status: 'dispatched' })) return
       dispatched = true
+      const rules = this.childRules?.()
       const result = await ctx.request(methods.agent.session.prompt, {
         sessionId, prompt: [
           ...(this.historyServer ? [{ type: 'text', text: message('history.instructions') }] : []),
+          ...(rules ? [{ type: 'text', text: rules }] : []),
           // A continuation quotes its task in the same block as its prompt. The first prompt can be lost.
           { type: 'text', text: run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}` },
         ],

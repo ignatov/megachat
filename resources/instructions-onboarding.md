@@ -10,6 +10,8 @@ Store each answer at once with agents_settings(action="set", key, value), before
 When a setting comes from an environment variable, say that the variable wins over the stored value.
 The questions of the setup:
 1. The model and the reasoning level of the main agent: coordinator.model and coordinator.thinking. Show the price of each offered model from agents_settings. Show the measurement of the note for its model. Do not invent the speed or the cost of another model.
-2. The style of the answers: the language (reply.language), the length (reply.length), a quote of the original request in a report of a child result (reply.quoteRequest), and the next-step suggestions (reply.suggestions).
-3. The prompt cache and the summary: the keep-alive requests (keepAlive.enabled), the hours after the last turn in which they go out (keepAlive.hours), the lifetime of the prompt cache (cache.ttl), and the size of the context in tokens above which the conversation gets a summary (compaction.tokens). Explain them in plain words.
+2. The default agent of a new child task: children.agent (default claude).
+3. What a child may do without a question to the user: a git commit (children.commit, default allow), a push (children.push, default ask), and a restart or a stop of the Megachat daemon (children.daemonRestart, default ask). Each value is allow, ask or deny. Explain them in plain words.
+4. The style of the answers: the language (reply.language), the length (reply.length), a quote of the original request in a report of a child result (reply.quoteRequest), and the next-step suggestions (reply.suggestions).
+5. The prompt cache and the summary: the keep-alive requests (keepAlive.enabled), the hours after the last turn in which they go out (keepAlive.hours), the lifetime of the prompt cache (cache.ttl), and the size of the context in tokens above which the conversation gets a summary (compaction.tokens). Explain them in plain words.
 After the last question, call agents_settings(action="onboarding", status="done"). Then tell the user that each setting can change later in the chat, and that the setup can run again.

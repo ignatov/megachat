@@ -9,7 +9,7 @@ import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
-import { CACHE_RETENTION, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
+import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -71,8 +71,17 @@ function settingsRules(values, onboarding, rules) {
     language === 'auto' ? message('instructions.language.auto') : message('instructions.language', language),
     ...(values['reply.quoteRequest'] ? [message('instructions.quoteRequest')] : []),
     values['reply.suggestions'] ? rules.suggestions.trimEnd() : message('instructions.noSuggestions'),
+    message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
   ].join('\n')
+}
+
+/**
+ * The rules paragraph that the daemon adds to the prompt of each child, from the settings at the time of the dispatch.
+ * The daemon adds it, not the main agent, so a child gets the rules of the user also when the main agent forgets them.
+ */
+export function childRulesText(values) {
+  return [message('child.rules'), ...CHILD_STEPS.map(step => message(`child.rule.${step}.${values[`children.${step}`]}`))].join('\n')
 }
 
 /** The choices of the root conversation that the settings give. The rules of the user follow the bundled rules. */
@@ -228,6 +237,11 @@ export class PiMegachatService {
     return next
   }
 
+  /** The rules paragraph of the next child. It reads the stored settings, so a change in a turn reaches the next child. */
+  childRules() {
+    return childRulesText(this.settings.values())
+  }
+
   /** The tool `agents_settings`. A project event or a child result cannot change a setting. */
   async settingsTool(args) {
     requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
@@ -263,7 +277,7 @@ export class PiMegachatService {
         const state = await this.state.snapshot()
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
           cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
-        return result({ agents: ['claude', 'codex'], workspaces: directoriesOf(state), runs,
+        return result({ agents: ['claude', 'codex'], defaultAgent: this.settings.values()['children.agent'], workspaces: directoriesOf(state), runs,
           ...(this.suggestions ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })), value: opt(union([str({ maxLength: 200 }), num(), bool()])),
@@ -288,7 +302,8 @@ export class PiMegachatService {
         return result({ ...changed, workspaces: directoriesOf(await this.state.snapshot()) })
       }),
       tool('spawn', obj({ cwd: str(), prompt: str(), agent: opt(str()), title: opt(str({ maxLength: 60 })) }), async (args, api) =>
-        result(await this.state.admitChild(`tool:${api.taskId}:spawn`, { ...args, cwd: await this.state.directory(args.cwd) }))),
+        result(await this.state.admitChild(`tool:${api.taskId}:spawn`, { ...args, cwd: await this.state.directory(args.cwd) },
+          { defaultAgent: this.settings.values()['children.agent'] }))),
       tool('resume', obj({ cwd: str(), agent: str(), sessionId: str(), prompt: str(), title: opt(str({ maxLength: 60 })) }), async (args, api) => {
         await this.sessions.read(args)
         return result(await this.state.admitChild(`tool:${api.taskId}:resume`, {

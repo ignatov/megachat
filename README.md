@@ -189,6 +189,16 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
+| `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
+| `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
+| `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
+| `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
+
+The daemon adds the rules of `children.commit`, `children.push` and `children.daemonRestart` to the prompt of each
+child at its dispatch, also to a follow-up and to a continuation. With `ask`, the child does the step only when its task
+says that you approved it. Else it says in its result that the step is necessary, and the main agent asks you. With
+`deny`, the child does not do the step, also when the task asks for it. A change of a `children.*` setting applies to the
+next child, also in the turn that made it.
 
 Each environment variable still works, and it wins over the stored value. The agent tells you when a variable hides
 a stored value. A daemon reads the variables at its start.

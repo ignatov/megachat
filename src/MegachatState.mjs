@@ -384,7 +384,11 @@ export class MegachatState {
     })
   }
 
-  async admitChild(requestId, args) {
+  /**
+   * Admits a child run. A new task without a named agent gets [defaultAgent], the setting `children.agent`. The digest
+   * holds only [args], so a repeated request still finds its run after a change of the setting.
+   */
+  async admitChild(requestId, args, { defaultAgent = 'claude' } = {}) {
     requireCondition(typeof args.prompt === 'string' && args.prompt.length > 0 && args.prompt.length <= 64000)
     requireCondition(args.title === undefined || typeof args.title === 'string' && args.title.trim().length > 0 && args.title.length <= 60)
     const hash = digest(args)
@@ -400,7 +404,8 @@ export class MegachatState {
       requireCondition(Object.values(state.runs).filter(run => run.mainRunId === state.current.id).length < 8, 'limit')
       requireCondition(Object.values(state.runs).filter(run => !terminalStates.has(run.status)).length < 8, 'limit')
       const previous = args.childSessionId && Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
-      const agent = previous ? previous.agent ?? 'claude' : args.agent ?? 'claude'
+      // A run without the field is from before the choice of the agent, so it is a Claude run.
+      const agent = previous ? previous.agent ?? 'claude' : args.agent ?? defaultAgent
       requireCondition(['claude', 'codex'].includes(agent))
       requireCondition(!args.agent || args.agent === agent, 'conflict')
       if (args.childSessionId) {

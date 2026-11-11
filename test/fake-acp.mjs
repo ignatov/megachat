@@ -33,6 +33,8 @@ agent({ name: 'fake-claude' })
   .onRequest(methods.agent.session.prompt, async ctx => {
     const text = ctx.params.prompt.at(-1).text
     await appendFile(join(process.cwd(), 'dispatches'), `${text}\n`)
+    // Each prompt with all of its blocks, so a test can read the blocks that the daemon adds before the task.
+    await appendFile(join(process.cwd(), 'prompts'), `${JSON.stringify(ctx.params.prompt.map(block => block.text))}\n`)
     if (text === 'crash') process.exit(1)
     if (text === 'wait') {
       if (!cancelled) await new Promise(resolve => { cancel = resolve })

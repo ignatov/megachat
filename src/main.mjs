@@ -80,7 +80,8 @@ async function daemon() {
     }).catch(() => {})
     server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build })
     const descriptor = await server.listen()
-    children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration() })
+    children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),
+      childRules: () => service.childRules() })
     await children.start()
     await service.resume()
     projects = new ProjectWatchService(service.state)

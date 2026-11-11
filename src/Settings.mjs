@@ -20,6 +20,10 @@ export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'
 /** The cache retention of pi-ai for each value of `cache.ttl`. */
 export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
 export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
+export const CHILD_AGENTS = ['claude', 'codex']
+/** The steps of a child that the user allows, forbids, or allows only after a question. */
+export const CHILD_STEPS = ['commit', 'push', 'daemonRestart']
+const CHILD_PERMISSIONS = ['allow', 'ask', 'deny']
 const SCHEMA = 1
 
 const toBoolean = value => typeof value === 'boolean' ? value
@@ -90,6 +94,11 @@ export const SETTINGS = [
   { key: 'reply.length', default: 'short', applies: 'nextTurn',
     validate: choice(['short', 'normal', 'detailed']), allowed: () => ({ values: ['short', 'normal', 'detailed'] }) },
   { key: 'reply.quoteRequest', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
+  { key: 'children.agent', default: 'claude', applies: 'nextChild', validate: choice(CHILD_AGENTS), allowed: () => ({ values: CHILD_AGENTS }) },
+  { key: 'children.commit', default: 'allow', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
+  { key: 'children.push', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
+  { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS),
+    allowed: () => ({ values: CHILD_PERMISSIONS }) },
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))

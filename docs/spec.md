@@ -41,7 +41,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - New delegated tasks must wait in a durable queue when a child is already running.
 - A later user message may cancel an earlier background task.
 - The user may delegate a task to Claude Code or Codex.
-- Claude Code must remain the default for delegated tasks.
+- Claude Code must remain the default for delegated tasks unless the setting `children.agent` selects Codex.
 - The user may continue an existing session in its registered project.
   [@test] ../test/integration.test.mjs
 - One provider session must have at most one unfinished delegated task.
@@ -148,7 +148,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
 - A model must be valid only when the model registry knows it. A reasoning level must be a level of pi-ai that the model supports.
 - The output of `get` must list each model of the registry with the prices of its model data, and one note with the measurement of Claude Opus 5.5. It must give no measurement of another model.
-- A changed setting must apply at once when no turn runs, else at the end of the current turn, before the next turn starts. A change must not apply in the middle of a turn.
+- A changed setting must apply at once when no turn runs, else at the end of the current turn, before the next turn starts. A change must not apply in the middle of a turn. A setting with another time in its `applies` text, such as a setting of the children, must apply at that time.
 - The model and the reasoning level must reach the next model request without a restart. A keep-alive request must use the same model and level as the turns.
 - The keep-alive, the cache lifetime and the limit of a summary must take the stored value without a restart.
 - The setting `reply.suggestions` must change the rules and the suggestion tools of the running main agent.
@@ -159,6 +159,13 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - After the status `done` or `skipped`, the setup rules must not come back by themselves, also after a restart. The rules must then say that the agent changes a setting or runs the setup again when the user asks.
 - The status `pending` must bring the setup rules back. The tool result must hold them, so the setup can start in the same turn.
   [@test] ../test/settings.test.mjs
+- The setting `children.agent` must select the agent of a new child task without a named agent: `claude`, the default, or `codex`. A follow-up and a continuation must stay with the agent of their session. A change must apply to the next child task, also in the turn that made it.
+- The settings `children.commit`, `children.push` and `children.daemonRestart` must take `allow`, `ask` or `deny`. The defaults are `allow`, `ask` and `ask`. A daemon restart is a restart or a stop of the Megachat daemon.
+- At each dispatch, the daemon must add one rules paragraph from these settings to the prompt of the child, as a block before the task. A change must reach the next new task, follow-up and continuation. The state must keep the prompt of a run without the paragraph.
+- `allow` must let the child do the step. `deny` must forbid the step, also when the task asks for it. `ask` must forbid the step unless the task says that the user approved it. The child must then say in its result that the step is necessary.
+- The rules of the main agent must give the default agent and the three values, so the agent does not promise the user other rules.
+- A project event or a child result must not change these settings.
+  [@test] ../test/child-settings.test.mjs
 - With `MEGACHAT_SUGGESTIONS=1`, Megachat may offer one useful next step after work ends.
 - After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.
