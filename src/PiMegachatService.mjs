@@ -164,11 +164,13 @@ export class PiMegachatService {
     })
   }
 
+  /** Cancels the current turn. With [expectedRunId], it cancels only that turn, and tells whether it did. */
   async cancel(expectedRunId) {
     const snapshot = await this.state.snapshot()
-    if (!snapshot.current || expectedRunId && snapshot.current.id !== expectedRunId) return
+    if (!snapshot.current || expectedRunId && snapshot.current.id !== expectedRunId) return false
     await this.state.cancel(snapshot.current.id)
     await this.root.abort(context)
+    return true
   }
 
   /** Reads the retained transcript, including entries outside the active model context. */

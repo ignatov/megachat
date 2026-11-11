@@ -34,10 +34,7 @@ export class AcpBridge {
       .onRequest(methods.agent.session.new, ctx => this.attach(ctx, false))
       .onRequest(methods.agent.session.load, ctx => this.attach(ctx, true))
       .onRequest(methods.agent.session.prompt, ctx => this.view(ctx.params.sessionId).prompt(ctx))
-      .onNotification(methods.agent.session.cancel, async ctx => {
-        this.view(ctx.params.sessionId)
-        await this.daemon.json('/cancel', {})
-      })
+      .onNotification(methods.agent.session.cancel, ctx => this.view(ctx.params.sessionId).cancel())
       .onRequest(methods.agent.session.close, async ctx => {
         this.view(ctx.params.sessionId).close()
         this.views.delete(ctx.params.sessionId)
@@ -83,7 +80,21 @@ class AcpBridgeSession {
     this.permissions = new Set()
     this.serial = Promise.resolve()
     this.promptInFlight = false
+    this.promptRunId = null
+    this.currentRunId = null
+    this.cancelPending = false
     this.childTasks = new Map()
+  }
+
+  /**
+   * Stops the turn that this view shows: the turn of its own prompt, else the turn that the last state named. The
+   * daemon gets the ID of that turn. So a stop that arrives after the end of the turn cannot cancel the next turn,
+   * such as an automatic result report or the turn of another view.
+   */
+  async cancel() {
+    if (this.promptInFlight && !this.promptRunId) { this.cancelPending = true; return }
+    const mainRunId = this.promptRunId ?? this.currentRunId
+    if (mainRunId) await this.daemon.json('/cancel', { mainRunId })
   }
 
   async prompt(ctx) {
@@ -95,6 +106,9 @@ class AcpBridgeSession {
       const receipt = await this.daemon.json('/input', {
         requestId: ctx.params._meta?.jetbrains?.air?.clientMessageId ?? randomUUID(), text: ctx.params.prompt.map(block => block.text).join('\n'),
       })
+      this.promptRunId = receipt.mainRunId
+      // A stop can arrive before the daemon admits the input. Then the turn had no ID yet.
+      if (this.cancelPending) await this.cancel()
       const settled = await this.daemon.json(`/wait?submission=${receipt.submissionId}`, undefined, this.abort.signal)
       const view = await this.daemon.json('/conversation')
       const state = await this.daemon.json('/state')
@@ -106,7 +120,7 @@ class AcpBridgeSession {
       }
       return { stopReason: settled.status === 'completed' ? 'end_turn' : 'cancelled' }
     }
-    finally { this.promptInFlight = false }
+    finally { this.promptInFlight = false; this.promptRunId = null; this.cancelPending = false }
   }
 
   async attach(ctx, loading) {
@@ -212,6 +226,7 @@ class AcpBridgeSession {
 
   /** Marks each delegated session in the state as a service session, also the session of a dropped run. */
   async tasks(state) {
+    this.currentRunId = state.current?.id ?? null
     if (this.serviceSessions) {
       for (const [address, session] of Object.entries(state.serviceSessions ?? serviceSessionsOf(state.runs))) {
         if (this.recordedChildren.has(address)) continue

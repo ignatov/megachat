@@ -35,6 +35,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A permission request must stay pending without a connected client.
 - Reconnection must show the pending request without starting the task again.
 - Stop must cancel the main task and each child that it owns.
+- Stop must cancel only the turn that the view shows. A stop for a turn that ended must not cancel the next turn.
 - The main reply must finish without waiting for its children.
 - The main conversation must accept new messages while a child works or needs permission.
 - New delegated tasks must wait in a durable queue when a child is already running.

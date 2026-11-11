@@ -210,6 +210,9 @@ test('Stop cancels a restored main turn and its child without a turn row', { tim
   ])
   const receipt = await daemon.json('/input', { requestId: 'cancel', text: 'Work' })
   await waitForState(service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  const stops = []
+  const request = daemon.json.bind(daemon)
+  daemon.json = (path, body, signal) => { if (path === '/cancel') stops.push(body); return request(path, body, signal) }
   const viewer = await attach(daemon, cwd, { loading: true, native: true })
   t.after(() => viewer.connection.close())
   assert.ok(!viewer.updates.some(event => event.update.taskType === 'turn'))
@@ -219,8 +222,35 @@ test('Stop cancels a restored main turn and its child without a turn row', { tim
   await viewer.connection.agent.notify(methods.agent.session.cancel, { sessionId: viewer.sessionId })
   const settled = await daemon.json(`/wait?submission=${receipt.submissionId}`)
   assert.equal(settled.status, 'cancelled')
+  assert.deepEqual(stops, [{ mainRunId: receipt.mainRunId }])
   assert.deepEqual((await finished).update, { sessionUpdate: 'async_task_state_update', asyncTaskId: row.update.asyncTaskId, state: 'stopped' })
   await waitForState(service.state, state => Object.values(state.runs)[0]?.status === 'cancelled' ? true : undefined)
+  // The view now shows no turn. So a later stop must not reach the daemon, where it can cancel a turn that started since.
+  await viewer.connection.agent.notify(methods.agent.session.cancel, { sessionId: viewer.sessionId })
+  await viewer.connection.agent.request(methods.agent.session.close, { sessionId: viewer.sessionId })
+  assert.equal(stops.length, 1)
+})
+
+test('a stop for an ended turn does not cancel the next turn', { timeout: 10000 }, async t => {
+  const { daemon, fake } = await fixture(t)
+  const answering = Promise.withResolvers()
+  fake.setResponses([
+    fauxAssistantMessage('The first reply.'),
+    async (_context, options) => {
+      answering.resolve()
+      await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
+      return fauxAssistantMessage('Interrupted', { stopReason: 'aborted' })
+    },
+  ])
+  const first = await daemon.json('/input', { requestId: 'first', text: 'Hello' })
+  await daemon.json(`/wait?submission=${first.submissionId}`)
+  const second = await daemon.json('/input', { requestId: 'second', text: 'Hello again' })
+  await answering.promise
+  assert.deepEqual(await daemon.json('/cancel', { mainRunId: first.mainRunId }), { cancelled: false })
+  assert.equal((await daemon.json('/state')).current.id, second.mainRunId)
+  assert.equal((await daemon.json('/state')).current.cancelling, false)
+  assert.deepEqual(await daemon.json('/cancel', { mainRunId: second.mainRunId }), { cancelled: true })
+  assert.equal((await daemon.json(`/wait?submission=${second.submissionId}`)).status, 'cancelled')
 })
 
 test('the chat lists running children instead of coordinator tool calls', { timeout: 10000 }, async t => {
