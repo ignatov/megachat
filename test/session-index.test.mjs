@@ -643,6 +643,39 @@ test('a search past the ranked window shows each session one time', async t => {
   assert.deepEqual(seen.sort(), ['a', 'b', 'c'])
 })
 
+test('a later page shows each session one time also after new entries of the searched directory', async t => {
+  const directories = await fixture(t)
+  const { project } = directories
+  const { index } = await service(t, directories, fakeState({ workspaces: [project] }))
+  await index.apply(ON)
+  await index.idle()
+  const store = index.store
+  const file = (name, mtimeMs = NOW) => ({ path: join(project, `${name}.jsonl`), agent: 'claude', size: 1, mtimeMs, ino: name })
+  const names = Array.from({ length: 12 }, (_, number) => `s${number}`)
+  for (const [number, name] of names.entries())
+    await store.write(file(name, NOW - number * 1000), { sessionId: name, cwd: project }, [{ key: name, role: 'user', text: `juniper ${name}`, clipped: false }], 1)
+
+  const first = await store.search('claude', project, ['juniper'])
+  assert.equal(first.hits.length, 10)
+  // The session of the agent that searches gets new entries with the query between two pages.
+  await store.write(file('x'), { sessionId: 'x', cwd: project }, [{ key: 'x1', role: 'user', text: 'juniper juniper juniper', clipped: false }], 1)
+  await store.write(file(first.hits[0].session.sessionId), { sessionId: first.hits[0].session.sessionId, cwd: project },
+    [{ key: 'again', role: 'user', text: 'juniper juniper juniper juniper', clipped: false }], 1)
+  const second = await store.search('claude', project, ['juniper'], first.next)
+  const seen = [...first.hits, ...second.hits].map(hit => hit.session.sessionId)
+  assert.deepEqual([...seen].sort(), [...names].sort(), 'Each session of the first page is on one page, and the new session waits for a new search')
+  assert.equal(second.next, undefined)
+
+  const listed = (await store.list('claude', project))
+  const page = listed.sessions.map(session => session.sessionId)
+  const others = [...names, 'x'].filter(name => !page.includes(name))
+  assert.equal(others.length, 3)
+  // The oldest session becomes the last active one between two pages.
+  await store.write(file(others[2], NOW + 1000), { sessionId: others[2], cwd: project }, [{ key: 'active', role: 'user', text: 'active', clipped: false }], 1)
+  const rest = await store.list('claude', project, listed.next)
+  assert.deepEqual(rest.sessions.map(session => session.sessionId), others.slice(0, 2), 'No session of the first page comes again')
+})
+
 test('the child MCP tools accept pi and say that the index is off', async t => {
   const directories = await fixture(t)
   const { project } = directories

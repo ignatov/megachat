@@ -19,7 +19,8 @@ const providerCursor = value => value === null || (typeof value === 'string' && 
 const count = value => Number.isSafeInteger(value) && value >= 0
 /** The position in the index of a search, of a list or of a session: the fields of each one are counts. */
 const indexPosition = value => value && typeof value === 'object' && !Array.isArray(value)
-  && Object.entries(value).every(([key, item]) => ['before', 'offset', 'after'].includes(key) && count(item))
+  && Object.entries(value).every(([key, item]) => ['before', 'offset', 'until', 'updated', 'id', 'after'].includes(key) && count(item))
+  && (value.updated === undefined) === (value.id === undefined)
 /** pi has no live source. Its sessions come only from the index of past sessions. */
 const INDEX_ONLY = 'pi'
 /** The entries of one page of a read from the end of a log. */
@@ -125,7 +126,7 @@ export class SessionHistoryService {
       next = found.next
     }
     else {
-      const found = query.trim() ? await index.titled(agent, cwd, query.trim(), position?.offset) : await index.list(agent, cwd, position?.offset)
+      const found = query.trim() ? await index.titled(agent, cwd, query.trim(), position ?? undefined) : await index.list(agent, cwd, position ?? undefined)
       matches = found.sessions.map(session => ({ ...session, text: session.title ?? '' }))
       next = found.next
     }

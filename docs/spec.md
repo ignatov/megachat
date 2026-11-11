@@ -355,6 +355,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - After the first pass, the import must catch up at the start of the daemon, on a change of a session file, and on a change of the listed directories. A search must first import the new lines of the files of its directory, for at most 2 seconds. A failed import before a search or a read must make the page of the index incomplete and must not fail the tool.
 - An index file of another `VERSION` must be made again from the session files.
 - With the index on, `agents_sessions` and `agents_session_history` of the main agent, and the tools `sessions` and `session_history` of a child, must answer from the index. A search must give one match for each session, best bm25 first, with a snippet.
+- A later page of a search or of a list must not give a session of an earlier page again. A later page of a search must skip each entry that came after its first page. A list must page by the time of the last activity and the row ID of a session, not by a count.
 - They must use the live provider when the index is off, when the index has no session of the agent in the directory, and for a query without a word of 3 or more characters.
 - pi must be an agent of these tools. Without the index, a request for pi must fail with a text that says that the index is off.
   [@test] ../test/session-index.test.mjs

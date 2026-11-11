@@ -63,6 +63,10 @@ const scope = (cwd, table = 's') => {
   const prefix = cwd.endsWith(sep) ? cwd : `${cwd}${sep}`
   return { sql: `(${table}.cwd = ? OR substr(${table}.cwd, 1, ?) = ?)`, args: [cwd, prefix.length, prefix] }
 }
+/** The SQL condition for a session after the last session of a page, in the order of the last activity. */
+const keyset = ({ updated, id } = {}) => updated === undefined
+  ? { sql: '', args: [] } : { sql: ' AND (s.updated_at < ? OR s.updated_at = ? AND s.id < ?)', args: [updated, updated, id] }
+const keysetNext = rows => rows.length > PAGE ? { updated: rows[PAGE - 1].updated_at, id: rows[PAGE - 1].id } : undefined
 const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
 const sessionInfo = row => ({ sessionId: row.session_id, title: row.title ?? undefined, cwd: row.cwd, updatedAt: iso(row.updated_at),
   ...(Number.isFinite(row.started_at) ? { startedAt: iso(row.started_at) } : {}) })
@@ -188,9 +192,12 @@ export class SessionIndex {
     }))
   }
 
-  /** The next entry ID in the range of [scope]. */
+  /**
+   * The next entry ID in the range of [scope]. The count after the scope is one sequence for each scope, so a search
+   * can skip each entry that came after its first page.
+   */
   async #nextId(tx, scope) {
-    const { next } = await tx.get('UPDATE scopes SET next = next + 1 WHERE id = ? RETURNING next', scope)
+    const { next } = await tx.get('UPDATE scopes SET next = (SELECT max(next) FROM scopes) + 1 WHERE id = ? RETURNING next', scope)
     return scope * SCOPE_SPAN + next
   }
 
@@ -273,7 +280,9 @@ export class SessionIndex {
    * The sessions of [agent] in [cwd] with an entry or a title that matches each of [terms], best bm25 first, one hit
    * for each session. bm25 over each match of a common term is slow, so it ranks windows of the matches with the
    * highest IDs. [position] is `{ before, offset }`: the entry ID below which the current window starts, and the
-   * sessions of that window that a page gave already. Gives `{ hits, next }`. `next` is undefined after the last page.
+   * sessions of that window that a page gave already, and `until`, the last count of the sequence of the entry IDs at
+   * the first page. A later page skips each newer entry, so a new match does not move the ranked list under the
+   * offset. Gives `{ hits, next }`. `next` is undefined after the last page.
    */
   async search(agent, cwd, terms, position = {}) {
     const where = scope(cwd, 'scopes')
@@ -281,7 +290,8 @@ export class SessionIndex {
     return this.#guard(async () => {
       const scopes = (await this.db.all(`SELECT id FROM scopes WHERE agent = ? AND ${where.sql}`, agent, ...where.args)).map(row => row.id)
       if (!scopes.length) return { hits: [], next: undefined }
-      const inScope = `(fts.rowid >> ${SCOPE_SHIFT}) IN (${scopes.join(',')})`
+      const until = position.until ?? (await this.db.get('SELECT coalesce(max(next), 0) AS next FROM scopes')).next
+      const inScope = `(fts.rowid >> ${SCOPE_SHIFT}) IN (${scopes.join(',')}) AND (fts.rowid & ${SCOPE_SPAN - 1}) <= ${until}`
       let before = position.before ?? Number.MAX_SAFE_INTEGER
       let offset = position.offset ?? 0
       // A session with a match above the current window had its page there already.
@@ -308,33 +318,38 @@ export class SessionIndex {
           const session = await this.db.get('SELECT * FROM sessions WHERE id = ?', row.session)
           hits.push({ session: sessionInfo(session), entry: this.#entry(entry) })
         }
-        if (offset + page.length < ranked.length) { offset += page.length; return { hits, next: { before, offset } } }
+        if (offset + page.length < ranked.length) { offset += page.length; return { hits, next: { before, offset, until } } }
         // Each session of this window is on a page now, so the next window starts below it.
         for (const row of ranked) shown.add(row.session)
         if (more) before = rows.at(-1).id
         offset = 0
       }
-      return { hits, next: more ? { before, offset: 0 } : undefined }
+      return { hits, next: more ? { before, offset: 0, until } : undefined }
     })
   }
 
-  /** The sessions of [agent] in [cwd], the last active first, a page at [offset]. */
-  async list(agent, cwd, offset = 0) {
+  /**
+   * The sessions of [agent] in [cwd], the last active first, a page after [position]. The position is the time and the
+   * row ID of the last session of the page before, so a session that becomes active does not move a later page.
+   */
+  async list(agent, cwd, position = {}) {
     const where = scope(cwd)
+    const after = keyset(position)
     return this.#guard(async () => {
-      const rows = await this.db.all(`SELECT * FROM sessions s WHERE s.agent = ? AND ${where.sql} ORDER BY s.updated_at DESC, s.id DESC
-        LIMIT ${PAGE + 1} OFFSET ?`, agent, ...where.args, offset)
-      return { sessions: rows.slice(0, PAGE).map(sessionInfo), next: rows.length > PAGE ? { offset: offset + PAGE } : undefined }
+      const rows = await this.db.all(`SELECT * FROM sessions s WHERE s.agent = ? AND ${where.sql}${after.sql} ORDER BY s.updated_at DESC, s.id DESC
+        LIMIT ${PAGE + 1}`, agent, ...where.args, ...after.args)
+      return { sessions: rows.slice(0, PAGE).map(sessionInfo), next: keysetNext(rows) }
     })
   }
 
   /** The sessions of [agent] in [cwd] with [text] in the title, for a query that is too short for the trigram index. */
-  async titled(agent, cwd, text, offset = 0) {
+  async titled(agent, cwd, text, position = {}) {
     const where = scope(cwd)
+    const after = keyset(position)
     return this.#guard(async () => {
-      const rows = await this.db.all(`SELECT * FROM sessions s WHERE s.agent = ? AND ${where.sql} AND instr(lower(s.title), lower(?)) > 0
-        ORDER BY s.updated_at DESC LIMIT ${PAGE + 1} OFFSET ?`, agent, ...where.args, text, offset)
-      return { sessions: rows.slice(0, PAGE).map(sessionInfo), next: rows.length > PAGE ? { offset: offset + PAGE } : undefined }
+      const rows = await this.db.all(`SELECT * FROM sessions s WHERE s.agent = ? AND ${where.sql} AND instr(lower(s.title), lower(?)) > 0${after.sql}
+        ORDER BY s.updated_at DESC, s.id DESC LIMIT ${PAGE + 1}`, agent, ...where.args, text, ...after.args)
+      return { sessions: rows.slice(0, PAGE).map(sessionInfo), next: keysetNext(rows) }
     })
   }
 
