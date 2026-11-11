@@ -85,8 +85,9 @@ export class SessionHistoryService {
       requireCondition(providerCursor(position.listCursor))
       requireCondition(Number.isSafeInteger(position.unreadableSessions) && position.unreadableSessions >= 0)
     }
-    // The import of the new lines of the files of this directory is cheap, so a search sees the last messages.
-    const caughtUp = indexed ? await this.index.catchUp(cwd) : false
+    // The import of the new lines of the files of this directory is cheap, so a search sees the last messages. A failed
+    // import, such as of a file without the read permission, makes the index pages incomplete and fails no page.
+    const caughtUp = indexed ? await this.index.catchUp(cwd).catch(() => false) : false
     const pages = await Promise.all(agents.map(async agent => {
       try {
         if (indexed && (!position || position.index)) {
@@ -231,7 +232,8 @@ export class SessionHistoryService {
   /** A page of a session from the index, or undefined when the index does not hold the session. */
   async indexRead(identity, after) {
     const { cwd, agent, sessionId, query } = identity
-    await this.index.catchUp(cwd)
+    // A failed import does not stop the read: the index gives the entries that it holds.
+    await this.index.catchUp(cwd).catch(() => false)
     const index = this.index.store
     const session = index && await index.session(agent, cwd, sessionId)
     if (!session) return undefined

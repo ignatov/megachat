@@ -525,6 +525,29 @@ test('the tools answer from the index, page through it, and fall back to the liv
   assert.deepEqual((await sessions.search({ cwd: project, query: 'juniper' })).pages.map(page => page.agent), ['claude', 'codex'])
 })
 
+test('a failed catch-up gives an incomplete page and does not fail the session tools', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const path = await claudeSession(home, project, 'grows', [claudeLine('u1', 'user', 'juniper one', project)])
+  await piSession(home, project, 'pi-one', ['pine question', 'pine answer'])
+  const fs = blockingFs()
+  const state = fakeState({ workspaces: [project] })
+  const { index } = await service(t, directories, state, { fs })
+  const sessions = new SessionHistoryService(state, { claude: liveSource(project), codex: liveSource(project) }, index)
+  await index.apply(ON)
+  await index.idle()
+  await appendFile(path, claudeLine('u2', 'user', 'juniper two', project))
+  fs.blocked.add(path)
+  const found = await sessions.search({ cwd: project, query: 'juniper' })
+  assert.deepEqual(found.pages.map(page => [page.agent, page.source]), [['claude', 'index'], ['codex', undefined], ['pi', 'index']])
+  assert.equal(found.pages[0].complete, false)
+  assert.equal(found.pages[0].error, message('sessions.incomplete'))
+  assert.equal(found.pages[1].matches[0].sessionId, 'live', 'The live page stays')
+  const read = await sessions.read({ cwd: project, agent: 'pi', sessionId: 'pi-one' })
+  assert.equal(read.source, 'index')
+  assert.equal(read.entries[0].text, 'pine question')
+})
+
 test('the search pages through more sessions than one page holds', async t => {
   const directories = await fixture(t)
   const { home, project } = directories
