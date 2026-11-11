@@ -27,8 +27,8 @@ The machine needs:
 - The Codex command, `codex`, on the `PATH`.
 - macOS. Nobody tested Megachat on another platform.
 
-The line takes about a minute, and the copy takes about 870 MB in the npm cache. `npx` clones and installs the package
-again on each run, so the entry does not use `npx`.
+The first run takes about a minute, and the copy takes about 870 MB in the npm cache. On each run, `npx` asks GitHub
+for the last commit, and it installs the package again after a new commit. So the entry does not use `npx`.
 
 The installed copy does not use `package-lock.json`. So its indirect dependencies can differ from the tested ones.
 
