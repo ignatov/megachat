@@ -73,10 +73,10 @@ test('the packed copy starts its daemon and both agents, and install writes an e
 
   const [packed] = JSON.parse((await execute('npm', ['pack', '--json', '--pack-destination', scratch], { cwd: root, env: npm })).stdout)
   const files = packed.files.map(file => file.path)
-  for (const file of ['package.json', 'README.md', 'bin/megachat.mjs', 'bin/codex', 'bin/pi', 'src/main.mjs', 'resources/Megachat.properties']) {
+  for (const file of ['package.json', 'README.md', 'LICENSE', 'bin/megachat.mjs', 'bin/codex', 'bin/pi', 'src/main.mjs', 'resources/Megachat.properties']) {
     assert.ok(files.includes(file), file)
   }
-  assert.deepEqual(files.filter(file => !/^(bin|src|resources)\//.test(file) && !['package.json', 'README.md'].includes(file)), [])
+  assert.deepEqual(files.filter(file => !/^(bin|src|resources)\//.test(file) && !['package.json', 'README.md', 'LICENSE'].includes(file)), [])
 
   const prefix = join(scratch, 'prefix')
   await mkdir(prefix)

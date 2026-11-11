@@ -26,6 +26,11 @@ Megachat is an ACP agent in plain Node.js ESM. `README.md` tells what it does an
   does. This covers a comment, a document and a commit message. Use short sentences, the active voice and the
   articles. Use one term for one concept.
 
+## Releases
+
+- Never run `npm run release` without a request of the user. It pushes a tag and makes a public GitHub release.
+  `npm run release -- --dry-run` changes nothing.
+
 ## Commits
 
 - The subject is one sentence that states the new behavior.

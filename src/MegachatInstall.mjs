@@ -5,6 +5,7 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:pa
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { CentralConfigurationService } from './CentralConfigurationService.mjs'
+import { VERSION } from './MegachatBuild.mjs'
 import { message } from './messages.mjs'
 
 /** A test sets this variable, so that no test can reach the `acp.json` of the user. */
@@ -104,7 +105,8 @@ async function checks({ configuration, platform, path }) {
 
 /**
  * The command `install`: checks the machine and adds the entry `Megachat` that starts this copy to `acp.json`. It
- * prints one line for each result, and returns 0 only when the entry is in place and each check passed.
+ * prints one line for each result, then the version and the directory of this copy. It returns 0 only when the entry
+ * is in place and each check passed.
  */
 export async function install({ environment = process.env, platform = process.platform, print = line => process.stdout.write(`${line}\n`) } = {}) {
   let passed = true
@@ -124,6 +126,6 @@ export async function install({ environment = process.env, platform = process.pl
     case 'different': print(message('install.different', path)); print(pasted(result.existing)); print(message('install.entry')); print(pasted(entry)); break
     default: print(message('install.unreadable', path)); print(pasted(entry))
   }
-  print(message('install.copy', fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '')))
+  print(message('install.copy', fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, ''), VERSION))
   return passed && ['created', 'added', 'same'].includes(result.status) ? 0 : 1
 }

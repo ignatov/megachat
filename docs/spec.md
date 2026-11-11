@@ -221,7 +221,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 
 - The command `megachat` must check the version of Node.js before it loads Megachat. A Node.js older than the
   `engines` range must get one line with the found and the needed version, and the exit code 1.
-- One line must install Megachat and update it: `npx -y github:ignatov/megachat install`.
+- One line must install the last release of Megachat and update it:
+  `npx -y "github:ignatov/megachat#semver:x" install`.
 - `install` must check the platform, Central and its login, Claude Code and its key from Central, and the command
   `codex` on the `PATH`. It must use the places that Megachat uses at run time.
 - Each check must print one line. A failed check must name what to install or do. A platform other than macOS must
@@ -238,11 +239,25 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - An equal entry must stay. `install` must then say that Megachat is installed already.
 - A different entry `Megachat`, or a file that is not a JSON object, must stay unchanged. `install` must print the
   entries and what to do, and exit with 1. There is no option to replace the entry.
+- The last line of `install` must give the version and the directory of the copy.
 - The exit code must be 0 only when the entry is in place and each check passed.
 - `MEGACHAT_ACP_CONFIG` may replace the path of `acp.json`. The tests set it to a temporary file.
-- The package must hold `bin`, `src`, `resources`, `README.md` and `package.json`, and no tests.
+- The package must hold `bin`, `src`, `resources`, `README.md`, `LICENSE` and `package.json`, and no tests.
   [@test] ../test/install.test.mjs
   [@test] ../test/package.mjs
+
+## Release
+
+- A release must be the tag `v<version>` of the version in `package.json`, and the GitHub release of that tag.
+- The install line must select the release with the highest version. It must not select a pre-release.
+- `npm run release` must refuse a checkout with changes, a branch other than `main`, and a `main` that is not equal
+  to `origin/main`.
+- `npm run release` must refuse a version that is not three numbers, a tag that exists in the checkout or in the
+  remote repository, and a version that is not higher than the last release.
+- The notes of a release must be the subjects of the commits since the last release.
+- `npm run release` must run `npm test` and `npm run test:package` before it makes the tag.
+- `npm run release -- --dry-run` must print the release and change nothing.
+  [@test] ../test/release.test.mjs
 
 ## Testing / Local Run
 

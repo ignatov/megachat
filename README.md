@@ -11,16 +11,21 @@ All model traffic goes through JetBrains Central.
 Run this line once in a terminal, then open Megachat in the IDE:
 
 ```sh
-npx -y github:ignatov/megachat install
+npx -y "github:ignatov/megachat#semver:x" install
 ```
 
-The line installs a copy of Megachat in the npm cache. It checks what the machine needs, and prints one line for each
-result. Then it adds the entry `Megachat` to `agent_servers` in `~/.jetbrains/acp.json`. The entry starts the installed
-copy directly with Node.js, not with `npx`. The exit code is 0 only when the entry is in place and each check passed.
+The line installs a copy of the last release of Megachat in the npm cache. A release is a tag `v<version>` of this
+repository, and `#semver:x` selects the tag with the highest version. Keep the quotation marks: a zsh with the option
+`extendedglob` reads `#` as a pattern.
+
+The line checks what the machine needs, and prints one line for each result. Then it adds the entry `Megachat` to
+`agent_servers` in `~/.jetbrains/acp.json`. The entry starts the installed copy directly with Node.js, not with `npx`.
+The last line gives the version and the directory of the copy. The exit code is 0 only when the entry is in place and
+each check passed.
 
 The machine needs:
 
-- Read access to the repository `ignatov/megachat`, and a working git access to GitHub. `npx` clones the repository.
+- git, and access to `github.com`. The repository is public, so the line needs no GitHub account.
 - Node.js 22.19 or later.
 - The Central command at `~/.local/bin/central`, with a login: `central login`.
 - Claude Code at `~/.local/bin/claude`, set up through Central: `central add claude-code`.
@@ -28,7 +33,7 @@ The machine needs:
 - macOS. Nobody tested Megachat on another platform.
 
 The first run takes about a minute, and the copy takes about 870 MB in the npm cache. On each run, `npx` asks GitHub
-for the last commit, and it installs the package again after a new commit. So the entry does not use `npx`.
+for the tags, and it installs the package again only after a new release. So the entry does not use `npx`.
 
 The installed copy does not use `package-lock.json`. So its indirect dependencies can differ from the tested ones.
 
@@ -38,11 +43,11 @@ Megachat on such a build.
 When `acp.json` has another entry `Megachat`, the line does not change the file. It prints both entries and what to
 do. Two copies of Megachat on one machine replace the daemon of each other.
 
-**Update.** Run the same line. The daemon of the earlier copy stops at the next attach of the IDE, and the daemon of
-the new copy starts.
+**Update.** Run the same line. It installs the last release in the same directory, so the entry stays. The daemon of
+the earlier copy stops at the next attach of the IDE, and the daemon of the new copy starts.
 
 **Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then run `npx clear-npx-cache`, or delete the
-directory `_npx/<hash>` in the path that `install` printed after "Megachat runs from".
+directory `_npx/<hash>` in the path that `install` printed in its last line.
 
 ## Install from a checkout
 
@@ -116,6 +121,7 @@ list.
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |
 | `src/messages.mjs`, `resources/Megachat.properties` | The user-visible strings and the errors. |
 | `build.mjs` | The bundle in `out/bundle/`. |
+| `release.mjs` | The release of the version in `package.json`: the tag and the GitHub release. |
 
 ## Tests
 
@@ -138,3 +144,25 @@ tests the last build, and that build can be older than the source. Only `npm run
 
 The requirements are in `docs/spec.md`. The ACP extensions that Megachat and Air exchange are in
 `docs/air-contract.md`. The later work is in `docs/roadmap.md`.
+
+## Releases
+
+A release is the tag `v<version>` and its GitHub release. The install line gives a colleague the release with the
+highest version. So a commit on `main` reaches a colleague only with the next release.
+
+To make a release:
+
+1. Set the new version with `npm version <version> --no-git-tag-version`. Commit `package.json` and
+   `package-lock.json`, and push `main`.
+2. Run `npm run release`.
+
+`npm run release` refuses a checkout with changes, a branch other than `main`, a `main` that is not equal to
+`origin/main`, and a version that is not higher than the last release. Then it runs `npm test` and
+`npm run test:package`. Then it makes the tag, pushes it, and makes the GitHub release with `gh`. The notes of the
+release are the subjects of the commits since the last release. `npm run release -- --dry-run` prints the release and
+changes nothing.
+
+## License
+
+Megachat has the Apache License 2.0. The text is in `LICENSE`. Each npm package that Megachat installs keeps its own
+license.

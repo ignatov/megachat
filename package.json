@@ -2,6 +2,7 @@
   "name": "megachat",
   "version": "0.2.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "megachat": "bin/megachat.mjs"
@@ -20,6 +21,7 @@
     "test": "node --import ./test/state-guard.mjs --test test/*.test.mjs",
     "test:bundle": "npm run build && node --import ./test/state-guard.mjs --test test/bundle.test.mjs",
     "test:package": "node --import ./test/state-guard.mjs --test test/package.mjs",
+    "release": "node release.mjs",
     "start": "node src/main.mjs start",
     "daemon": "node src/main.mjs daemon",
     "acp": "node src/main.mjs acp"

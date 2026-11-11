@@ -131,7 +131,8 @@ test('install writes the entry of this copy once, and reports each check', { tim
   assert.doesNotMatch(first.stdout, /test-key/)
   for (const line of [macOS ? 'The platform is macOS.' : `Nobody tested Megachat on ${process.platform}.`,
     'Central gives a valid configuration.', `Claude Code is at ${join(home, '.local', 'bin', 'claude')}, and it uses Central.`,
-    `Codex is at ${join(tools, 'codex')}.`, `Megachat created ${path} with the entry Megachat.`]) {
+    `Codex is at ${join(tools, 'codex')}.`, `Megachat created ${path} with the entry Megachat.`,
+    `Megachat ${manifest.version} runs from ${dirname(dirname(launcher))}.`]) {
     assert.ok(first.stdout.includes(line), `${line}\n${first.stdout}`)
   }
   const expected = { agent_servers: { Megachat: { command: join(nodes, 'node'), args: [launcher, 'acp'] } } }
