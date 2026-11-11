@@ -4,6 +4,12 @@ import { promisify } from 'node:util'
 const execute = promisify(execFile)
 /** The C locale gives the start time and the CPU load in one format on each machine. */
 const ENVIRONMENT = { LC_ALL: 'C', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }
+/**
+ * In the C locale, `ps` writes each byte outside ASCII of the column `args` in the form of vis(3), such as `M-CM-)` for
+ * `é`. The character type `UTF-8` keeps these bytes. The other categories stay C, so `lstart` and `pcpu` keep their
+ * format, and the column `ucomm` is the same in both locales. A machine without the locale `UTF-8` gives the C output.
+ */
+const PS_ENVIRONMENT = { LANG: 'C', LC_CTYPE: 'UTF-8', PATH: ENVIRONMENT.PATH }
 const TIMEOUT_MS = 10000
 /** A command line can be long, for example the class path of a Java process. */
 const MAX_BUFFER = 64 * 1024 * 1024
@@ -65,7 +71,7 @@ function macProcessTable() {
     platform: 'darwin', supported: true,
     async processes() {
       const { stdout } = await execute('/bin/ps', ['-axww', '-o', 'pid=,ppid=,lstart=,pcpu=,ucomm=,args='],
-        { env: ENVIRONMENT, encoding: 'latin1', maxBuffer: MAX_BUFFER, timeout: TIMEOUT_MS })
+        { env: PS_ENVIRONMENT, encoding: 'latin1', maxBuffer: MAX_BUFFER, timeout: TIMEOUT_MS })
       return parseProcesses(stdout)
     },
     async resolve(pids) {

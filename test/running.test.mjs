@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { readFile, realpath } from 'node:fs/promises'
 import test from 'node:test'
 import { createModels } from '@earendil-works/pi-ai/models'
@@ -276,6 +277,8 @@ test('the parsers read synthetic ps and lsof output with spaces, short days, lon
     line(20404, 1, 'Wed Nov 11 09:05:00 2026', '30,7', 'idea', '/Applications/IntelliJ IDEA 2026.3 EAP.app/Contents/MacOS/idea -Dx=1'),
     line(1448, 1288, 'Wed Nov 11 09:06:00 2026', '0.0', 'Codex (Renderer)', '/Applications/ChatGPT.app/Contents/Frameworks/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer'),
     line(77, 1, 'Thu Jan  1 00:00:01 2026', '0.0', 'привет', '/Users/user/bin/привет arg'),
+    // The shape of the character type UTF-8: `ucomm` has 16 bytes, and `args` keeps the bytes outside ASCII.
+    line(80, 1, 'Thu Nov 12 00:13:22 2026', '0.0', 'Café', '/Applications/Café.app/Contents/MacOS/Café --flag'),
     `${line(78, 1, 'Thu Jan  1 00:00:01 2026', '0.0', 'zombie', '').trimEnd()}`,
     '  PID  PPID STARTED                       %CPU UCOMM            ARGS',
     'garbage line',
@@ -288,6 +291,7 @@ test('the parsers read synthetic ps and lsof output with spaces, short days, lon
     [20404, 1, 30.7, 'idea', '/Applications/IntelliJ IDEA 2026.3 EAP.app/Contents/MacOS/idea -Dx=1'],
     [1448, 1288, 0, 'Codex (Renderer)', '/Applications/ChatGPT.app/Contents/Frameworks/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer'],
     [77, 1, 0, 'привет', '/Users/user/bin/привет arg'],
+    [80, 1, 0, 'Café', '/Applications/Café.app/Contents/MacOS/Café --flag'],
     [78, 1, 0, 'zombie', ''],
   ])
   assert.equal(processes[0].startedAt, new Date(2026, 10, 2, 22, 59, 31).getTime())
@@ -310,6 +314,18 @@ test('the real process table of macOS gives this test process and its working di
   assert.ok(Math.abs(self.startedAt - (Date.now() - process.uptime() * 1000)) < 5000)
   const found = await table.resolve([process.pid])
   assert.equal(found.get(process.pid).cwd, await realpath(process.cwd()))
+})
+
+test('the real process table of macOS gives a command line outside ASCII in UTF-8 and the start time of the process', { skip: process.platform !== 'darwin' }, async t => {
+  const marker = `Café-日本-${process.pid}`
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', marker], { stdio: 'ignore' })
+  t.after(() => child.kill())
+  await new Promise(resolve => child.once('spawn', resolve))
+  const started = Date.now()
+  const item = (await processTable().processes()).find(entry => entry.pid === child.pid)
+  assert.ok(item?.command.endsWith(` ${marker}`), item?.command)
+  assert.equal(item.ppid, process.pid)
+  assert.ok(Math.abs(item.startedAt - started) < 5000)
 })
 
 test('the main agent has the tool agents_running, and the children do not get it', { timeout: 10000 }, async t => {

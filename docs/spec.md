@@ -246,6 +246,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Megachat must keep the view of the processes for 5 seconds, so two calls in that time make one `ps` call. `scannedAt`
   must give the time of the view. Megachat must get the working directory once for each process, and again for a PID
   with another start time.
+- Megachat must read a name and a command line outside ASCII as UTF-8, also an app name such as `Café.app`, and the
+  start time in one fixed format.
 - A working directory that Megachat cannot read must give a row with the `cwd` null and an entry in `incomplete`, not an
   error. A failed `ps` call must give an empty list and an entry in `incomplete`. On a platform other than macOS, the list
   must be empty, and `incomplete` must name the platform. `incomplete` must name the logs of OpenCode when the list has
