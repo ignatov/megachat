@@ -36,9 +36,11 @@ export function agentCommand(value) {
 }
 
 export class CentralConfigurationService {
-  constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'), environment = process.env } = {}) {
+  constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'),
+    settings = join(homedir(), '.claude/settings.json'), environment = process.env } = {}) {
     this.central = central
     this.claude = claude
+    this.settings = settings
     this.environment = environment
   }
 
@@ -83,7 +85,7 @@ export class CentralConfigurationService {
 
   async childEnvironment() {
     try {
-      const settings = JSON.parse(await readFile(join(homedir(), '.claude/settings.json'), 'utf8'))
+      const settings = JSON.parse(await readFile(this.settings, 'utf8'))
       const baseUrl = settings.env?.ANTHROPIC_BASE_URL
       requireCondition(typeof settings.apiKeyHelper === 'string', 'central')
       const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: 10000, maxBuffer: 64000 })

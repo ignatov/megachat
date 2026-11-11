@@ -185,6 +185,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/state.test.mjs
   [@test] ../test/recovery.test.mjs
   [@test] ../test/transport.test.mjs
+  [@test] ../test/launch.test.mjs
 
 ## Error Handling
 
@@ -220,7 +221,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Each command may be a JSON array, a JSON object with `command`, `args`, `env`, and `cwd`, or one executable path.
 - Without these variables, Megachat must start the agents that npm installed with it. The module system finds them in
   `node_modules` of a checkout and next to an installed copy.
-- The node that runs Megachat must come first on the `PATH` of its children.
+- The node that runs Megachat must come before the other directories on the `PATH` of its children. For Codex, the `bin` directory of Megachat comes before that node, because it holds the `codex` command that Central starts.
   [@test] ../test/launch.test.mjs
   [@test] ../test/package.mjs
 - The daemon must publish its build and a digest of the agent commands in its connection file.

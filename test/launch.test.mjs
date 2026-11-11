@@ -113,3 +113,25 @@ test('a client that passes no agent command keeps a daemon of its own build', ()
   assert.equal(needsReplacement('0.1.0-abc+123456789abc', own, {}), true)
   assert.equal(needsReplacement('0.1.0+build-abc+123456789abc', '0.1.0+build-abc+000000000000', {}), false)
 })
+
+test('the environment of a Claude child has the Central configuration and no background tasks', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-settings-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  // The test has its own settings file. It must not read the settings of the user or run the key command of the user.
+  const settings = join(directory, 'settings.json')
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test' } }))
+  const configuration = new CentralConfigurationService({ settings, claude: '/air/claude', environment: { PATH: '/usr/bin', HOME: directory, SECRET: 'x' } })
+  const environment = await configuration.childEnvironment()
+  assert.equal(environment.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1')
+  assert.equal(environment.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION, 'false')
+  assert.equal(environment.ANTHROPIC_API_KEY, 'test-key')
+  assert.equal(environment.ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/wire/test')
+  assert.equal(environment.CLAUDE_CODE_EXECUTABLE, '/air/claude')
+  assert.equal(environment.PATH.split(delimiter)[0], dirname(process.execPath))
+  // A variable that is not in the list of the base environment does not reach the child.
+  assert.equal(environment.SECRET, undefined)
+  // A base URL that is not the local Central proxy gives no environment.
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'https://example.com/wire/test' } }))
+  t.mock.method(process.stderr, 'write', () => true)
+  await assert.rejects(configuration.childEnvironment(), { code: 'central' })
+})

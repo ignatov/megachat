@@ -15,7 +15,7 @@ import { CodexSessionHistoryService } from '../src/CodexSessionHistoryService.mj
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
-import { message } from '../src/messages.mjs'
+import { MegachatError, message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { terminalStates } from '../src/MegachatState.mjs'
 import { waitForState } from '../src/waitForState.mjs'
@@ -25,7 +25,7 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {} } = {}) {
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -47,6 +47,7 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
   const launchedAgents = []
   const children = new AcpRunService(service.state, { childLaunch: async agent => {
     launchedAgents.push(agent)
+    if (launchError) throw launchError
     return { env: { ...process.env, ...env } }
   } }, {
     args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], deadlineMs,
@@ -342,6 +343,43 @@ test('a stop of the daemon continues a running child without the count of an att
   const state = await finishChildren(service)
   assert.equal(state.runs[continued.id].status, 'completed')
   assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), `wait\n${message('child.continue')}\n\n${message('child.task')}\nwait\n`)
+})
+
+test('a failed Central configuration starts no child agent and gets no continuation', { timeout: 10000 }, async t => {
+  const { cwd, service, launchedAgents } = await fixture(t, 'hello', 'claude', { launchError: new MegachatError('central') })
+  service.state.resumeDelayMs = 0
+  t.mock.method(process.stderr, 'write', () => true)
+  await service.submit('work', 'Work')
+  const state = await finishChildren(service)
+  t.mock.restoreAll()
+  const runs = Object.values(state.runs)
+  assert.deepEqual(launchedAgents, ['claude'])
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'interrupted')
+  assert.equal(runs[0].error, message('error.central'))
+  assert.equal(runs[0].pid, null)
+  // The fake agent writes these files at its start and at its prompt.
+  await assert.rejects(readFile(join(cwd, 'session-request.json'), 'utf8'), { code: 'ENOENT' })
+  await assert.rejects(readFile(join(cwd, 'dispatches'), 'utf8'), { code: 'ENOENT' })
+})
+
+test('a view replays a conversation of 250 entries in order, and a history request returns at most 100 entries', { timeout: 20000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t)
+  for (let index = 0; index < 250; index++) {
+    const submission = await service.root.submit({ type: 'write', entry: {
+      kind: 'test.history', model: [{ role: 'user', content: `Message ${index}`, timestamp: 0 }],
+    } }, BACKGROUND_CONTEXT)
+    await submission.wait(BACKGROUND_CONTEXT)
+  }
+  const page = await daemon.json('/history?before=1000000&after=0')
+  assert.equal(page.items.length, 100)
+  const viewer = await attach(daemon, cwd, { loading: true, native: true })
+  t.after(() => viewer.connection.close())
+  const replay = viewer.updates.filter(event => event.update.sessionUpdate === 'user_message_chunk')
+  assert.deepEqual(replay.map(event => event.update.content.text), Array.from({ length: 250 }, (_, index) => `Message ${index}`))
+  assert.deepEqual(replay.map(event => event._meta.loadSessionReplayIndex), Array.from({ length: 250 }, (_, index) => index))
+  assert.equal(replay.filter(event => event._meta.loadSessionEndOfRecordedHistory).length, 1)
+  assert.equal(replay.at(-1)._meta.loadSessionEndOfRecordedHistory, true)
 })
 
 test('storage has one owner and rejects unauthenticated clients', { timeout: 10000 }, async t => {
