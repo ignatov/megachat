@@ -4,6 +4,7 @@ import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/
 import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
 import { logEvent, message, requireCondition } from './messages.mjs'
 import { DEFAULT_EVENT_IGNORE, eventPatterns } from './ProjectEventFilter.mjs'
+import { expandHome } from './ProjectDirectories.mjs'
 
 /** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
 export const COMPACT_TOKENS_VARIABLE = 'MEGACHAT_COMPACT_TOKENS'
@@ -104,9 +105,11 @@ export const SETTINGS = [
   { key: 'events.ignore', default: DEFAULT_EVENT_IGNORE, applies: 'nextEvent', validate: eventPatterns,
     allowed: () => ({ other: message('settings.ignore.other') }) },
   { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
+    // The value must be a path that each create can use: an absolute path after the expansion of `~`, as the create
+    // expands it on this platform.
     validate: value => {
       const path = typeof value === 'string' ? value.trim().replace(/(.)[/\\]+$/, '$1') : ''
-      return path.length <= 4096 && !path.includes('\0') && (path === '~' || /^~[/\\]/.test(path) || isAbsolute(path)) ? path : undefined
+      return path && path.length <= 4096 && !path.includes('\0') && isAbsolute(expandHome(path)) ? path : undefined
     },
     allowed: () => ({ other: message('settings.newRoot.other') }) },
   { key: 'budget.dailyUsd', default: 0, applies: 'nextTurn',

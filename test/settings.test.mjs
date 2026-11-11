@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
 import test from 'node:test'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
@@ -11,6 +11,7 @@ import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
+import { expandHome } from '../src/ProjectDirectories.mjs'
 import { MegachatSettings, SETTINGS, SettingsStore } from '../src/Settings.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -192,6 +193,13 @@ test('each setting accepts its allowed values and refuses each other value', asy
     for (const [value, normalized] of cases) assert.equal((await settings.set(key, value)).value, normalized, `${key} ${value}`)
     for (const value of refused[key]) await assert.rejects(settings.set(key, value), { code: 'settingValue' }, `${key} ${value}`)
   }
+  // The setting accepts a directory of the new projects only in a form that the create expands on this platform.
+  for (const value of ['~\\work', '~/work', '~', '/srv', 'C:\\work', '\\\\server\\share', '~work']) {
+    const usable = isAbsolute(expandHome(value, '/home/user'))
+    if (usable) assert.equal((await settings.set('projects.newRoot', value)).value, value, value)
+    else await assert.rejects(settings.set('projects.newRoot', value), { code: 'settingValue' }, value)
+  }
+  if (sep === '/') await assert.rejects(settings.set('projects.newRoot', '~\\work'), { code: 'settingValue' })
   await assert.rejects(settings.set('coordinator.color', 'red'), { code: 'settingKey' })
   await assert.rejects(settings.reset('coordinator.color'), { code: 'settingKey' })
   await assert.rejects(settings.setOnboarding('later'), { code: 'settingValue' })
