@@ -7,7 +7,7 @@ import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { parseProcesses, parseWorkingDirectories, processTable } from '../src/ProcessTable.mjs'
+import { parseOpenFiles, parseProcesses, processTable } from '../src/ProcessTable.mjs'
 import { ACTIVE_CPU_PERCENT, RunningAgents, SNAPSHOT_TTL_MS } from '../src/RunningAgents.mjs'
 
 // Each command line of the fake table holds this marker, so a test can prove that no argument reaches the output.
@@ -296,14 +296,15 @@ test('the parsers read synthetic ps and lsof output with spaces, short days, lon
   ])
   assert.equal(processes[0].startedAt, new Date(2026, 10, 2, 22, 59, 31).getTime())
   assert.equal(processes[3].startedAt, new Date(2026, 0, 1, 0, 0, 1).getTime())
-  const directories = parseWorkingDirectories([
-    'p10', 'fcwd', 'n/Users/user/src/my project',
-    'p11', 'fcwd', 'n/private/tmp/\\xd1\\x82\\xd0\\xb5\\xd1\\x81\\xd1\\x82 dir',
+  const found = parseOpenFiles([
+    'p10', 'fcwd', 'n/Users/user/src/my project', 'ftxt', 'n/Users/user/bin/a.jsonl', 'f3', 'n/Users/user/.codex/sessions/rollout-a.jsonl',
+    'p11', 'fcwd', 'n/private/tmp/\\xd1\\x82\\xd0\\xb5\\xd1\\x81\\xd1\\x82 dir', 'f4', 'n/Users/user/\\xd1\\x82.jsonl', 'f5', 'n/Users/user/log.txt',
     'p12', 'fcwd',
     'pabc', 'n/not/a/pid',
-    'p13', 'fcwd', 'n/first', 'n/second', '',
+    'p13', 'fcwd', 'n/first', 'n/second', 'f7', 'n/x.jsonl', 'f8', 'n/x.jsonl', '',
   ].join('\n'))
-  assert.deepEqual([...directories], [[10, '/Users/user/src/my project'], [11, '/private/tmp/тест dir'], [13, '/first']])
+  assert.deepEqual([...found], [[10, { cwd: '/Users/user/src/my project', files: ['/Users/user/.codex/sessions/rollout-a.jsonl'] }],
+    [11, { cwd: '/private/tmp/тест dir', files: ['/Users/user/т.jsonl'] }], [12, { cwd: null, files: [] }], [13, { cwd: '/first', files: ['/x.jsonl'] }]])
 })
 
 test('the real process table of macOS gives this test process and its working directory', { skip: process.platform !== 'darwin' }, async () => {

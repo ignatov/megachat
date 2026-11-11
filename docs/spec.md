@@ -220,7 +220,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/session-history.test.mjs
 - The tool `agents_running` of the main agent must list the agent sessions that run on the machine now: Claude Code,
   Codex, pi and OpenCode, also below the ACP adapters `claude-agent-acp` and `codex-acp`. It must read the process
-  table only, and it must change nothing.
+  table, and the session logs only with the consent `sessions.index`. It must change nothing.
 - One session must give one row. An agent process below a process of the same agent must not be a row. An adapter must
   be a row only when no agent of its own runs below it. A helper of an agent, such as an MCP server, a shell or a tool,
   must not be a row. The background service of an agent (`claude daemon`, `codex app-server daemon`) and the processes
@@ -234,12 +234,15 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   the session ID, the title and the task directory.
 - The state must be `orphan` when the parent chain reaches launchd without an owner, or when the run of a Megachat child
   ended. A shell that stays after its terminal is no owner. Else the state must be `active` at a CPU load of 10 percent
-  of one core or more, of the session process with its helpers, and `idle` below it.
+  of one core or more, of the session process with its helpers, now or in a scan of the last 2 minutes, or at a write
+  to its session log in the last 2 minutes. Else the state must be `idle`.
 - The server of `tmux`, `screen` or `herdr` must count as a live terminal. Thus a session in a multiplexer without a
   client is not an orphan.
-- In this version, `status` and `lastActivityAt` must be null, a session outside Megachat must have an empty `sessionId`
-  and `title`, and `incomplete` must name the session logs. A session that waits for the model is `idle`.
-- The order must be: orphan, active, idle, and the newest start first in each group. `limit` must be 1 to 200, and the
+- Without the consent `sessions.index`, `status` and `lastActivityAt` must be null, a session outside Megachat must have
+  an empty `sessionId` and `title`, and `incomplete` must say that the session logs are off. Megachat must then read no
+  session file and no process file of an agent.
+- The order must be: orphan, active, idle, and the newest activity first in each group: the time of the last log write,
+  or the start time for a row without a log. `limit` must be 1 to 200, and the
   default must be 50. `nextCursor` must continue after the last row of the page, and `truncated` must be true when more
   rows exist. `agent`, `project` and `state` must select the rows. `project` must select each working directory that
   is that directory or in it.
@@ -255,9 +258,50 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The output must hold no command-line argument, no message text and no environment. The MCP server of the children must
   not have the tool.
   [@test] ../test/running.test.mjs
+- With the consent `sessions.index`, Megachat must keep a live table of each session file of Claude Code, Codex and pi
+  on the machine, also outside the listed directories, in a table of its own in `sessions.sqlite`: the path, the inode,
+  the size, the byte offset, the agent, the session ID, the `cwd`, the title, the start time, the time of the last write
+  and the last step. It must hold no message text. A restart must answer from this table before it reads a file again.
+  A query of `agents_running` must read the memory, not the session files.
+- The first pass must read the head and the last 64 KB of each file: the files with a change in the last 24 hours first,
+  the newest first, then the other files. A tail without a step can read more lines backwards, at most 1 MB.
+- The table must read a file on an event of the watch of the provider roots, the same watch as the index. Each file with
+  a write in the last hour must also get a poll of its size every 2 seconds, because macOS reports a write only when a
+  file closes, and Codex keeps its file open. A read must take only the appended complete lines. A smaller file or
+  another inode must make the table read the file again.
+- Each row must get its session log only by a certain link: the session ID of a Megachat run; an open log of the process
+  (Codex keeps its log open, one row for each open log of a `codex app-server`); the process file
+  `~/.claude/sessions/<PID>.json` of Claude Code with the PID and the same start time; else the only log of the agent
+  in the `cwd` that began in the first 30 seconds of the process, when no other row of the agent in that directory
+  could have begun it. Two processes of one agent in one directory that start at nearly the same time must not get a
+  log, so no row shows the title of another session. A row without a certain log must have an empty `title`, a null
+  `status` and `lastActivityAt`, and one entry in `incomplete` must give the count of such rows.
+- The log must give `sessionId`, `title` (a title of the user or of the agent, never a message text), `lastActivityAt`
+  (the time of the last write) and `status`. The status is a reading of the log tail, not a fact from the agent:
+  - `working`: the tail ends with a tool call, a tool result or a message without a reply, and the last write is less
+    than 10 minutes old. Without a write and a CPU load for 2 to 10 minutes, the status stays `working`.
+  - `stuck`: such an open step and no write for 10 minutes or more.
+  - `waiting_for_user`: the tail ends with a finished turn, an interrupted turn, or a log without a turn.
+  - `idle`: a finished turn and no write for 30 minutes or more.
+  - `waiting_for_permission` must not be given: Claude Code, Codex and pi write no record of a permission request to
+    the log. Without the state request of Air it is not knowable. A pending permission prompt shows as `working`, then
+    as `stuck`.
+- A session in a detached `tmux` keeps its terminal owner and gets its status from its log as each other session.
+- `incomplete` must name the first pass of the table while it reads the files of the last 24 hours, the count of the
+  rows without a certain log, and the count of the logs that Megachat could not read.
+- Megachat must write to no provider file and open each one read-only.
+  [@test] ../test/session-logs.test.mjs
+- `agents_session_history` of the main agent with `order` `newest` must read a session of the live table by its agent
+  and session ID, also outside the listed directories, from the end of its log: the last `limit` entries (20 by
+  default, at most 100) in the order of the log, and a cursor to the older page. `query` must select the entries in the
+  session. A page must read at most about 8 MB, so a log of 600 MB opens without a read of the whole file. Each text
+  must pass the secret filter and be cut to about 2 KB. Without the consent, the tool must fail with a text that says
+  that the session logs are off. The tool `session_history` of the children must keep its limit to the listed
+  directories and must not have `order`.
+  [@test] ../test/session-logs.test.mjs
 - With the setting `sessions.index` on, Megachat must keep an index of the past Claude Code, Codex and pi sessions in `sessions.sqlite` in the state directory. The default is off.
 - The setup must ask for the consent with "Index past Claude, Codex and pi sessions in your projects? Everything stays local." The main agent must set `sessions.index` to on only when the user agrees.
-- With the setting off, Megachat must read no session file for the index, watch no directory of a provider, and keep no `sessions.sqlite`. A change to off must stop the import and delete the file.
+- With the setting off, Megachat must read no session file for the index or for the live table of `agents_running`, watch no directory of a provider, and keep no `sessions.sqlite`. A change to off must stop the import and delete the file.
 - A change to on must start the import at once, without a restart.
 - The index must hold only a session whose `cwd` is a listed directory or a directory in one. The sessions of a newly listed directory must enter the index. The sessions of a removed directory must leave it.
 - The sources must be `~/.claude/projects/<encoded cwd>/<session ID>.jsonl`, `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` or `$CODEX_HOME/sessions`, and `~/.pi/agent/sessions/--<path>--/*.jsonl` or `PI_CODING_AGENT_SESSION_DIR`.
@@ -292,7 +336,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - All JetBrains products of the user must share this directory, its daemon, and its conversation.
 - `MEGACHAT_HOME` or the final command argument may select another directory for a test or development.
 - The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log. It may hold `settings.json` and `spend.json`.
-- It may hold `sessions.sqlite`, the index of past sessions, only with the consent of the user.
+- It may hold `sessions.sqlite`, the index of past sessions and the live table of the session files, only with the consent of the user.
 - The name `memory.md` is reserved for learned memory that the user can edit. Megachat does not read it yet.
 - The directories must be private to the user: mode 0700 for directories and 0600 for files on macOS and Linux.
 - Only one daemon may own a storage directory.

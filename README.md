@@ -244,18 +244,35 @@ does not offer it again. Ask the agent to run the setup again at any time. A fil
 
 Ask the agent "what is running now?". The main agent calls its tool `agents_running` and answers in the chat. The tool
 lists the running sessions of Claude Code, Codex, pi and OpenCode on the machine, from a terminal, an IDE or Megachat.
-It reads the process table with one `ps` call, and the working directory of each new session with one `lsof` call. It
-changes nothing, and it stops no process. Each session has its agent, its project, its start time, its owner (the
-terminal, the IDE or Megachat) and a state:
+It reads the process table with one `ps` call, and the working directory and the open session logs of each new
+session with one `lsof` call. It changes nothing, and it stops no process. Each session has its agent, its project,
+its start time, its owner (the terminal, the IDE or Megachat) and a state:
 
 - `orphan`: no terminal, IDE, app or Megachat run owns the process any more.
-- `active`: the session and its helpers use 10 percent of one core or more.
+- `active`: the session and its helpers use 10 percent of one core or more, now or in the last 2 minutes, or its log
+  got a write in the last 2 minutes.
 - `idle`: each other session.
 
 The server of `tmux`, `screen` or `herdr` counts as a live terminal, so a session in a detached multiplexer is not an
-orphan. The tool keeps its view for 5 seconds. This version reads no session log. So it gives no status and no time of
-the last activity, and only a Megachat task has a session ID and a title. A session that waits for the model shows as
-idle. The tool reads the processes on macOS only.
+orphan. The tool keeps its view for 5 seconds. It reads the processes on macOS only.
+
+With the consent `sessions.index` (see the next section), Megachat also reads the metadata and the tail of the session
+log of each running session, also outside the listed directories. Then each session also has its session ID, its
+title, the time of the last write to its log, and a status:
+
+- `working`: the log ends with a tool call, a tool result or a message without a reply.
+- `stuck`: such an open step, and no write for 10 minutes or more.
+- `waiting_for_user`: the log ends with a finished turn.
+- `idle`: a finished turn, and no write for 30 minutes or more.
+
+The status is a reading of the log, not a fact from the agent. Claude Code, Codex and pi write no record of a
+permission prompt to their logs. So a session that waits for a permission shows as `working`, and after 10 minutes as
+`stuck`. Megachat links a process to its log only when the link is certain: Codex keeps its log open, Claude Code
+writes `~/.claude/sessions/<PID>.json`, and for pi the log must begin in the first 30 seconds of the process. A session
+without a certain link has no title and no status, and the answer says so. A `codex app-server` gives one row for each
+open session. Then ask "what is session X doing?": the main agent reads the last messages of the session from the end
+of its log, also for a log of hundreds of MB. Without the consent, Megachat reads no session log, and the answer says
+so.
 
 ## The index of past sessions
 
@@ -283,6 +300,11 @@ keeps no index file. The search in Claude Code and Codex sessions then reads the
   daemon and on each change of a session file. It reads only the new lines of a file.
 - **The size.** One measurement with 100,000 synthetic messages of 2 KB gave a file of 640 MB. Real text takes less
   room, but plan for some hundreds of MB. The age limit and the limit of 2 KB for each message bound the file.
+- **The live table.** The same consent covers the table of `agents_running`: for each session file on the machine, the
+  path, the inode, the size, the agent, the session ID, the directory, the title, the start time, the time of the last
+  write and the last step, and no message text. It reads the head and the last 64 KB of each file, the files of the
+  last 24 hours first, then only the appended lines. A file with a write in the last hour gets a poll of its size every
+  2 seconds. The table stays in `sessions.sqlite` across a restart.
 - **Turn it off.** The setting `off` stops the import and deletes `sessions.sqlite` at once.
 
 The session text is data for the agent, not instructions.
@@ -309,6 +331,7 @@ The session text is data for the agent, not instructions.
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
+| `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/ProjectEventFilter.mjs` | The path patterns of `events.ignore`: their syntax and their match. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |

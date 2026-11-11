@@ -61,6 +61,35 @@ export function encodedDirectory(name, directories, encode) {
 }
 
 /**
+ * Parses one line of a session file with its source, as `{ value, parsed }`, or undefined for a line that is no JSON
+ * object. `value` is the JSON value, so a reader also gets the field `timestamp` that each agent writes.
+ */
+export function parseLine(source, line, path) {
+  let value
+  try { value = JSON.parse(line) }
+  catch { return undefined }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return { value, parsed: source.parse(value, line, path) }
+}
+
+/** The text of a small file, at most [limit] bytes. A larger file gives an error. The file opens read-only. */
+export async function readSmall(fs, path, limit = 64 * 1024) {
+  const handle = await fs.open(path, 'r')
+  try {
+    const buffer = Buffer.alloc(limit + 1)
+    let length = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length)
+      if (bytesRead === 0) break
+      length += bytesRead
+      if (length > limit) throw new Error('large')
+    }
+    return buffer.subarray(0, length).toString('utf8')
+  }
+  finally { await handle.close() }
+}
+
+/**
  * Reads the complete lines of a file from [start] to [end] in batches, as `{ lines, end }`. `end` is the byte offset
  * after the last line of the batch. A last line without a newline stays unread until a writer completes it. A line
  * above [maxLine] bytes is skipped, because the parse of such a line blocks the event loop: mostly an image or a large

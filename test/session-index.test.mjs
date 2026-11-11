@@ -122,10 +122,17 @@ function fakeWatch() {
 }
 
 const clock = (now = NOW) => ({ value: now, now() { return this.value } })
+/** Timers that never fire, so the size poll of the live table does not run in a test of the index. */
+const stillTimers = { setInterval: () => undefined, clearInterval() {} }
 
+/**
+ * An index service of the fixture. The live table of the session logs reads each session file of the machine, so it
+ * gets its own file system: a test that counts the reads of the import does not count its reads.
+ */
 async function service(t, { home, path }, state, options = {}) {
   const watch = fakeWatch()
-  const index = new SessionIndexService({ path, state, home, environment: {}, watch: watch.watch, clock: options.clock ?? clock(), debounceMs: 10, ...options })
+  const index = new SessionIndexService({ path, state, home, environment: {}, watch: watch.watch, clock: options.clock ?? clock(), debounceMs: 10,
+    catalog: { fs: fsp, timers: stillTimers }, ...options })
   await mkdir(join(home, 'state'), { recursive: true })
   t.after(() => index.close())
   return { index, watch }
@@ -521,7 +528,7 @@ test('each source parses a line into the session data and one entry with its key
   const time = '2026-11-10T10:00:00.000Z'
   assert.deepEqual(parse(claude, { type: 'assistant', uuid: 'u', cwd: '/w', timestamp: time,
     message: { content: [{ type: 'thinking', thinking: 'hidden' }, { type: 'tool_use', name: 'Read', input: { file: 'a' } }] } }),
-  { meta: { sessionId: 's1', cwd: '/w' }, entry: { key: 'u', role: 'assistant', tool: 'call', timestamp: Date.parse(time), text: 'Read {"file":"a"}' } })
+  { meta: { sessionId: 's1', cwd: '/w' }, entry: { key: 'u', role: 'assistant', tool: 'call', timestamp: Date.parse(time), text: 'Read {"file":"a"}' }, step: 'call' })
   assert.equal(parse(claude, { type: 'user', uuid: 'v', message: { content: [{ type: 'tool_result', content: [{ type: 'text', text: 'out' }] }] } }).entry.tool, 'result')
   assert.equal(parse(claude, { type: 'user', uuid: 'w', isSidechain: true, message: { content: 'side' } }).entry, undefined)
   assert.deepEqual(parse(claude, { type: 'ai-title', aiTitle: 'Named' }).meta, { sessionId: 's1', title: 'Named', titleRank: 2 })

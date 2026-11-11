@@ -45,26 +45,42 @@ export function parseProcesses(output) {
   return processes
 }
 
+/** In the C locale, `lsof` writes each byte outside ASCII as `\xNN`, so a name in UTF-8 comes back from these escapes. */
+const lsofName = text => utf8(text.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))))
+
 /**
- * Reads the output of `lsof -a -d cwd -p <pids> -Fn` into a map from each PID to its working directory. In the C locale,
- * `lsof` writes each byte outside ASCII as `\xNN`, so a name in UTF-8 comes back from these escapes. A process without
- * a name line is not in the map: `lsof` gives no line for a process without permission and for a process that ended.
+ * Reads the output of `lsof -p <pids> -Ffn` into a map from each PID to `{ cwd, files }`. `cwd` is the working
+ * directory, and `files` holds each open file with a numeric descriptor and a name that ends with `.jsonl`: only a
+ * session log can link a process to its session, and the other names are of no use here. A process without a `cwd`
+ * line has the `cwd` null: `lsof` gives no line for a process without permission and for a process that ended.
  */
-export function parseWorkingDirectories(output) {
-  const directories = new Map()
-  let pid
+export function parseOpenFiles(output) {
+  const found = new Map()
+  let item
+  let descriptor
   for (const line of output.split('\n')) {
-    if (line.startsWith('p')) pid = /^p(\d+)$/.test(line) ? Number(line.slice(1)) : undefined
-    else if (line.startsWith('n') && pid !== undefined && line.length > 1 && !directories.has(pid)) {
-      directories.set(pid, utf8(line.slice(1).replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))))
+    if (line.startsWith('p')) {
+      const pid = /^p(\d+)$/.test(line) ? Number(line.slice(1)) : undefined
+      item = pid === undefined ? undefined : found.get(pid) ?? { cwd: null, files: [] }
+      if (item) found.set(pid, item)
+      descriptor = undefined
+    }
+    else if (line.startsWith('f')) descriptor = line.slice(1)
+    else if (line.startsWith('n') && item && line.length > 1) {
+      if (descriptor === 'cwd' && item.cwd === null) item.cwd = lsofName(line.slice(1))
+      else if (/^\d+$/.test(descriptor ?? '') && line.endsWith('.jsonl')) {
+        const name = lsofName(line.slice(1))
+        if (!item.files.includes(name)) item.files.push(name)
+      }
     }
   }
-  return directories
+  return found
 }
 
 /**
- * The process table of macOS: one `ps` call for all the processes, and one `lsof` call for the working directories of
- * some PIDs. `lsof` ends with the exit code 1 when it found no line for one PID, so its output still counts then.
+ * The process table of macOS: one `ps` call for all the processes, and one `lsof` call for the working directories and
+ * the open session logs of some PIDs. `lsof` ends with the exit code 1 when it found no line for one PID, so its output
+ * still counts then.
  */
 function macProcessTable() {
   return {
@@ -78,15 +94,15 @@ function macProcessTable() {
       if (!pids.length) return new Map()
       let output
       try {
-        output = (await execute('/usr/sbin/lsof', ['-w', '-a', '-d', 'cwd', '-p', pids.join(','), '-Fn'],
+        output = (await execute('/usr/sbin/lsof', ['-w', '-p', pids.join(','), '-Ffn'],
           { env: ENVIRONMENT, encoding: 'latin1', maxBuffer: MAX_BUFFER, timeout: TIMEOUT_MS })).stdout
       }
       catch (error) {
         if (error.code !== 1 || typeof error.stdout !== 'string') throw error
         output = error.stdout
       }
-      const directories = parseWorkingDirectories(output)
-      return new Map(pids.map(pid => [pid, { cwd: directories.get(pid) ?? null }]))
+      const found = parseOpenFiles(output)
+      return new Map(pids.map(pid => [pid, found.get(pid) ?? { cwd: null, files: [] }]))
     },
   }
 }
@@ -96,8 +112,9 @@ function macProcessTable() {
  * - `processes()` gives each process as `{ pid, ppid, startedAt, cpu, name, command }`. `startedAt` is in milliseconds,
  *   `cpu` is the load in percent of one core, `name` is the name of the executable file, and `command` is the command
  *   line. The command line can hold a prompt or a secret, so only `AgentProcesses.mjs` reads it.
- * - `resolve(pids)` gives a map from each PID to `{ cwd }`, in one call for all the PIDs. `cwd` is null when Megachat
- *   cannot read it.
+ * - `resolve(pids)` gives a map from each PID to `{ cwd, files }`, in one call for all the PIDs. `cwd` is null when
+ *   Megachat cannot read it. `files` holds the open session logs of the process. Codex keeps its log open, so the open
+ *   files link a Codex process to its sessions.
  * On a platform without an implementation, `supported` is false and the table has no process.
  */
 export function processTable(platform = process.platform) {

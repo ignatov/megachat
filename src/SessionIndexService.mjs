@@ -3,6 +3,7 @@ import * as fileSystem from 'node:fs/promises'
 import { basename, join, relative, sep } from 'node:path'
 import { logFailure } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
+import { SessionCatalog } from './SessionCatalog.mjs'
 import { SessionIndex } from './SessionIndex.mjs'
 import { directoryOf, readLines } from './SessionLog.mjs'
 import { sessionSources } from './SessionSources.mjs'
@@ -35,11 +36,16 @@ const identity = stat => ({ size: stat.size, mtimeMs: stat.mtimeMs, ino: String(
  * provider, and keeps no index file. The import runs in batches with a pause between them, so the chat stays usable.
  * The first pass takes the files of the projects of an IDE first, and the newest files first. After it, the import
  * catches up at the start of the daemon, on a change of a file, and on a new listed directory.
+ *
+ * The same consent covers the live table of the session files of the machine (`SessionCatalog`) for the tool
+ * `agents_running`: it reads the metadata and the tail of each session file, also outside the listed directories. The
+ * index of the message text stays limited to the listed directories. One watch of each provider root serves both.
+ * [catalog] gives the options of the live table, such as its own file system, clock and timers for a test.
  */
 export class SessionIndexService {
   constructor({ path, state, home, environment, sources = sessionSources({ home, environment }), fs = fileSystem, watch = watchFiles,
-    clock = Date, debounceMs = 2000 } = {}) {
-    Object.assign(this, { path, state, sources, fs, watch, clock, debounceMs })
+    clock = Date, debounceMs = 2000, catalog = {} } = {}) {
+    Object.assign(this, { path, state, sources, fs, watch, clock, debounceMs, catalogOptions: catalog })
     this.on = false
     this.days = 0
     this.pending = { full: false, paths: new Set() }
@@ -55,6 +61,9 @@ export class SessionIndexService {
 
   /** The index file for the tools while the consent is on, else undefined. */
   get store() { return this.enabled ? this.index : undefined }
+
+  /** The live table of the session files while the consent is on, else undefined. */
+  get logs() { return this.enabled ? this.catalog : undefined }
 
   /** Takes the settings `sessions.index` and `sessions.days`. A change applies at once. Calls run one at a time. */
   apply(values) {
@@ -87,6 +96,8 @@ export class SessionIndexService {
     this.directories = directoriesOf(this.subscription.value)
     this.directoryKey = JSON.stringify(this.directories.map(directory => directory.cwd).sort())
     this.subscription.start(call => { if (call.kind === 'value') this.#observe(call.value) })
+    this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, ...this.catalogOptions })
+    await this.catalog.start()
     for (const source of this.sources) this.#watchRoot(source)
     this.#request({ full: true })
   }
@@ -101,6 +112,8 @@ export class SessionIndexService {
     this.subscription = undefined
     await this.loop?.catch(() => {})
     await Promise.allSettled([...this.locks.values()])
+    await this.catalog?.close()
+    this.catalog = undefined
     this.pending = { full: false, paths: new Set() }
     this.progress = undefined
     await this.index?.close()
@@ -118,12 +131,17 @@ export class SessionIndexService {
     this.#request({ full: true })
   }
 
-  /** Watches the root of a source recursively. A root that does not exist yet gets no watch until the next start. */
+  /**
+   * Watches the root of a source recursively. A root that does not exist yet gets no watch until the next start. Each
+   * session file goes to the live table, and a file of a listed directory goes to the import too.
+   */
   #watchRoot(source) {
     let watcher
     try {
       watcher = this.watch(source.root, { recursive: true, persistent: false }, (_event, file) => {
-        if (typeof file !== 'string' || !this.on || !source.relevant(file, this.directories)) return
+        if (typeof file !== 'string' || !this.on) return
+        if (source.matches(file)) this.catalog?.changed(join(source.root, file))
+        if (!source.relevant(file, this.directories)) return
         this.pending.paths.add(join(source.root, file))
         this.timer ??= setTimeout(() => { this.timer = undefined; this.#request({}) }, this.debounceMs)
       })
@@ -155,13 +173,14 @@ export class SessionIndexService {
     }
   }
 
-  /** Resolves when no import runs or waits. A test uses it. */
+  /** Resolves when no import and no read of the live table runs or waits. A test uses it. */
   async idle() {
     await this.applying
     while (this.loop || this.timer) {
       await this.loop
       if (this.timer) await new Promise(resolve => setTimeout(resolve, this.debounceMs + 10))
     }
+    await this.catalog?.idle()
   }
 
   get cutoff() { return this.days > 0 ? this.clock.now() - this.days * DAY_MS : -Infinity }
@@ -419,6 +438,8 @@ export class SessionIndexService {
       await this.subscription?.stop()
       await this.loop?.catch(() => {})
       await Promise.allSettled([...this.locks.values()])
+      await this.catalog?.close()
+      this.catalog = undefined
       await this.index?.close()
       this.index = undefined
       this.on = false

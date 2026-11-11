@@ -27,6 +27,14 @@ const PAGE = 10
  */
 const MERGE_PAGES = 8
 
+/**
+ * The live table of the session files of the machine, for the tool `agents_running`: the metadata of each file and the
+ * last step of its tail, with no message text. It is not a part of the index, so a file of the same version gets it
+ * without a new import.
+ */
+const LOGS_TABLE = `CREATE TABLE IF NOT EXISTS logs (path TEXT PRIMARY KEY, agent TEXT NOT NULL, ino TEXT NOT NULL, size INTEGER NOT NULL,
+  offset INTEGER NOT NULL, session_id TEXT, cwd TEXT, title TEXT, title_rank INTEGER, started_at INTEGER, last_write_at INTEGER, last_step TEXT)`
+
 const TABLES = [
   'CREATE TABLE meta (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL, first_pass_at INTEGER, announce INTEGER NOT NULL)',
   // The import state of each session file. `state` is `indexed`, or `outside` for a session in no listed directory.
@@ -46,6 +54,7 @@ const TABLES = [
   // The text of each entry, cut to about 2 KB, so a snippet needs no read of the session file.
   'CREATE TABLE texts (id INTEGER PRIMARY KEY, text TEXT NOT NULL)',
   FTS_TABLE,
+  LOGS_TABLE,
 ]
 
 /** The SQL condition and its arguments for a session in [cwd] or in a directory below it. */
@@ -79,13 +88,16 @@ export class SessionIndex {
         // A new file tells the user a summary after its first pass. A file that a new version makes again does not.
         await this.#reset(db, meta ? 0 : 1)
       }
-      else await db.get('SELECT count(*) AS count FROM fts')
+      else {
+        await db.get('SELECT count(*) AS count FROM fts')
+        await db.exec(LOGS_TABLE)
+      }
     })
   }
 
   async #reset(db, announce) {
     await db.transaction(async tx => {
-      for (const table of ['fts', 'texts', 'entries', 'sessions', 'scopes', 'files', 'meta']) await tx.exec(`DROP TABLE IF EXISTS ${table}`)
+      for (const table of ['fts', 'texts', 'entries', 'sessions', 'scopes', 'files', 'meta', 'logs']) await tx.exec(`DROP TABLE IF EXISTS ${table}`)
       for (const statement of TABLES) await tx.exec(statement)
       await tx.exec("INSERT INTO fts (fts, rank) VALUES ('automerge', 0)")
       await tx.exec("INSERT INTO fts (fts, rank) VALUES ('crisismerge', 64)")
@@ -353,6 +365,21 @@ export class SessionIndex {
   async sessions() {
     return this.#guard(() => this.db.all('SELECT agent, session_id, cwd, title, updated_at, entry_count, last_kind FROM sessions ORDER BY updated_at DESC'))
   }
+
+  /** Each row of the live table of the session files. */
+  async logs() { return this.#guard(() => this.db.all('SELECT * FROM logs')) }
+
+  /** Stores the metadata of one session file of the live table. */
+  saveLog(record) {
+    return this.#guard(() => this.db.run(`INSERT INTO logs (path, agent, ino, size, offset, session_id, cwd, title, title_rank, started_at,
+      last_write_at, last_step) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET agent = excluded.agent,
+      ino = excluded.ino, size = excluded.size, offset = excluded.offset, session_id = excluded.session_id, cwd = excluded.cwd,
+      title = excluded.title, title_rank = excluded.title_rank, started_at = excluded.started_at, last_write_at = excluded.last_write_at,
+      last_step = excluded.last_step`, record.path, record.agent, record.ino, record.size, record.offset, record.sessionId ?? null,
+    record.cwd ?? null, record.title ?? null, record.titleRank ?? null, record.startedAt ?? null, Math.floor(record.mtimeMs), record.step ?? null))
+  }
+
+  dropLog(path) { return this.#guard(() => this.db.run('DELETE FROM logs WHERE path = ?', path)) }
 
   /** The count of the sessions and of the entries without the titles. */
   async counts() {

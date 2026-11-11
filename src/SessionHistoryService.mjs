@@ -4,6 +4,7 @@ import { ClaudeSessionHistoryService } from './ClaudeSessionHistoryService.mjs'
 import { CodexSessionHistoryService } from './CodexSessionHistoryService.mjs'
 import { message, requireCondition } from './messages.mjs'
 import { listedDirectory } from './ProjectDirectories.mjs'
+import { newestPage } from './SessionTail.mjs'
 import { queryTerms, snippet } from './SqliteSidecar.mjs'
 
 const cursorKey = randomBytes(32)
@@ -21,6 +22,9 @@ const indexPosition = value => value && typeof value === 'object' && !Array.isAr
   && Object.entries(value).every(([key, item]) => ['before', 'offset', 'after'].includes(key) && count(item))
 /** pi has no live source. Its sessions come only from the index of past sessions. */
 const INDEX_ONLY = 'pi'
+/** The entries of one page of a read from the end of a log. */
+export const NEWEST_LIMIT = 20
+export const NEWEST_MAX_LIMIT = 100
 
 /**
  * Searches the session histories only in the listed directories: the projects of an IDE, the known repositories, and
@@ -186,6 +190,42 @@ export class SessionHistoryService {
     return { agent, session: page.session,
       entries: page.entries.filter(entry => entry.text.toLowerCase().includes(query.toLowerCase())).map(entry => this.excerpt(entry, query)),
       nextCursor: page.nextCursor === null ? null : encode({ ...identity, historyCursor: page.nextCursor }) }
+  }
+
+  /**
+   * Reads a session from the end of its log: the last [limit] messages, tool calls and tool results, and a cursor to
+   * the older page. [query] selects the entries inside the session. Only the main agent has this read, for each
+   * session of the live table of the session files, also outside the listed directories. It needs the consent of the
+   * user, the setting `sessions.index`. The read is bounded, so a log of 600 MB opens at once.
+   */
+  async readNewest({ agent, sessionId, cursor, query = '', limit = NEWEST_LIMIT } = {}) {
+    const logs = this.index?.logs
+    requireCondition(logs, 'sessionsLogsOff')
+    requireCondition(typeof agent === 'string' && logs.source(agent))
+    requireCondition(typeof sessionId === 'string' && sessionIdPattern.test(sessionId))
+    requireCondition(typeof query === 'string' && query.length <= 200)
+    requireCondition(Number.isSafeInteger(limit) && limit >= 1 && limit <= NEWEST_MAX_LIMIT)
+    const identity = { order: 'newest', agent, sessionId, query }
+    const position = this.position(cursor, identity)
+    const found = logs.session(agent, sessionId)
+    requireCondition(found, 'missing')
+    const record = await logs.ensure(found.path)
+    requireCondition(record?.read, 'missing')
+    // A cursor holds an offset in one file. Another file or a rotation makes the offset meaningless.
+    if (position) requireCondition(count(position.before) && position.path === record.path && position.ino === record.ino)
+    let page
+    try { page = await newestPage(logs.fs, logs.source(agent), record.path, { before: position?.before, limit, query }) }
+    catch { requireCondition(false, 'missing') }
+    return {
+      agent, source: 'log', order: 'newest',
+      session: { sessionId, cwd: record.cwd ?? null, title: record.title ?? null,
+        lastActivityAt: Number.isFinite(record.mtimeMs) ? new Date(record.mtimeMs).toISOString() : null },
+      entries: page.entries.map(({ key, timestamp, clipped, ...entry }) => {
+        const excerpt = this.excerpt({ id: key, ...entry, timestamp: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null }, query)
+        return { ...excerpt, truncated: excerpt.truncated || clipped }
+      }),
+      nextCursor: page.before === null ? null : encode({ ...identity, historyCursor: null, before: page.before, path: record.path, ino: record.ino }),
+    }
   }
 
   /** A page of a session from the index, or undefined when the index does not hold the session. */

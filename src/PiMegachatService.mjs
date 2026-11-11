@@ -154,7 +154,9 @@ export class PiMegachatService {
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     state.projectFilter = () => service.projectFilter()
     Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck,
-      spend: await DailySpend.open(spendPath, clock), running: new RunningAgents(state, { table: processTable, clock }) })
+      spend: await DailySpend.open(spendPath, clock),
+      // The live table of the session logs exists only with the consent of the user, as the index does.
+      running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
     service.adopt(values)
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
@@ -336,8 +338,14 @@ export class PiMegachatService {
         async args => result(await this.history(args))),
       tool('sessions', obj({ cwd: str(), agent: opt(str()), query: opt(str({ maxLength: 200 })), cursor: opt(str()) }),
         async args => result(await this.sessions.search(args))),
-      tool('session_history', obj({ cwd: str(), agent: str(), sessionId: str(), query: opt(str({ maxLength: 200 })), cursor: opt(str()) }),
-        async args => result(await this.sessions.read(args))),
+      // Only the main agent reads a session from the end of its log, also outside the listed directories. The tool
+      // `session_history` of the children has no `order`, so it keeps the limit to the listed directories.
+      tool('session_history', obj({ cwd: opt(str()), agent: str(), sessionId: str(), query: opt(str({ maxLength: 200 })), cursor: opt(str()),
+        order: opt(str({ maxLength: 10 })), limit: opt(int({ minimum: 1, maximum: 100 })) }), async args => {
+        const { order, limit, ...rest } = args
+        requireCondition(order === undefined || order === 'oldest' || order === 'newest')
+        return result(order === 'newest' ? await this.sessions.readNewest({ ...rest, limit }) : await this.sessions.read(rest))
+      }),
       // The tool reads the processes only. The children do not get it: their MCP server has the history tools only.
       tool('running', obj({ agent: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })), state: opt(str({ maxLength: 20 })),
         limit: opt(int({ minimum: 1, maximum: 200 })), cursor: opt(str({ maxLength: 64 })) }), async args => result(await this.running.query(args))),
