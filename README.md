@@ -195,12 +195,19 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
 | `events.enabled` | `true` | | Megachat reports a change of the files of a project to the main agent. |
 | `events.ignore` | `*.tmbundle`, `build/download`, `.claude/settings.local.json` | | The path patterns that Megachat does not report. |
+| `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 
 The daemon adds the rules of `children.commit`, `children.push` and `children.daemonRestart` to the prompt of each
 child at its dispatch, also to a follow-up and to a continuation. With `ask`, the child does the step only when its task
 says that you approved it. Else it says in its result that the step is necessary, and the main agent asks you. With
 `deny`, the child does not do the step, also when the task asks for it. A change of a `children.*` setting applies to the
 next child, also in the turn that made it.
+
+In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
+`MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.
+The scan follows no symbolic link and reads no file. You choose the repositories, and the agent adds them to the known
+list. When you ask for a new project without a location, the agent makes `<projects.newRoot>/<name>`, with a number at
+the end when the name is taken, and adds it.
 
 A pattern of `events.ignore` is a glob on the path from the root of the project: `*` matches in one path segment, `**`
 across segments, and `?` one character. A pattern without a slash, such as `*.tmbundle`, matches a name at each
@@ -236,7 +243,7 @@ does not offer it again. Ask the agent to run the setup again at any time. A fil
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
-| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, and the origins of the list. |
+| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
 | `src/ProjectEventFilter.mjs` | The path patterns of `events.ignore`: their syntax and their match. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |

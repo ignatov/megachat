@@ -1,11 +1,17 @@
-import { realpath, stat } from 'node:fs/promises'
+import { lstat, mkdir, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { message, requireCondition } from './messages.mjs'
 
 /** More roots, besides the home directory of the user, that can hold a known repository. */
 export const ROOTS_VARIABLE = 'MEGACHAT_PROJECT_ROOTS'
 export const KNOWN_PROJECTS_LIMIT = 100
+/** The most repositories that one discovery gives. */
+export const DISCOVERY_LIMIT = 200
+/** The directories of the home directory that the discovery scans, besides the roots of `MEGACHAT_PROJECT_ROOTS`. */
+const DISCOVERY_DIRECTORIES = ['src', 'IdeaProjects']
+/** One directory name: a letter, a digit or `_` first, then also `.` and `-`. So it cannot be hidden or leave its root. */
+const PROJECT_NAME = /^[\p{L}\p{N}_][\p{L}\p{N}._-]{0,99}$/u
 /** The directories of the home directory that hold the data of applications, not repositories. */
 const applicationDirectories = new Set(['Library', 'AppData'])
 
@@ -33,20 +39,108 @@ export async function resolveRepository(path, { home = homedir(), roots = projec
   requireCondition(typeof path === 'string' && path.length > 0 && path.length <= 4096 && !path.includes('\0'), 'directory')
   const expanded = expandHome(path, home)
   requireCondition(isAbsolute(expanded), 'directory')
-  const real = directory => realpath(directory).catch(() => undefined)
   const canonical = await real(expanded)
   requireCondition(canonical && (await stat(canonical)).isDirectory(), 'directory')
+  requireCondition(await allowedLocation(canonical, { home, roots, stateDirectory }), 'directory')
+  return canonical
+}
+
+const real = directory => realpath(directory).catch(() => undefined)
+
+/**
+ * Tells whether a real path can hold a known repository: it is in an allowed root or in the home directory, out of the
+ * application data and the hidden directories of the home directory, and out of the state directory. [permitHome] permits
+ * the home directory itself, for the directory of the new projects.
+ */
+async function allowedLocation(canonical, { home, roots, stateDirectory, permitHome = false }) {
   const state = stateDirectory && await real(stateDirectory)
-  requireCondition(!state || canonical !== state && !inside(state, canonical), 'directory')
+  if (state && (canonical === state || inside(state, canonical))) return false
   for (const root of roots) {
     const allowed = await real(root)
-    if (allowed && (canonical === allowed || inside(allowed, canonical))) return canonical
+    if (allowed && (canonical === allowed || inside(allowed, canonical))) return true
   }
   const userHome = await real(home)
-  requireCondition(userHome && inside(userHome, canonical), 'directory')
+  if (permitHome && canonical === userHome) return true
+  if (!userHome || !inside(userHome, canonical)) return false
   const first = relative(userHome, canonical).split(sep)[0]
-  requireCondition(!first.startsWith('.') && !applicationDirectories.has(first), 'directory')
-  return canonical
+  return !first.startsWith('.') && !applicationDirectories.has(first)
+}
+
+/** The real path of [path], also when its last parts do not exist yet: the real path of the nearest existing parent. */
+async function plannedPath(path) {
+  const missing = []
+  for (let current = path; ; current = dirname(current)) {
+    const canonical = await real(current)
+    if (canonical) return join(canonical, ...missing)
+    if (dirname(current) === current) return undefined
+    missing.unshift(basename(current))
+  }
+}
+
+/**
+ * Makes the directory of a new project: `<root>/<name>`, or `<root>/<name>-2` and so on when the name is taken. The root
+ * must be a place for a known repository or the home directory, and the daemon makes it when it does not exist.
+ * `mkdir` refuses an existing directory, so two calls cannot get the same directory.
+ */
+export async function createProjectDirectory(root, name, { home = homedir(), roots = projectRoots(), stateDirectory } = {}) {
+  requireCondition(typeof name === 'string' && PROJECT_NAME.test(name), 'projectName')
+  requireCondition(typeof root === 'string' && isAbsolute(expandHome(root, home)), 'newRoot')
+  const planned = await plannedPath(resolve(expandHome(root, home)))
+  requireCondition(planned && await allowedLocation(planned, { home, roots, stateDirectory, permitHome: true }), 'newRoot')
+  await mkdir(planned, { recursive: true })
+  for (let count = 1; count <= 100; count++) {
+    const path = join(planned, count === 1 ? name : `${name}-${count}`)
+    try {
+      await mkdir(path)
+      return path
+    }
+    catch (error) { if (error.code !== 'EEXIST') throw error }
+  }
+  return requireCondition(false, 'projectName')
+}
+
+/** The time of the last change of the `.git` entry of [directory], or `undefined` without one. It follows no link. */
+async function gitTime(directory) {
+  const status = await lstat(join(directory, '.git')).catch(() => undefined)
+  return status && (status.isDirectory() || status.isFile()) ? status.mtimeMs : undefined
+}
+
+/** The directories in [directory] that are not hidden. A symbolic link is no directory here, so the scan does not follow it. */
+async function subdirectories(directory) {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
+  return entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.')).map(entry => join(directory, entry.name))
+}
+
+/**
+ * Finds the git repositories in `~/src`, in `~/IdeaProjects` and in each root of `MEGACHAT_PROJECT_ROOTS`: a directory of
+ * a root, or a directory in a directory of a root, that holds a `.git` entry. The scan does not go into a repository,
+ * follows no symbolic link and reads no file. It gives at most [limit] repositories that are not in [listed], the
+ * newest change of `.git` first, and `truncated` when more exist.
+ */
+export async function discoverRepositories({ home = homedir(), roots = projectRoots(), listed = [], limit = DISCOVERY_LIMIT } = {}) {
+  const skipped = new Set(listed)
+  const scanned = new Set()
+  const found = []
+  for (const start of [...DISCOVERY_DIRECTORIES.map(name => join(home, name)), ...roots]) {
+    const status = await lstat(start).catch(() => undefined)
+    const root = status?.isDirectory() && await real(start)
+    if (!root || scanned.has(root)) continue
+    scanned.add(root)
+    for (const child of await subdirectories(root)) {
+      const time = await gitTime(child)
+      const candidates = time !== undefined ? [[child, time]]
+        : await Promise.all((await subdirectories(child)).map(async path => [path, await gitTime(path)]))
+      for (const [cwd, changed] of candidates) {
+        if (changed === undefined || skipped.has(cwd)) continue
+        // A root in another root gives the same repository two times.
+        skipped.add(cwd)
+        found.push({ cwd, changed })
+      }
+    }
+  }
+  found.sort((left, right) => right.changed - left.changed)
+  return { repositories: found.slice(0, limit).map(({ cwd, changed }) => ({ cwd, changedAt: new Date(changed).toISOString() })),
+    truncated: found.length > limit, roots: [...scanned] }
 }
 
 /**

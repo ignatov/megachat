@@ -306,9 +306,11 @@ export class PiMegachatService {
         tool('feedback', obj({ decision: str() }), async (args, api) =>
           result(await this.state.feedback(`tool:${api.taskId}:feedback`, args.decision))),
       ] : []),
-      tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })) }), async args => {
-        requireCondition(['list', 'add', 'remove'].includes(args.action))
+      tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })), name: opt(str({ maxLength: 100 })) }), async args => {
+        requireCondition(['list', 'add', 'remove', 'discover', 'create'].includes(args.action))
+        if (args.action === 'discover') return result(await this.state.discoverProjects())
         const changed = args.action === 'add' ? { added: (await this.state.addProject(args.cwd)).cwd }
+          : args.action === 'create' ? { created: (await this.state.createProject(args.name, this.settings.values()['projects.newRoot'])).cwd }
           : args.action === 'remove' ? { removed: (await this.state.removeProject(args.cwd)).cwd } : {}
         return result({ ...changed, workspaces: directoriesOf(await this.state.snapshot()) })
       }),

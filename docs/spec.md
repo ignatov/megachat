@@ -242,6 +242,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A task, a follow-up, a continued session, and a session search must refuse a directory that is not listed.
 - `agents_list` must give each listed directory one time with its origin: `ide`, `known`, or `megachat`. The workspace of Megachat must have the name "Megachat workspace".
   [@test] ../test/projects.test.mjs
+- The action `discover` of `agents_projects` must give the git repositories in `~/src`, in `~/IdeaProjects` and in each root of `MEGACHAT_PROJECT_ROOTS`: a directory of a root, or a directory in a directory of a root, that holds a `.git` entry. It must not give a listed directory.
+- The scan must not go into a repository or a hidden directory, must follow no symbolic link, and must read no file. It must give at most 200 repositories, the newest change of `.git` first, and `truncated` when more exist. It must add nothing to the list.
+- The setting `projects.newRoot` must name the directory of a new project without a named location: an absolute path or a path that starts with `~`. The default is `~/src`.
+- The action `create` must make `<projects.newRoot>/<name>`, or `<name>-2` and so on when the name is taken, and add it to the known list. The name must be one directory name of at most 100 characters that is not hidden.
+- The root of a new project must be in the home directory or in a root of `MEGACHAT_PROJECT_ROOTS`, out of a hidden directory and out of the state directory. The daemon may make a root that does not exist. Only a turn of the user may make a project.
+  [@test] ../test/discovery.test.mjs
 - A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
 - The daemon must run at most one child at a time.
 - It may retain at most eight unfinished child tasks, including queued tasks.

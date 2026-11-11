@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
-import { isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
+import { rmdir } from 'node:fs/promises'
+import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
 export const maxAutomaticResumes = 2
@@ -193,6 +194,27 @@ export class MegachatState {
       }
       return { cwd }
     })
+  }
+
+  /** Finds the git repositories that the user can add to the known list. The listed directories are not in the result. */
+  async discoverProjects() {
+    const state = await this.snapshot()
+    const listed = [...state.projects, ...state.workspaces, ...(state.megachatWorkspace ? [state.megachatWorkspace] : [])]
+    return discoverRepositories({ home: this.home, roots: this.repositoryOptions.roots, listed })
+  }
+
+  /**
+   * Makes the directory of a new project in [root], the setting `projects.newRoot`, and adds it to the known list. An
+   * automatic turn cannot make one. When the list refuses the directory, the empty directory goes away again.
+   */
+  async createProject(name, root) {
+    requireCondition(!['event', 'report'].includes((await this.snapshot()).current?.kind), 'proposalOnly')
+    const path = await createProjectDirectory(root, name, this.repositoryOptions)
+    try { return await this.addProject(path) }
+    catch (error) {
+      await rmdir(path).catch(() => {})
+      throw error
+    }
   }
 
   /** Removes a repository from the known list. A project of an IDE stays in the list of the directories. */

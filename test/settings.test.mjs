@@ -116,6 +116,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'events.enabled': true, 'events.ignore': ['*.tmbundle', 'build/download', '.claude/settings.local.json'],
+    'projects.newRoot': '~/src',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
   // A variable that the daemon cannot read has no effect.
@@ -156,6 +157,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.daemonRestart': [['deny', 'deny']],
     'events.enabled': [['off', false], [true, true]],
     'events.ignore': [],
+    'projects.newRoot': [['~', '~'], [' ~/work/ ', '~/work'], ['/srv/projects', '/srv/projects']],
   }
   const refused = {
     'coordinator.model': ['anthropic/claude-opus-5-5', 'fast', 'faux/', 7],
@@ -174,6 +176,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.daemonRestart': ['', 1],
     'events.enabled': ['sometimes'],
     'events.ignore': [7, ['../outside'], 'a\\b', [1], Array(51).fill('x'), ['a//b']],
+    'projects.newRoot': ['src', '', '~user/src', 5],
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
   // A list is no single value, so its cases compare the whole list.

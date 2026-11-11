@@ -1,5 +1,5 @@
 import { chmod, readFile, rename, writeFile } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, isAbsolute } from 'node:path'
 import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai/models'
 import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
 import { logEvent, message, requireCondition } from './messages.mjs'
@@ -103,6 +103,12 @@ export const SETTINGS = [
   { key: 'events.enabled', default: true, applies: 'nextEvent', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   { key: 'events.ignore', default: DEFAULT_EVENT_IGNORE, applies: 'nextEvent', validate: eventPatterns,
     allowed: () => ({ other: message('settings.ignore.other') }) },
+  { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
+    validate: value => {
+      const path = typeof value === 'string' ? value.trim().replace(/(.)[/\\]+$/, '$1') : ''
+      return path.length <= 4096 && !path.includes('\0') && (path === '~' || /^~[/\\]/.test(path) || isAbsolute(path)) ? path : undefined
+    },
+    allowed: () => ({ other: message('settings.newRoot.other') }) },
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))
