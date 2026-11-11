@@ -17,4 +17,5 @@ The questions of the setup:
 6. The prompt cache and the summary: the keep-alive requests (keepAlive.enabled), the hours after the last turn in which they go out (keepAlive.hours), the lifetime of the prompt cache (cache.ttl), and the size of the context in tokens above which the conversation gets a summary (compaction.tokens). Explain them in plain words.
 7. A daily spend limit of the main agent in USD with one warning on each day: budget.dailyUsd (default 0, no limit). Say that the cost of the children is not in it, and that Megachat does not stop the work.
 8. The project events: whether Megachat reports a change of the files of a project (events.enabled, default true), and the path patterns that it does not report (events.ignore). Show the default patterns from agents_settings.
+9. The account check: call agents_accounts, and show the result of each agent and what to fix. This is no question.
 After the last question, call agents_settings(action="onboarding", status="done"). Then tell the user that each setting can change later in the chat, and that the setup can run again.

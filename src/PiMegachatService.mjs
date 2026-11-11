@@ -117,8 +117,9 @@ export class PiMegachatService {
   /**
    * An explicit [model], `compactTokens`, `suggestions` or `keepAlive` setting wins over the environment and over
    * `settings.json`, for a test. The daemon passes none of them. [clock] gives the time of the daily spend, for a test.
+   * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -149,7 +150,8 @@ export class PiMegachatService {
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     state.projectFilter = () => service.projectFilter()
-    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, spend: await DailySpend.open(spendPath, clock) })
+    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck,
+      spend: await DailySpend.open(spendPath, clock) })
     service.adopt(values)
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
@@ -313,6 +315,12 @@ export class PiMegachatService {
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
         value: opt(union([str({ maxLength: 2000 }), num(), bool(), arr(str({ maxLength: 200 }), { maxItems: 50 })])),
         status: opt(str({ maxLength: 20 })) }), async args => result(await this.settingsTool(args))),
+      // A check that runs gives its result also to a second call, so two calls do not start four agents.
+      tool('accounts', obj({}), async () => {
+        requireCondition(this.accountCheck, 'unavailable')
+        this.checking ??= this.accountCheck().finally(() => { this.checking = undefined })
+        return result(await this.checking)
+      }),
       tool('history', obj({ beforeEntryId: opt(int({ minimum: 1 })), query: opt(str({ maxLength: 200 })), cursor: opt(str({ maxLength: 20 })) }),
         async args => result(await this.history(args))),
       tool('sessions', obj({ cwd: str(), agent: opt(str()), query: opt(str({ maxLength: 200 })), cursor: opt(str()) }),

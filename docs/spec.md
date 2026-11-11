@@ -172,6 +172,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - When the count passes the limit, the rules of the next turn must hold one line with the spend and the limit, which asks for one short warning. The line must go away after a completed turn that had it. The user must get at most one warning on each day. Megachat must not stop the work.
 - `agents_settings get` must give the spend of the day, the limit, whether the warning went out, and a note that the children are not in the count.
   [@test] ../test/spend.test.mjs
+- The tool `agents_accounts` must check Claude Code and Codex in parallel. It must start each agent as a child starts, ask for `initialize` and `session/new` in the workspace of Megachat, send no prompt, and close the process after the check.
+- Each agent must have a time limit of 30 seconds. A second call while a check runs must get the result of that check.
+- An agent that opens the session must give the status `started` with the login `unknown`, because only a prompt proves that the provider accepts the login. The result must say so.
+- An agent that refuses the session with the ACP error `authRequired` must give the status `failed` with the login `missing`. An agent that does not start, a failed Central configuration, a refused session and the time limit must give `failed`. Each failure must give the problem and what to fix, from the resources and not from the agent.
+- The setup must run the check at its end and show the result. The rules of the main agent must run the check when a child fails with a login error.
+  [@test] ../test/accounts.test.mjs
 - With `MEGACHAT_SUGGESTIONS=1`, Megachat may offer one useful next step after work ends.
 - After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.

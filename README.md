@@ -216,6 +216,11 @@ keep-alive requests. The cost of the children is not in the count, because the a
 them. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
 `spend.json` keeps the count across a restart. Ask the agent for the settings to see the spend of the day.
 
+At the end of the setup, the main agent checks the accounts with its tool `agents_accounts`. The check starts Claude
+Code and Codex as a task starts them and opens a session without a prompt, so it spends no tokens. It shows for each
+agent `started`, or the problem and what to fix, for example a missing login. A session that opens does not prove that
+the provider accepts the login: the first task shows that. Ask the agent to check the accounts again at any time.
+
 A pattern of `events.ignore` is a glob on the path from the root of the project: `*` matches in one path segment, `**`
 across segments, and `?` one character. A pattern without a slash, such as `*.tmbundle`, matches a name at each
 depth. A pattern with a slash, such as `build/download`, matches from the root. Use `**/build/download` for each depth. A
@@ -245,6 +250,7 @@ does not offer it again. Ask the agent to run the setup again at any time. A fil
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The child runs, one at a time. The supervisor stops the child when the daemon exits. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
+| `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
 | `src/ReplyStream.mjs` | The stream of the partial reply of the main agent from the daemon to each client. |
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |

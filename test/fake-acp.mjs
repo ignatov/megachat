@@ -1,7 +1,7 @@
 import { appendFile, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
-import { agent, methods, ndJsonStream } from '@agentclientprotocol/sdk/unstable'
+import { agent, methods, ndJsonStream, RequestError } from '@agentclientprotocol/sdk/unstable'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
@@ -12,6 +12,8 @@ agent({ name: 'fake-claude' })
   .onRequest(methods.agent.initialize, () => ({ protocolVersion: 1,
     agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [] }))
   .onRequest(methods.agent.session.new, async ctx => {
+    // An agent without a login refuses each new session, as Codex ACP and Claude ACP do.
+    if (process.env.FAKE_ACP_LOGIN === 'missing') throw RequestError.authRequired()
     servers = ctx.params.mcpServers
     await writeFile(join(process.cwd(), 'session-request.json'), JSON.stringify({
       operation: 'new', claudeOptions: !!ctx.params._meta?.claudeCode,
