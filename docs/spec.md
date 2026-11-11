@@ -330,7 +330,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - `npm run release` must refuse a version that is not three numbers, a tag that exists in the checkout or in the
   remote repository, and a version that is not higher than the last release.
 - The notes of a release must be the subjects of the commits since the last release.
-- `npm run release` must run `npm test` and `npm run test:package` before it makes the tag.
+- `npm run release` must run `npm run build`, then `npm test` and `npm run test:package`, before it makes the tag.
 - `npm run release -- --dry-run` must print the release and change nothing.
   [@test] ../test/release.test.mjs
 

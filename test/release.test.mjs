@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import test from 'node:test'
-import { releasePlan } from '../release.mjs'
+import { releasePlan, releaseSteps } from '../release.mjs'
 
 const execute = promisify(execFile)
 
@@ -78,6 +78,13 @@ test('a checkout that cannot give a release gets the reason', async t => {
   await git('push', '--quiet', 'origin', 'main')
   await git('checkout', '--quiet', '-b', 'topic')
   await assert.rejects(releasePlan(root), /The branch is topic\./)
+})
+
+test('the release builds the bundle before the tests, and makes the tag only after the tests', () => {
+  const steps = releaseSteps({ version: '0.2.1', tag: 'v0.2.1', notes: '- The first behavior\n' })
+  assert.deepEqual(steps.map(([command, args]) => [command, ...args].slice(0, 3).join(' ')),
+    ['npm run build', 'npm test', 'npm run test:package', 'git tag --annotate', 'git push origin', 'gh release create'])
+  assert.equal(steps.at(-1)[2], '- The first behavior\n')
 })
 
 test('the release command of this repository names the install line of the documents', async () => {

@@ -58,17 +58,28 @@ async function run(command, args, root, input) {
   if (code !== 0) throw new Error(`${command} ${args.join(' ')} failed with the exit code ${code}.`)
 }
 
+/**
+ * The commands of the release [plan], in their order, as `[command, args, input]`. The build comes before the tests:
+ * `npm test` tests the bundle in `out/bundle/`, and that bundle can come from an earlier version.
+ */
+export function releaseSteps(plan) {
+  return [
+    ['npm', ['run', 'build']],
+    ['npm', ['test']],
+    ['npm', ['run', 'test:package']],
+    ['git', ['tag', '--annotate', plan.tag, '--message', `Megachat ${plan.version}`]],
+    ['git', ['push', 'origin', plan.tag]],
+    ['gh', ['release', 'create', plan.tag, '--verify-tag', '--title', `Megachat ${plan.version}`, '--notes-file', '-'], plan.notes],
+  ]
+}
+
 async function main() {
   const root = dirname(fileURLToPath(import.meta.url))
   const dryRun = process.argv.includes('--dry-run')
   const plan = await releasePlan(root)
   console.log(`[megachat] The release ${plan.tag}${plan.previous ? `, after ${plan.previous}` : ''}:\n${plan.notes}`)
   if (dryRun) return
-  await run('npm', ['test'], root)
-  await run('npm', ['run', 'test:package'], root)
-  await run('git', ['tag', '--annotate', plan.tag, '--message', `Megachat ${plan.version}`], root)
-  await run('git', ['push', 'origin', plan.tag], root)
-  await run('gh', ['release', 'create', plan.tag, '--verify-tag', '--title', `Megachat ${plan.version}`, '--notes-file', '-'], root, plan.notes)
+  for (const [command, args, input] of releaseSteps(plan)) await run(command, args, root, input)
   console.log(`[megachat] Released ${plan.tag}`)
 }
 

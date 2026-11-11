@@ -229,10 +229,11 @@ To make a release:
 2. Run `npm run release`.
 
 `npm run release` refuses a checkout with changes, a branch other than `main`, a `main` that is not equal to
-`origin/main`, and a version that is not higher than the last release. Then it runs `npm test` and
-`npm run test:package`. Then it makes the tag, pushes it, and makes the GitHub release with `gh`. The notes of the
-release are the subjects of the commits since the last release. `npm run release -- --dry-run` prints the release and
-changes nothing.
+`origin/main`, and a version that is not higher than the last release. Then it runs `npm run build`, `npm test` and
+`npm run test:package`. The build comes first, because `npm test` tests the bundle in `out/bundle/`, and that bundle
+can come from an earlier version. Then it makes the tag, pushes it, and makes the GitHub release with `gh`. The
+notes of the release are the subjects of the commits since the last release. `npm run release -- --dry-run` prints
+the release and changes nothing.
 
 ## License
 
