@@ -257,7 +257,7 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   }
   await assert.rejects(stat(path), { code: 'ENOENT' }, 'Megachat deletes the index file without the consent')
   assert.match(await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8'),
-    /"Index past Claude, Codex and pi sessions in your projects\? Everything stays local\."/)
+    /"Index past Claude, Codex and pi sessions in your projects, and read the logs of the agent sessions that run on this machine to show their status\? Megachat reads the content of a session only when you ask\. Everything stays local\."/)
   await assert.rejects(tool('sessions', { cwd: project, agent: 'pi', query: 'pine' }), { message: message('error.sessionsIndexOff') })
   assert.deepEqual((await tool('sessions', { cwd: project, query: 'juniper' })).pages.map(page => page.agent), ['claude'])
   assert.deepEqual((await tool('settings', { action: 'get' })).sessionIndex, { state: 'off' })

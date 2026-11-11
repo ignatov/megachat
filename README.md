@@ -277,10 +277,13 @@ so.
 ## The index of past sessions
 
 With your consent, Megachat keeps an index of your past Claude Code, Codex and pi sessions. Then the main agent and
-the children find an earlier session at once, and they can read pi sessions. The setup asks one time: "Index past
-Claude, Codex and pi sessions in your projects? Everything stays local." Say "turn on the session index" or "turn off
-the session index" in the chat at any time. Without your consent, Megachat reads no session file for the index and
-keeps no index file. The search in Claude Code and Codex sessions then reads them live, as before.
+the children find an earlier session at once, and they can read pi sessions. The same consent lets `agents_running`
+read the log of each agent session that runs on the machine: its metadata and its status, and its content only when
+you ask for it. The setup asks one time: "Index past Claude, Codex and pi sessions in your projects, and read the logs
+of the agent sessions that run on this machine to show their status? Megachat reads the content of a session only
+when you ask. Everything stays local." Say "turn on the session index" or "turn off the session index" in the chat at
+any time. Without your consent, Megachat reads no session file and keeps no index file. The search in Claude Code and
+Codex sessions then reads them live, as before.
 
 - **What is in it.** The sessions in `~/.claude/projects`, in `~/.codex/sessions` (or `$CODEX_HOME/sessions`), and in
   `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`), only when the directory of a session is a listed
