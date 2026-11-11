@@ -58,7 +58,7 @@ export class CentralConfigurationService {
     catch (error) {
       if (signal?.aborted) throw signal.reason
       // The error of the command holds its output, and that can hold the key. The log gets no message of an error.
-      logFailure('log.central', error, 'the main agent')
+      logFailure('log.central.main', error)
       throw new MegachatError('central')
     }
   }
@@ -98,7 +98,7 @@ export class CentralConfigurationService {
       }
     }
     catch (error) {
-      logFailure('log.central', error, 'Claude Code')
+      logFailure('log.central.claude', error)
       throw new MegachatError('central')
     }
   }
