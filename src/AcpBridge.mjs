@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { agent, methods } from '@agentclientprotocol/sdk/unstable'
 import { VERSION } from './MegachatBuild.mjs'
-import { message, requireCondition } from './messages.mjs'
+import { MegachatError, message, requireCondition } from './messages.mjs'
 import { serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 
 /** A short row title: the first prompt line without Markdown markers. */
@@ -163,7 +163,12 @@ class AcpBridgeSession {
     this.refreshingWorkspaces = true
     try {
       const result = await this.connection.client.request('_workspaces/list', {})
-      for (const cwd of result.directories ?? []) await this.daemon.json('/workspace', { cwd })
+      for (const cwd of result.directories ?? []) {
+        // The daemon refuses a directory that it cannot read, such as a deleted project or a volume that is not
+        // mounted. That directory must not stop the registration of the others, or the attach of the view.
+        try { await this.daemon.json('/workspace', { cwd }) }
+        catch (error) { if (!(error instanceof MegachatError)) throw error }
+      }
     }
     finally { this.refreshingWorkspaces = false }
   }

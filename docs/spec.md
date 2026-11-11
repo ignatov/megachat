@@ -150,6 +150,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The daemon must accept an input of 100,000 characters in each script. It must refuse a request body of more than 1,000,000 bytes.
 - A history request must return at most 100 entries.
 - The daemon must use only project directories registered by a client.
+- A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
 - The daemon must run at most one child at a time.
 - It may retain at most eight unfinished child tasks, including queued tasks.
 - Claude background tasks must be disabled. A child run ends with its ACP prompt.

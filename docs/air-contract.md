@@ -30,7 +30,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 
 | Method | Sender | Parameters | What the other side does |
 |---|---|---|---|
-| `_workspaces/list` | Megachat | `{}` | Air returns `directories`: the trusted open project directories. Megachat registers each one in the daemon. Megachat asks on each attach and every 15 seconds while a view is open. |
+| `_workspaces/list` | Megachat | `{}` | Air returns `directories`: the trusted open project directories. Megachat registers each one in the daemon, and skips a directory that the daemon cannot read. Megachat asks on each attach and every 15 seconds while a view is open. |
 | `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. |
 | `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat has no handler today, so it sends `canStop: false`. Air expects `{ "stopped": true }`. The task stays active until its terminal update. `docs/roadmap.md` has the change. |
 

@@ -441,6 +441,17 @@ test('an application view registers trusted projects supplied by its client', { 
   assert.ok((await service.state.snapshot()).workspaces.includes(await realpath(project)))
 })
 
+test('a project directory that does not exist does not stop the attach or the other projects', { timeout: 10000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t)
+  const project = await mkdtemp(join(tmpdir(), 'megachat-other-project-'))
+  t.after(() => rm(project, { recursive: true, force: true }))
+  const viewer = await attach(daemon, cwd, { native: true, workspaces: [join(project, 'deleted'), project] })
+  t.after(() => viewer.connection.close())
+  const { workspaces } = await service.state.snapshot()
+  assert.ok(workspaces.includes(await realpath(project)))
+  assert.ok(!workspaces.some(directory => directory.endsWith('deleted')))
+})
+
 test('the main chat accepts another message while a child waits for permission', { timeout: 10000 }, async t => {
   const { daemon, cwd, fake, service } = await fixture(t)
   fake.setResponses([
