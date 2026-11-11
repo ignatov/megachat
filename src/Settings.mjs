@@ -115,6 +115,16 @@ export const SETTINGS = [
       return Number.isFinite(usd) && usd >= 0 && usd <= 100000 ? usd : undefined
     },
     allowed: () => ({ minimum: 0, maximum: 100000 }) },
+  // The consent of the user to the index of the past sessions. Without it, Megachat reads no session file for the index.
+  { key: 'sessions.index', default: 'off', applies: 'now',
+    validate: value => { const on = toBoolean(value); return on === undefined ? undefined : on ? 'on' : 'off' },
+    allowed: () => ({ values: ['on', 'off'] }) },
+  { key: 'sessions.days', default: 180, applies: 'now',
+    validate: value => {
+      const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+      return /^\d{1,4}$/.test(text) && Number(text) <= 3650 ? Number(text) : undefined
+    },
+    allowed: () => ({ minimum: 0, maximum: 3650 }) },
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))

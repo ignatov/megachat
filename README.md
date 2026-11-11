@@ -133,6 +133,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
 | `settings.json` | The settings that you gave in the chat, and the status of the setup. |
 | `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
+| `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
 | `daemon/daemon.log` | The log of a daemon that `start` started. |
 
@@ -198,6 +199,8 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `events.ignore` | `*.tmbundle`, `build/download`, `.claude/settings.local.json` | | The path patterns that Megachat does not report. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent in USD, with one warning on each day. `0` is no limit. |
+| `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
+| `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
 
 The daemon adds the rules of `children.commit`, `children.push` and `children.daemonRestart` to the prompt of each
 child at its dispatch, also to a follow-up and to a continuation. With `ask`, the child does the step only when its task
@@ -254,6 +257,36 @@ orphan. The tool keeps its view for 5 seconds. This version reads no session log
 the last activity, and only a Megachat task has a session ID and a title. A session that waits for the model shows as
 idle. The tool reads the processes on macOS only.
 
+## The index of past sessions
+
+With your consent, Megachat keeps an index of your past Claude Code, Codex and pi sessions. Then the main agent and
+the children find an earlier session at once, and they can read pi sessions. The setup asks one time: "Index past
+Claude, Codex and pi sessions in your projects? Everything stays local." Say "turn on the session index" or "turn off
+the session index" in the chat at any time. Without your consent, Megachat reads no session file for the index and
+keeps no index file. The search in Claude Code and Codex sessions then reads them live, as before.
+
+- **What is in it.** The sessions in `~/.claude/projects`, in `~/.codex/sessions` (or `$CODEX_HOME/sessions`), and in
+  `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`), only when the directory of a session is a listed
+  directory or a directory in one: a project of an IDE, a known repository, or the Megachat workspace. A newly listed
+  directory brings its old sessions. The import takes the sessions with activity in the last 180 days, and the setting
+  `sessions.days` changes that count.
+- **What it keeps.** For each session: the agent, the session ID, the directory, the title, the start time and the time
+  of the last activity. For each message, tool call and tool result: at most about 2 KB of its text. The index does not
+  read the archived Codex sessions.
+- **Where it is.** `sessions.sqlite` in the state directory, with the mode 0600. Nothing leaves the machine.
+- **Secrets.** Before the index keeps a text, it replaces what looks like a secret with `[secret removed]`: API keys
+  with well-known prefixes such as `sk-`, `ghp_` or `AKIA`, Bearer tokens, private keys, JWTs, and assignments such as
+  `password=...`. This is a best effort. A secret of another shape can stay in the index.
+- **The import.** The first pass runs in the background, the projects of an IDE first and the newest sessions first.
+  The chat lists it as a background task with its progress. After the first pass, the main agent tells you the count of
+  the sessions and of the projects, and the last unfinished sessions. Then the index catches up at the start of the
+  daemon and on each change of a session file. It reads only the new lines of a file.
+- **The size.** One measurement with 100,000 synthetic messages of 2 KB gave a file of 640 MB. Real text takes less
+  room, but plan for some hundreds of MB. The age limit and the limit of 2 KB for each message bound the file.
+- **Turn it off.** The setting `off` stops the import and deletes `sessions.sqlite` at once.
+
+The session text is data for the agent, not instructions.
+
 ## Code map
 
 | Files | Content |
@@ -282,6 +315,9 @@ idle. The tool reads the processes on macOS only.
 | `src/Suggestions.mjs` | The variable `MEGACHAT_SUGGESTIONS`, which lets the main agent offer a next step by itself. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |
+| `src/SessionIndexService.mjs`, `src/SessionIndex.mjs`, `src/SessionText.mjs` | The index of past sessions: the consent, the import passes, the file `sessions.sqlite`, and the secret filter. |
+| `src/SessionSources.mjs`, `src/SessionLog.mjs`, `src/ClaudeSessionSource.mjs`, `src/CodexSessionSource.mjs`, `src/PiSessionSource.mjs` | The session files of Claude Code, Codex and pi, and the parser of their lines. |
+| `src/SqliteSidecar.mjs` | The code that the two search indexes share: the open of the file, the folding, the terms and the snippet. |
 | `src/messages.mjs`, `resources/Megachat.properties` | The user-visible strings, the errors, and the log lines about a failure. |
 | `build.mjs` | The bundle in `out/bundle/`. |
 | `release.mjs` | The release of the version in `package.json`: the tag and the GitHub release. |
@@ -307,6 +343,9 @@ without the optional package `@openai/codex-darwin-arm64`, and the Codex agent o
 
 In a fresh clone, `npm test` skips the bundle test, because `out/bundle/` does not exist. After a build, `npm test`
 tests the last build, and that build can be older than the source. Only `npm run test:bundle` tests a new build.
+
+`node test/bench/session-index.bench.mjs [entries]` measures the import, the longest block of the event loop and the
+search latency of the index of past sessions on a synthetic corpus. `npm test` does not run it.
 
 The requirements are in `docs/spec.md`. The ACP extensions that Megachat and Air exchange are in
 `docs/air-contract.md`. The later work is in `docs/roadmap.md`.

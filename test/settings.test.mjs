@@ -116,7 +116,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'events.enabled': true, 'events.ignore': ['*.tmbundle', 'build/download', '.claude/settings.local.json'],
-    'projects.newRoot': '~/src', 'budget.dailyUsd': 0,
+    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
   // A variable that the daemon cannot read has no effect.
@@ -159,6 +159,8 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'events.ignore': [],
     'projects.newRoot': [['~', '~'], [' ~/work/ ', '~/work'], ['/srv/projects', '/srv/projects']],
     'budget.dailyUsd': [[0, 0], ['2.5', 2.5], [100000, 100000]],
+    'sessions.index': [['on', 'on'], [false, 'off'], [' OFF ', 'off']],
+    'sessions.days': [[0, 0], ['30', 30], [3650, 3650]],
   }
   const refused = {
     'coordinator.model': ['anthropic/claude-opus-5-5', 'fast', 'faux/', 7],
@@ -179,6 +181,8 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'events.ignore': [7, ['../outside'], 'a\\b', [1], Array(51).fill('x'), ['a//b']],
     'projects.newRoot': ['src', '', '~user/src', 5],
     'budget.dailyUsd': [-1, 'much', 100001, true],
+    'sessions.index': ['later', 2],
+    'sessions.days': [-1, 3651, 1.5, 'long'],
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
   // A list is no single value, so its cases compare the whole list.

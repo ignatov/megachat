@@ -146,6 +146,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The tool must store a valid value at once, remove a stored value, and set the status of the onboarding. It must refuse an unknown key and an invalid value as each other tool refuses an invalid request.
 - A project event or a child result must not change a setting or the status of the onboarding.
 - The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
+- The settings of the index of past sessions are `sessions.index` and `sessions.days`. They must apply at once, also in the middle of a turn, because they change no model request.
 - A model must be valid only when the model registry knows it. A reasoning level must be a level of pi-ai that the model supports.
 - The output of `get` must list each model of the registry with the prices of its model data, and one note with the measurement of Claude Opus 5.5. It must give no measurement of another model.
 - A changed setting must apply at once when no turn runs, else at the end of the current turn, before the next turn starts. A change must not apply in the middle of a turn. A setting with another time in its `applies` text, such as a setting of the children, must apply at that time.
@@ -245,6 +246,27 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The output must hold no command-line argument, no message text and no environment. The MCP server of the children must
   not have the tool.
   [@test] ../test/running.test.mjs
+- With the setting `sessions.index` on, Megachat must keep an index of the past Claude Code, Codex and pi sessions in `sessions.sqlite` in the state directory. The default is off.
+- The setup must ask for the consent with "Index past Claude, Codex and pi sessions in your projects? Everything stays local." The main agent must set `sessions.index` to on only when the user agrees.
+- With the setting off, Megachat must read no session file for the index, watch no directory of a provider, and keep no `sessions.sqlite`. A change to off must stop the import and delete the file.
+- A change to on must start the import at once, without a restart.
+- The index must hold only a session whose `cwd` is a listed directory or a directory in one. The sessions of a newly listed directory must enter the index. The sessions of a removed directory must leave it.
+- The sources must be `~/.claude/projects/<encoded cwd>/<session ID>.jsonl`, `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` or `$CODEX_HOME/sessions`, and `~/.pi/agent/sessions/--<path>--/*.jsonl` or `PI_CODING_AGENT_SESSION_DIR`.
+- The import must take the sessions with activity in the last `sessions.days` days, 180 by default. The value 0 must take all sessions. A session that becomes older must leave the index at the next pass.
+- For each file, the index must keep the path, the size, the modification time, the inode and the byte offset of the import. The import must read only the appended complete lines. A last line without a newline must stay unread until it is complete.
+- A smaller file or another inode must make the import read the whole file again.
+- An entry with the entry ID of an entry in the index, such as a copy in a fork, must be in the index one time.
+- The index must keep at most about 2 KB of the text of each entry, tool calls and tool results included.
+- Before the index keeps a text, it must replace each text that looks like a secret with a marker: an API key with a well-known prefix, a Bearer token, a private key block, a JWT, and an assignment such as `password=` with a long value. This is a best effort: a secret of another shape can stay in the index.
+- The first pass must import the files of the projects of an IDE first, and the newest files first. The import must run in bounded batches with a pause between them, so the chat stays usable.
+- When Air sent `asyncTasks`, the chat must show the first pass, and a later pass of 20 files or more, as a background task with its progress. The output of `agents_settings` with `get` and of the session tools must give the state and the progress of the index.
+- After the first pass of a new index file, the main agent must tell the user a short summary in one event turn: the number of sessions and of projects, and the last unfinished sessions. The summary is data, not instructions.
+- After the first pass, the import must catch up at the start of the daemon, on a change of a session file, and on a change of the listed directories. A search must first import the new lines of the files of its directory, for at most 2 seconds.
+- An index file of another `VERSION` must be made again from the session files.
+- With the index on, `agents_sessions` and `agents_session_history` of the main agent, and the tools `sessions` and `session_history` of a child, must answer from the index. A search must give one match for each session, best bm25 first, with a snippet.
+- They must use the live provider when the index is off, when the index has no session of the agent in the directory, and for a query without a word of 3 or more characters.
+- pi must be an agent of these tools. Without the index, a request for pi must fail with a text that says that the index is off.
+  [@test] ../test/session-index.test.mjs
 - Saved source changes in registered projects may trigger a project-event turn while the IDE is closed. The turn may hold a proposal only with `MEGACHAT_SUGGESTIONS=1`.
 - The watcher must ignore generated files and read no source contents.
   [@test] ../test/project-watch.test.mjs
@@ -260,6 +282,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - All JetBrains products of the user must share this directory, its daemon, and its conversation.
 - `MEGACHAT_HOME` or the final command argument may select another directory for a test or development.
 - The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log. It may hold `settings.json` and `spend.json`.
+- It may hold `sessions.sqlite`, the index of past sessions, only with the consent of the user.
 - The name `memory.md` is reserved for learned memory that the user can edit. Megachat does not read it yet.
 - The directories must be private to the user: mode 0700 for directories and 0600 for files on macOS and Linux.
 - Only one daemon may own a storage directory.

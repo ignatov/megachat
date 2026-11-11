@@ -15,6 +15,7 @@ import { RunningAgents } from './RunningAgents.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
+import { SessionIndexService } from './SessionIndexService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
 
 const context = BACKGROUND_CONTEXT
@@ -121,7 +122,7 @@ export class PiMegachatService {
    * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`. [processTable] replaces the
    * process table of the platform for the tool `agents_running`, and [clock] also gives the age of its view, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -160,6 +161,11 @@ export class PiMegachatService {
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
     if (searchPath) service.search = await MegachatSearchIndex.open(searchPath, (minEntryId, cursor) =>
       root.entries({ order: 'ascending', minEntryId }, 200, cursor, context))
+    // The index of the past sessions starts in `resume`, and only with the consent of the user.
+    if (sessionsPath) {
+      service.sessionIndex = new SessionIndexService({ path: sessionsPath, state, home, environment, ...indexOptions })
+      service.sessions.index = service.sessionIndex
+    }
     registry.install(service.extension())
     return service
   }
@@ -276,7 +282,8 @@ export class PiMegachatService {
   async settingsTool(args) {
     requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
     if (args.action === 'get') {
-      return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') } }
+      return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') },
+        ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}) }
     }
     requireCondition(!['event', 'report'].includes((await this.state.snapshot()).current?.kind), 'settingEvent')
     let changed
@@ -290,6 +297,8 @@ export class PiMegachatService {
       changed = await this.settings.set(args.key, args.value)
     }
     else changed = await this.settings.reset(args.key)
+    // The consent to the session index applies at once: the import starts or stops in this turn.
+    if (args.action !== 'onboarding') await this.sessionIndex?.apply(this.settings.values())
     await this.settingsChanged()
     return changed
   }
@@ -483,10 +492,11 @@ export class PiMegachatService {
         this.reportTimer.unref()
       }
       const projectPending = !snapshot.initiative.silenced && Object.keys(snapshot.initiative.pending).length > 0
-      if (!resultsPending && !projectPending) return
+      const sessionsPending = Boolean(snapshot.sessionIndex?.summary)
+      if (!resultsPending && !projectPending && !sessionsPending) return
       this.eventPump = this.eventPump.then(async () => {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
-        const receipt = await this.state.nextChildResults() ?? await this.state.nextProjectEvent()
+        const receipt = await this.state.nextChildResults() ?? await this.state.nextProjectEvent() ?? await this.state.nextSessionsEvent()
         if (receipt) this.follow(receipt)
       }).catch(error => {
         if (this.lifetime.signal.aborted) return
@@ -498,6 +508,8 @@ export class PiMegachatService {
     this.eventWatch.start(call => { if (call.kind === 'value') observe(call.value) })
     this.harness.resume()
     this.resumed = true
+    // An index that cannot open must not stop the chat. The log names the failure, and a change of the setting tries again.
+    await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
   }
 
   async submit(requestId, text) {
@@ -624,6 +636,7 @@ export class PiMegachatService {
     await Promise.allSettled(this.retired)
     await this.eventWatch?.stop()
     await this.eventPump.catch(() => {})
+    await this.sessionIndex?.close()
     await this.search?.close()
     await this.harness.close(context)
     await Promise.allSettled([...this.waiters.values()])

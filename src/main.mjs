@@ -68,7 +68,7 @@ async function daemon() {
     assertSupportedState(join(directory, 'conversation.sqlite'))
     const configuration = new CentralConfigurationService()
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
-      undefined, undefined, { searchPath: join(directory, 'search.sqlite'), userInstructionsPath: join(directory, 'instructions.md'),
+      undefined, undefined, { searchPath: join(directory, 'search.sqlite'), sessionsPath: join(directory, 'sessions.sqlite'), userInstructionsPath: join(directory, 'instructions.md'),
         settingsPath: join(directory, 'settings.json'), workspacePath: join(directory, 'workspace'), stateDirectory: directory,
         spendPath: join(directory, 'spend.json'),
         accountCheck: () => checkAccounts(configuration, { cwd: join(directory, 'workspace') }) })

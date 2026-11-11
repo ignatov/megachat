@@ -65,6 +65,12 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 - The ID is `<run ID>:<phase>`. The phase is `queued`, `resuming`, `approval` or `running`. A change of the phase ends
   the task of the old phase with `completed` and sends a new task.
 - A run that ends gives `completed` when it completed, `stopped` when the user cancelled it, and `failed` otherwise.
+- Megachat also sends a task for a pass of the import of past sessions, with the same updates and fields. This is a
+  second use of the updates, and Air needs no change for it. `name` is "Index of past sessions", and `description`
+  gives the count of the imported files and of all the files of the pass. The other fields are as for a child run.
+- The ID of that task is `sessions:<pass>:<step>`. The step is the tenth of the files that the pass imported. A new
+  step ends the task of the old step with `completed` and sends a new task, as a change of the phase does. So the chat
+  shows the progress, and one pass gives at most eleven tasks. The end of the pass ends its last task with `completed`.
 - Air treats a task type other than `turn` as ordinary background work. Air accepts a task while no prompt runs.
 - Air drops a second `async_task_spawned` with the ID of an open task. Air fails each open task when a new agent
   process connects. So Megachat forgets its sent tasks on each attach and sends them again.

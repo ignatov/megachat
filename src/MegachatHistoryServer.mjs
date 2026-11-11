@@ -19,12 +19,12 @@ export class MegachatHistoryServer {
     }, async args => ({ content: [{ type: 'text', text: JSON.stringify(await this.service.history(args)) }] }))
     server.registerTool('sessions', {
       description: message('tool.sessions'),
-      inputSchema: { cwd: z.string(), agent: z.enum(['claude', 'codex', 'all']).optional(), query: z.string().max(200).optional(), cursor: z.string().optional() },
+      inputSchema: { cwd: z.string(), agent: z.enum(['claude', 'codex', 'pi', 'all']).optional(), query: z.string().max(200).optional(), cursor: z.string().optional() },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async args => ({ content: [{ type: 'text', text: JSON.stringify(await this.service.sessions.search(args)) }] }))
     server.registerTool('session_history', {
       description: message('tool.session_history'),
-      inputSchema: { cwd: z.string(), agent: z.enum(['claude', 'codex']), sessionId: z.string(), query: z.string().max(200).optional(), cursor: z.string().optional() },
+      inputSchema: { cwd: z.string(), agent: z.enum(['claude', 'codex', 'pi']), sessionId: z.string(), query: z.string().max(200).optional(), cursor: z.string().optional() },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async args => ({ content: [{ type: 'text', text: JSON.stringify(await this.service.sessions.read(args)) }] }))
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })

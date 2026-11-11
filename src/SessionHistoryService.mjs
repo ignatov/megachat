@@ -4,6 +4,7 @@ import { ClaudeSessionHistoryService } from './ClaudeSessionHistoryService.mjs'
 import { CodexSessionHistoryService } from './CodexSessionHistoryService.mjs'
 import { message, requireCondition } from './messages.mjs'
 import { listedDirectory } from './ProjectDirectories.mjs'
+import { queryTerms, snippet } from './SqliteSidecar.mjs'
 
 const cursorKey = randomBytes(32)
 const sign = payload => createHmac('sha256', cursorKey).update(payload).digest()
@@ -14,12 +15,33 @@ const encode = value => {
 }
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,200}$/
 const providerCursor = value => value === null || (typeof value === 'string' && value.length <= 4096)
+const count = value => Number.isSafeInteger(value) && value >= 0
+/** The position in the index of a search, of a list or of a session: the fields of each one are counts. */
+const indexPosition = value => value && typeof value === 'object' && !Array.isArray(value)
+  && Object.entries(value).every(([key, item]) => ['before', 'offset', 'after'].includes(key) && count(item))
+/** pi has no live source. Its sessions come only from the index of past sessions. */
+const INDEX_ONLY = 'pi'
 
-/** Searches provider histories only in the listed directories: the projects of an IDE, the known repositories, and the workspace. */
+/**
+ * Searches the session histories only in the listed directories: the projects of an IDE, the known repositories, and
+ * the workspace. With the consent of the user, the index of past sessions answers first. The live provider answers
+ * when the index is off, when the index has no session of the agent in the directory, and for a query that is too
+ * short for the index.
+ */
 export class SessionHistoryService {
-  constructor(state, providers = { claude: new ClaudeSessionHistoryService(), codex: new CodexSessionHistoryService() }) {
+  constructor(state, providers = { claude: new ClaudeSessionHistoryService(), codex: new CodexSessionHistoryService() }, index = undefined) {
     this.state = state
     this.providers = providers
+    this.index = index
+  }
+
+  get indexed() { return Boolean(this.index?.enabled) }
+
+  /** Accepts a known agent. pi needs the index. */
+  agent(agent) {
+    requireCondition(typeof agent === 'string' && (Object.hasOwn(this.providers, agent) || agent === INDEX_ONLY))
+    requireCondition(agent !== INDEX_ONLY || this.indexed, 'sessionsIndexOff')
+    return agent
   }
 
   async workspace(cwd) {
@@ -45,11 +67,13 @@ export class SessionHistoryService {
   async search({ cwd, agent = 'all', query = '', cursor } = {}) {
     cwd = await this.workspace(cwd)
     requireCondition(typeof query === 'string' && query.length <= 200)
-    requireCondition(agent === 'all' || Object.hasOwn(this.providers, agent))
+    if (agent !== 'all') this.agent(agent)
     requireCondition(agent !== 'all' || !cursor)
-    const agents = agent === 'all' ? Object.keys(this.providers) : [agent]
+    const indexed = this.indexed
+    const agents = agent === 'all' ? [...Object.keys(this.providers), ...(indexed ? [INDEX_ONLY] : [])] : [agent]
     const position = agent === 'all' ? null : this.position(cursor, { cwd, agent, query })
-    if (position) {
+    if (position?.index !== undefined) requireCondition(indexed && indexPosition(position.index))
+    else if (position) {
       requireCondition(Array.isArray(position.sessions) && position.sessions.length <= 10)
       requireCondition(position.sessions.every(session => session && typeof session === 'object'
         && typeof session.sessionId === 'string' && sessionIdPattern.test(session.sessionId)
@@ -57,11 +81,53 @@ export class SessionHistoryService {
       requireCondition(providerCursor(position.listCursor))
       requireCondition(Number.isSafeInteger(position.unreadableSessions) && position.unreadableSessions >= 0)
     }
+    // The import of the new lines of the files of this directory is cheap, so a search sees the last messages.
+    const caughtUp = indexed ? await this.index.catchUp(cwd) : false
     const pages = await Promise.all(agents.map(async agent => {
-      try { return await this.searchPage(cwd, agent, query, position) }
+      try {
+        if (indexed && (!position || position.index)) {
+          const page = await this.indexPage(cwd, agent, query, position?.index, caughtUp)
+          if (page) return page
+        }
+        if (agent === INDEX_ONLY) return { agent, matches: [], complete: false, error: message('error.sessionsIndexOff') }
+        return await this.searchPage(cwd, agent, query, position?.index ? null : position)
+      }
       catch { return { agent, matches: [], complete: false, error: message('error.sessions') } }
     }))
-    return { cwd, query, pages }
+    return { cwd, query, pages, ...(indexed ? { index: await this.index.status() } : {}) }
+  }
+
+  /**
+   * A page of the index for [agent], or undefined when the index has no data for the request: no session of the agent
+   * in the directory, or a short query for an agent with a live source. One match is one session with its best hit.
+   */
+  async indexPage(cwd, agent, query, position, caughtUp) {
+    const index = this.index.store
+    if (!index) return undefined
+    const live = agent !== INDEX_ONLY
+    if (live && !await index.hasSessions(agent, cwd)) return undefined
+    const terms = queryTerms(query)
+    if (live && query.trim() && !terms.length) return undefined
+    let matches
+    let next
+    if (terms.length) {
+      const found = await index.search(agent, cwd, terms, position)
+      matches = found.hits.map(hit => {
+        const text = snippet(hit.entry.text, terms)
+        return { ...hit.session, id: hit.entry.id, role: hit.entry.role, ...(hit.entry.tool ? { tool: hit.entry.tool } : {}),
+          timestamp: hit.entry.timestamp, text, truncated: hit.entry.clipped || text !== hit.entry.text }
+      })
+      next = found.next
+    }
+    else {
+      const found = query.trim() ? await index.titled(agent, cwd, query.trim(), position?.offset) : await index.list(agent, cwd, position?.offset)
+      matches = found.sessions.map(session => ({ ...session, text: session.title ?? '' }))
+      next = found.next
+    }
+    const complete = caughtUp && !next
+    return { agent, source: 'index', matches, complete,
+      ...(caughtUp ? {} : { error: message('sessions.incomplete') }),
+      nextCursor: next ? encode({ cwd, agent, query, historyCursor: null, index: next }) : null }
   }
 
   async searchPage(cwd, agent, query, position) {
@@ -105,15 +171,38 @@ export class SessionHistoryService {
 
   async read({ cwd, agent, sessionId, cursor, query = '' } = {}) {
     cwd = await this.workspace(cwd)
-    requireCondition(Object.hasOwn(this.providers, agent))
+    this.agent(agent)
     requireCondition(typeof sessionId === 'string' && sessionIdPattern.test(sessionId))
     requireCondition(typeof query === 'string' && query.length <= 200)
     const identity = { cwd, agent, sessionId, query }
     const position = this.position(cursor, identity)
+    if (position?.index !== undefined) requireCondition(this.indexed && indexPosition(position.index))
+    if (this.indexed && (!position || position.index)) {
+      const page = await this.indexRead(identity, position?.index?.after ?? 0)
+      if (page) return page
+    }
+    requireCondition(agent !== INDEX_ONLY, 'missing')
     const page = await this.providers[agent].read(cwd, sessionId, position?.historyCursor ?? null)
     return { agent, session: page.session,
       entries: page.entries.filter(entry => entry.text.toLowerCase().includes(query.toLowerCase())).map(entry => this.excerpt(entry, query)),
       nextCursor: page.nextCursor === null ? null : encode({ ...identity, historyCursor: page.nextCursor }) }
+  }
+
+  /** A page of a session from the index, or undefined when the index does not hold the session. */
+  async indexRead(identity, after) {
+    const { cwd, agent, sessionId, query } = identity
+    await this.index.catchUp(cwd)
+    const index = this.index.store
+    const session = index && await index.session(agent, cwd, sessionId)
+    if (!session) return undefined
+    const page = await index.entries(session.id, after)
+    const needle = query.toLowerCase()
+    const entries = page.entries.filter(entry => entry.text.toLowerCase().includes(needle)).map(({ rowId, clipped, ...entry }) => {
+      const excerpt = this.excerpt(entry, query)
+      return { ...excerpt, truncated: excerpt.truncated || clipped }
+    })
+    return { agent, source: 'index', session: session.info, entries,
+      nextCursor: page.more ? encode({ ...identity, historyCursor: null, index: { after: page.entries.at(-1).rowId } }) : null }
   }
 
   excerpt(entry, query) {

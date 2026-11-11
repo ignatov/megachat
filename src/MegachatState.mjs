@@ -147,6 +147,8 @@ export class MegachatState {
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {}, projects: {}, pending: {} }
       state.serviceSessions ??= serviceSessionsOf(state.runs)
       state.projects ??= []
+      // The task of an import pass ends with its daemon. A summary that waits for its event turn stays.
+      state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null }
       // The workspace of Megachat follows the state directory of this start, so the state does not keep an old one.
       state.megachatWorkspace = this.workspace ?? null
       // A build from before the output limit of the tail kept each update of a run. Nothing read these updates, and
@@ -341,6 +343,41 @@ export class MegachatState {
       state.initiative.declines = 0
       state.initiative.suggestion = null
       const input = { digest: digest(event), mainRunId, submissionId, status: 'running', admittedAt: Date.now() }
+      state.inputs[requestId] = input
+      state.current = { id: mainRunId, requestId, cancelling: false, kind: 'event' }
+      return input
+    })
+  }
+
+  /** Stores the progress of an import pass of the session index for the chat, or `null` at its end. */
+  async sessionsTask(task) {
+    await this.change(state => { state.sessionIndex.task = task })
+  }
+
+  /** Stores the summary of the first pass of the session index. The next event turn tells it to the user one time. */
+  async sessionsIndexed(summary) {
+    await this.change(state => { state.sessionIndex = { task: null, summary } })
+  }
+
+  /** Forgets the task and the summary of the session index after the user took the consent back. */
+  async sessionsOff() {
+    await this.change(state => { state.sessionIndex = { task: null, summary: null } })
+  }
+
+  /** Starts the event turn that tells the summary of the first pass of the session index. */
+  async nextSessionsEvent() {
+    return this.change(async (state, tx) => {
+      const summary = state.sessionIndex?.summary
+      if (state.current || !summary) return null
+      retain(state)
+      const requestId = `sessions:${digest(summary)}`
+      const mainRunId = randomUUID()
+      const submissionId = await this.root.submit(tx, {
+        type: 'input', requestId, content: `${message(`event.sessions${this.eventSuffix}`)}\n${JSON.stringify(summary)}`,
+        entry: { kind: 'air.megachat.event', data: { type: 'sessions', ...summary } },
+      })
+      state.sessionIndex.summary = null
+      const input = { digest: digest(summary), mainRunId, submissionId, status: 'running', admittedAt: Date.now() }
       state.inputs[requestId] = input
       state.current = { id: mainRunId, requestId, cancelling: false, kind: 'event' }
       return input

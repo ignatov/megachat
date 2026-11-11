@@ -1,5 +1,6 @@
-import { chmod, open, rm } from 'node:fs/promises'
-import { openNodeSqliteDatabase } from '@earendil-works/chord/sqlite/node'
+import { corrupt, deleteSidecar, fold, FTS_TABLE, matchExpression, openSidecar, queryTerms, snippet } from './SqliteSidecar.mjs'
+
+export { queryTerms, snippet }
 
 const VERSION = 2
 const TOOL_TEXT_LIMIT = 2000
@@ -7,7 +8,6 @@ const TOOL_TEXT_LIMIT = 2000
 const OVERLAP = 16
 /** Matches ranked together: the newest first, then older ones window by window. */
 export const RANK_WINDOW = 2000
-const corrupt = error => [11, 26].includes((error?.errcode ?? 0) & 0xff)
 
 const project = cwd => typeof cwd === 'string' ? `${cwd.split('/').filter(Boolean).at(-1) ?? cwd} (${cwd})` : ''
 const clip = (text, limit, full) => full || text.length <= limit ? text : `${text.slice(0, limit)}…`
@@ -20,6 +20,11 @@ function eventText(data, full) {
     const share = Math.max(400, Math.floor(TOOL_TEXT_LIMIT / Math.max(1, results.length)))
     return results.map(run => clip([`Task ${run.status ?? ''} in ${project(run.cwd)}`, run.prompt, run.output, run.error]
       .filter(part => typeof part === 'string' && part).join('\n'), share, full)).join('\n\n')
+  }
+  if (data?.type === 'sessions') {
+    const unfinished = Array.isArray(data.unfinished) ? data.unfinished : []
+    return clip([`Past sessions indexed: ${data.sessions ?? 0} sessions in ${data.projects ?? 0} projects`,
+      ...unfinished.map(session => `${session.agent ?? ''} ${session.title ?? ''} ${project(session.cwd)}`.trim())].join('\n'), TOOL_TEXT_LIMIT, full)
   }
   if (data?.type === 'project')
     return clip([`Project changed: ${project(data.cwd)}`, ...(Array.isArray(data.paths) ? data.paths : [])].join('\n'), TOOL_TEXT_LIMIT, full)
@@ -49,14 +54,6 @@ export function entryText(entry, { full = false } = {}) {
   return parts.length ? { role, timestamp, text: parts.join('\n') } : undefined
 }
 
-/** SQLite folds Latin diacritics only; `ё` and `е` are the same letter for search. */
-const fold = text => text.replace(/ё/g, 'е').replace(/Ё/g, 'Е')
-
-/** Search terms of a query: whitespace-separated substrings of at least 3 characters, or [] for a short query. */
-export function queryTerms(query) {
-  return [...new Set(query.trim().split(/\s+/).filter(term => [...term].length >= 3))]
-}
-
 /**
  * A full-text index of the Megachat conversation in its own SQLite file next to pi-durable's database. It derives
  * everything from committed entries, so it can be dropped and rebuilt at any time.
@@ -65,12 +62,7 @@ export class MegachatSearchIndex {
   /** `read(minEntryId, cursor)` returns an ascending page of committed entries: `{ items, next }`. */
   static async open(path, read) {
     const index = new MegachatSearchIndex(path, read)
-    try { await index.#open() }
-    catch (error) {
-      if (!corrupt(error)) throw error
-      await index.#delete()
-      await index.#open()
-    }
+    await index.#open()
     return index
   }
 
@@ -81,22 +73,18 @@ export class MegachatSearchIndex {
   }
 
   async #open() {
-    await (await open(this.path, 'a', 0o600)).close()
-    await chmod(this.path, 0o600)
-    this.db = await openNodeSqliteDatabase(this.path)
-    try {
-      await this.db.exec('CREATE TABLE IF NOT EXISTS meta (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL, last_entry_id INTEGER NOT NULL)')
-      const meta = await this.db.get('SELECT version FROM meta WHERE singleton = 1')
-      if (meta?.version !== VERSION) await this.#reset()
-      else await this.db.get('SELECT count(*) AS count FROM fts')
-    }
-    catch (error) { await this.db.close().catch(() => {}); this.db = undefined; throw error }
+    this.db = await openSidecar(this.path, async db => {
+      await db.exec('CREATE TABLE IF NOT EXISTS meta (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL, last_entry_id INTEGER NOT NULL)')
+      const meta = await db.get('SELECT version FROM meta WHERE singleton = 1')
+      if (meta?.version !== VERSION) await this.#reset(db)
+      else await db.get('SELECT count(*) AS count FROM fts')
+    })
   }
 
-  async #reset() {
-    await this.db.transaction(async tx => {
+  async #reset(db = this.db) {
+    await db.transaction(async tx => {
       await tx.exec('DROP TABLE IF EXISTS fts')
-      await tx.exec(`CREATE VIRTUAL TABLE fts USING fts5(body, tokenize='trigram remove_diacritics 1', detail=full, content='', contentless_delete=1)`)
+      await tx.exec(FTS_TABLE)
       await tx.run('INSERT OR REPLACE INTO meta (singleton, version, last_entry_id) VALUES (1, ?, 0)', VERSION)
     })
   }
@@ -104,7 +92,7 @@ export class MegachatSearchIndex {
   async #delete() {
     await this.db?.close().catch(() => {})
     this.db = undefined
-    await Promise.all(['', '-wal', '-shm'].map(suffix => rm(`${this.path}${suffix}`, { force: true })))
+    await deleteSidecar(this.path)
   }
 
   #serial(operation) {
@@ -171,7 +159,7 @@ export class MegachatSearchIndex {
   search(query, { limit = 10, offset = 0 } = {}) {
     const terms = queryTerms(query)
     if (!terms.length) return Promise.resolve(undefined)
-    const match = terms.map(term => `"${fold(term).replaceAll('"', '""')}"`).join(' AND ')
+    const match = matchExpression(terms)
     return this.#serial(() => this.#guard(async () => {
       // bm25 over every match of a common term costs ~100 ms per 10^5 entries, so it ranks windows of the newest
       // matches; later pages continue into older windows.
@@ -191,23 +179,4 @@ export class MegachatSearchIndex {
   }
 
   close() { return this.#serial(async () => { await this.db?.close(); this.db = undefined }) }
-}
-
-/** A short excerpt around the first matching term, matching case-insensitively and with folded diacritics. */
-export function snippet(text, terms, before = 120, after = 240) {
-  const chars = Array.from(text)
-  // One UTF-16 unit per character, so positions in the haystack are positions in `chars`.
-  const plain = ch => {
-    const folded = fold(ch).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-    return folded.length === 1 ? folded : ch.length === 1 ? ch : '￿'
-  }
-  const haystack = chars.map(plain).join('')
-  let position = -1
-  for (const term of terms) {
-    const found = haystack.indexOf(Array.from(term, plain).join(''))
-    if (found >= 0 && (position < 0 || found < position)) position = found
-  }
-  const start = Math.max(0, position - before)
-  const end = Math.min(chars.length, Math.max(position, 0) + after)
-  return `${start > 0 ? '…' : ''}${chars.slice(start, end).join('')}${end < chars.length ? '…' : ''}`
 }

@@ -12,6 +12,26 @@ export function taskTitle(prompt) {
   return line.length <= 60 ? line || message('title') : `${line.slice(0, 59).trimEnd()}…`
 }
 
+/**
+ * The background tasks of the chat for [state], by task ID: each unfinished child run, and a pass of the import of the
+ * past sessions.
+ */
+export function taskRows(state) {
+  const rows = new Map()
+  for (const run of Object.values(state.runs)) {
+    if (terminalStates.has(run.status)) continue
+    let first = run
+    while (first.resumeOf && state.runs[first.resumeOf]) first = state.runs[first.resumeOf]
+    const phase = run.status === 'admitted' ? run.resumeOf ? 'resuming' : 'queued' : run.status === 'approval' ? 'approval' : 'running'
+    rows.set(`${run.id}:${phase}`, { name: run.title ?? first.title ?? taskTitle(first.prompt), description: message(`child.${phase}`,
+      run.agent === 'codex' ? 'Codex' : 'Claude', basename(run.cwd)) })
+  }
+  // The import of the past sessions is a task too. Its ID changes at each tenth of the files, as a phase of a run does.
+  const imported = state.sessionIndex?.task
+  if (imported) rows.set(imported.id, { name: message('sessions.task'), description: message('sessions.task.progress', imported.done, imported.total) })
+  return rows
+}
+
 /** Routes ACP views to one daemon conversation. Each view owns its transcript projection. */
 export class AcpBridge {
   constructor(daemon) { this.daemon = daemon; this.views = new Map() }
@@ -295,15 +315,7 @@ class AcpBridgeSession {
 
   /** Lists unfinished child runs as background tasks; the coordinator's own tool calls never reach the chat. */
   async childRows(state) {
-    const rows = new Map()
-    for (const run of Object.values(state.runs)) {
-      if (terminalStates.has(run.status)) continue
-      let first = run
-      while (first.resumeOf && state.runs[first.resumeOf]) first = state.runs[first.resumeOf]
-      const phase = run.status === 'admitted' ? run.resumeOf ? 'resuming' : 'queued' : run.status === 'approval' ? 'approval' : 'running'
-      rows.set(`${run.id}:${phase}`, { name: run.title ?? first.title ?? taskTitle(first.prompt), description: message(`child.${phase}`,
-        run.agent === 'codex' ? 'Codex' : 'Claude', basename(run.cwd)) })
-    }
+    const rows = taskRows(state)
     for (const [id, runId] of this.childTasks) {
       if (rows.has(id)) continue
       const status = state.runs[runId]?.status
