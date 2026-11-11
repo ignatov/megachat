@@ -210,6 +210,41 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Unavailable histories must mark the search incomplete and preserve other matches.
 - Excerpts must identify truncated text.
   [@test] ../test/session-history.test.mjs
+- The tool `agents_running` of the main agent must list the agent sessions that run on the machine now: Claude Code,
+  Codex, pi and OpenCode, also below the ACP adapters `claude-agent-acp` and `codex-acp`. It must read the process
+  table only, and it must change nothing.
+- One session must give one row. An agent process below a process of the same agent must not be a row. An adapter must
+  be a row only when no agent of its own runs below it. A helper of an agent, such as an MCP server, a shell or a tool,
+  must not be a row. The background service of an agent (`claude daemon`, `codex app-server daemon`) and the processes
+  of this daemon outside a child run, such as the account check, must not be rows.
+- Each row must have `agent`, `sessionId`, `title`, `cwd`, `state`, `status`, `startedAt`, `lastActivityAt`, `pid` and
+  `parent` with `kind`, `name` and `pid`. `kind` must come from the nearest owner in the parent chain: `megachat`, `ide`
+  for an IDE, an editor or the desktop app of an agent, `terminal` for a terminal app, a multiplexer server or SSH, and
+  `unknown` for the service of an agent, another app, or no owner. `name` must be the name of the app or of the program,
+  never a command line.
+- For a process below this daemon, the state of Megachat must be the authority. The run of the supervisor PID must give
+  the session ID, the title and the task directory.
+- The state must be `orphan` when the parent chain reaches launchd without an owner, or when the run of a Megachat child
+  ended. A shell that stays after its terminal is no owner. Else the state must be `active` at a CPU load of 10 percent
+  of one core or more, of the session process with its helpers, and `idle` below it.
+- The server of `tmux`, `screen` or `herdr` must count as a live terminal. Thus a session in a multiplexer without a
+  client is not an orphan.
+- In this version, `status` and `lastActivityAt` must be null, a session outside Megachat must have an empty `sessionId`
+  and `title`, and `incomplete` must name the session logs. A session that waits for the model is `idle`.
+- The order must be: orphan, active, idle, and the newest start first in each group. `limit` must be 1 to 200, and the
+  default must be 50. `nextCursor` must continue after the last row of the page, and `truncated` must be true when more
+  rows exist. `agent`, `project` and `state` must select the rows. `project` must select each working directory that
+  is that directory or in it.
+- Megachat must keep the view of the processes for 5 seconds, so two calls in that time make one `ps` call. `scannedAt`
+  must give the time of the view. Megachat must get the working directory once for each process, and again for a PID
+  with another start time.
+- A working directory that Megachat cannot read must give a row with the `cwd` null and an entry in `incomplete`, not an
+  error. A failed `ps` call must give an empty list and an entry in `incomplete`. On a platform other than macOS, the list
+  must be empty, and `incomplete` must name the platform. `incomplete` must name the logs of OpenCode when the list has
+  an OpenCode session.
+- The output must hold no command-line argument, no message text and no environment. The MCP server of the children must
+  not have the tool.
+  [@test] ../test/running.test.mjs
 - Saved source changes in registered projects may trigger a project-event turn while the IDE is closed. The turn may hold a proposal only with `MEGACHAT_SUGGESTIONS=1`.
 - The watcher must ignore generated files and read no source contents.
   [@test] ../test/project-watch.test.mjs

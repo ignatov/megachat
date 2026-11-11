@@ -11,6 +11,7 @@ import { directoriesOf } from './ProjectDirectories.mjs'
 import { eventMatcher } from './ProjectEventFilter.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
+import { RunningAgents } from './RunningAgents.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
@@ -117,9 +118,10 @@ export class PiMegachatService {
   /**
    * An explicit [model], `compactTokens`, `suggestions` or `keepAlive` setting wins over the environment and over
    * `settings.json`, for a test. The daemon passes none of them. [clock] gives the time of the daily spend, for a test.
-   * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`.
+   * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`. [processTable] replaces the
+   * process table of the platform for the tool `agents_running`, and [clock] also gives the age of its view, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -151,7 +153,7 @@ export class PiMegachatService {
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     state.projectFilter = () => service.projectFilter()
     Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck,
-      spend: await DailySpend.open(spendPath, clock) })
+      spend: await DailySpend.open(spendPath, clock), running: new RunningAgents(state, { table: processTable, clock }) })
     service.adopt(values)
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
@@ -327,6 +329,9 @@ export class PiMegachatService {
         async args => result(await this.sessions.search(args))),
       tool('session_history', obj({ cwd: str(), agent: str(), sessionId: str(), query: opt(str({ maxLength: 200 })), cursor: opt(str()) }),
         async args => result(await this.sessions.read(args))),
+      // The tool reads the processes only. The children do not get it: their MCP server has the history tools only.
+      tool('running', obj({ agent: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })), state: opt(str({ maxLength: 20 })),
+        limit: opt(int({ minimum: 1, maximum: 200 })), cursor: opt(str({ maxLength: 64 })) }), async args => result(await this.running.query(args))),
       // The suggestion tools exist only with `MEGACHAT_SUGGESTIONS=1`. The stored suggestion state stays without them.
       ...(this.suggestions ? [
         tool('suggest', obj({ proposal: str() }), async (args, api) =>

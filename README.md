@@ -237,6 +237,23 @@ can skip one question or the whole setup, and the defaults then apply. After the
 does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon cannot read stays as
 `settings.json.unreadable-<UTC time>`, and the defaults apply.
 
+## The sessions that run on the machine
+
+Ask the agent "what is running now?". The main agent calls its tool `agents_running` and answers in the chat. The tool
+lists the running sessions of Claude Code, Codex, pi and OpenCode on the machine, from a terminal, an IDE or Megachat.
+It reads the process table with one `ps` call, and the working directory of each new session with one `lsof` call. It
+changes nothing, and it stops no process. Each session has its agent, its project, its start time, its owner (the
+terminal, the IDE or Megachat) and a state:
+
+- `orphan`: no terminal, IDE, app or Megachat run owns the process any more.
+- `active`: the session and its helpers use 10 percent of one core or more.
+- `idle`: each other session.
+
+The server of `tmux`, `screen` or `herdr` counts as a live terminal, so a session in a detached multiplexer is not an
+orphan. The tool keeps its view for 5 seconds. This version reads no session log. So it gives no status and no time of
+the last activity, and only a Megachat task has a session ID and a title. A session that waits for the model shows as
+idle. The tool reads the processes on macOS only.
+
 ## Code map
 
 | Files | Content |
@@ -258,6 +275,7 @@ does not offer it again. Ask the agent to run the setup again at any time. A fil
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
+| `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/ProjectEventFilter.mjs` | The path patterns of `events.ignore`: their syntax and their match. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
