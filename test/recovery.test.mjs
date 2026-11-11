@@ -11,6 +11,7 @@ import test from 'node:test'
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk/unstable'
 import manifest from '../package.json' with { type: 'json' }
 import { DaemonClient } from '../src/DaemonClient.mjs'
+import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { message as continuationPrompt } from '../src/messages.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
@@ -50,6 +51,32 @@ test('concurrent ACP opens start one daemon without a separate start command', {
   const daemon = await DaemonClient.connect(directory)
   assert.equal((await daemon.json('/state')).current, null)
 })
+
+for (const [stop, code] of [['signal', 0], ['storage', 1]]) {
+  test(`a daemon that gets a ${stop} stop during its start exits, and leaves no lock and no connection file`, { timeout: 20000 }, async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'megachat-stop-start-'))
+    const daemon = spawn(process.execPath, ['--import', fileURLToPath(new URL('./stop-during-start.mjs', import.meta.url)),
+      fileURLToPath(new URL('../src/main.mjs', import.meta.url)), 'daemon', directory],
+    { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, MEGACHAT_TEST_STOP: stop } })
+    let errors = ''
+    daemon.stderr.on('data', chunk => { errors += chunk })
+    const exited = once(daemon, 'exit')
+    t.after(async () => {
+      if (daemon.exitCode === null && daemon.signalCode === null) {
+        daemon.kill('SIGKILL')
+        await exited
+      }
+      await rm(directory, { force: true, recursive: true })
+    })
+    // After a storage error, a timer of the daemon ends a stop that does not return after 10 seconds. The wait is shorter.
+    const result = await Promise.race([exited, delay(8000, 'running', { ref: false })])
+    assert.notEqual(result, 'running', 'The daemon did not exit after the stop in its start')
+    assert.deepEqual(result, [code, null], errors)
+    await assert.rejects(readFile(join(directory, 'daemon', 'connection.json')), { code: 'ENOENT' })
+    // A new daemon gets the lock.
+    await (await DaemonDirectory.acquire(directory)).close()
+  })
+}
 
 test('bridge exit preserves work and SIGKILL continues the child session without repeating a dispatch', { timeout: 30000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-recovery-'))

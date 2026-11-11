@@ -51,7 +51,11 @@ async function daemon() {
   let server
   let projects
   let stopping
+  let starting
+  // A stop in the start waits for the end of the start, so it closes each part that the start opened. The start ends at
+  // its next step, and it cannot publish the connection file after the stop released the lock.
   const shutdown = () => stopping ??= (async () => {
+    await starting?.catch(() => {})
     try { await server?.close() }
     finally {
       try { await projects?.close(); await children?.close() }
@@ -63,8 +67,10 @@ async function daemon() {
   })()
   process.once('SIGTERM', () => shutdown().catch(() => { process.exitCode = 1 }))
   process.once('SIGINT', () => shutdown().catch(() => { process.exitCode = 1 }))
-  try {
+  const proceed = () => requireCondition(stopping === undefined, 'unavailable')
+  starting = (async () => {
     if (!explicit) await migrateLegacyState(directory, legacyStateDirectories(), log)
+    proceed()
     assertSupportedState(join(directory, 'conversation.sqlite'))
     const configuration = new CentralConfigurationService()
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
@@ -72,7 +78,9 @@ async function daemon() {
         settingsPath: join(directory, 'settings.json'), workspacePath: join(directory, 'workspace'), stateDirectory: directory,
         spendPath: join(directory, 'spend.json'),
         accountCheck: () => checkAccounts(configuration, { cwd: join(directory, 'workspace') }) })
+    proceed()
     await service.search.catchUp()
+    proceed()
     // After a storage error each request fails, but the process and its lock stay. So the daemon stops, and the next
     // start opens the state again. The timer ends a stop that does not return.
     service.failed.then(error => {
@@ -83,15 +91,25 @@ async function daemon() {
     }).catch(() => {})
     server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build })
     const descriptor = await server.listen()
+    proceed()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),
       childRules: () => service.childRules() })
     await children.start()
+    proceed()
     await service.resume()
+    proceed()
     projects = new ProjectWatchService(service.state)
     await projects.start()
+    proceed()
     await owner.publish(descriptor)
+  })()
+  try { await starting }
+  catch (error) {
+    // After SIGTERM, SIGINT or a storage error in the start, the start ends on purpose. The daemon then only stops.
+    const stopped = stopping !== undefined
+    await shutdown()
+    if (!stopped) throw error
   }
-  catch (error) { await shutdown(); throw error }
 }
 
 async function connect(target = directory, signal) {
