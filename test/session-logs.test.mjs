@@ -556,6 +556,31 @@ test('two processes of one agent in one directory do not get the title of the ot
   assert.deepEqual(answer.incomplete, [message('running.incomplete.unlinked', 3)])
 })
 
+test('a pi process that moves to another log of its directory with /new or /resume does not keep the title of its first log', async t => {
+  const home = await temporary(t)
+  const started = pid => NOW - 2 * HOUR + pid * 1000
+  // Process 80 began a log, and after /new it writes to a second log that began 20 minutes later.
+  await piLog(home, '/work/new', 'new-one', [pi.title('First'), pi.prompt(), pi.reply()], { start: started(80) + 1000, mtime: NOW - 30 * MINUTE })
+  await piLog(home, '/work/new', 'new-two', [pi.title('Second'), pi.prompt(), pi.call()], { start: started(80) + 20 * MINUTE, mtime: NOW - MINUTE })
+  // Process 81 began a log, and after /resume it writes to a log of yesterday.
+  await piLog(home, '/work/resume', 'resume-one', [pi.title('First'), pi.prompt(), pi.reply()], { start: started(81) + 1000, mtime: NOW - 30 * MINUTE })
+  await piLog(home, '/work/resume', 'resume-old', [pi.title('Yesterday'), pi.prompt(), pi.call()], { start: NOW - 24 * HOUR, mtime: NOW - MINUTE })
+  // An older log of the directory without a later write does not change the link.
+  await piLog(home, '/work/kept', 'kept-one', [pi.title('Kept'), pi.prompt(), pi.reply()], { start: started(82) + 1000, mtime: NOW - MINUTE })
+  await piLog(home, '/work/kept', 'kept-old', [pi.title('Old'), pi.prompt(), pi.reply()], { start: NOW - 24 * HOUR, mtime: NOW - 20 * HOUR })
+  // A later write to a log that another process of the directory began does not change the link.
+  await piLog(home, '/work/later', 'later-a', [pi.title('Title A'), pi.reply()], { start: started(83) + 1000, mtime: NOW - 30 * MINUTE })
+  await piLog(home, '/work/later', 'later-b', [pi.title('Title B'), pi.reply()], { start: started(683) + 1000, mtime: NOW - MINUTE })
+  const { catalog } = await catalogOf(t, home)
+  const piProcess = pid => proc(pid, 2, 'node /opt/homebrew/bin/pi', { name: 'node' })
+  const table = fakeTable([piProcess(80), piProcess(81), piProcess(82), piProcess(83), piProcess(683)],
+    { 80: { cwd: '/work/new' }, 81: { cwd: '/work/resume' }, 82: { cwd: '/work/kept' }, 83: { cwd: '/work/later' }, 683: { cwd: '/work/later' } })
+  const answer = await running(catalog, table).query()
+  const rows = Object.fromEntries(answer.sessions.map(row => [row.pid, [row.sessionId, row.title]]))
+  assert.deepEqual(rows, { 80: ['', ''], 81: ['', ''], 82: ['kept-one', 'Kept'], 83: ['later-a', 'Title A'], 683: ['later-b', 'Title B'] })
+  assert.deepEqual(answer.incomplete, [message('running.incomplete.unlinked', 2)])
+})
+
 test('the order is orphan, active and idle, the newest activity first, and a row without a log sorts by its start time', async t => {
   const home = await temporary(t)
   const started = pid => NOW - 2 * HOUR + pid * 1000

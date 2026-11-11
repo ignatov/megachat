@@ -17,7 +17,9 @@ const inWindow = (row, record) => Number.isFinite(record.startedAt)
  * - the process keeps the log open, as Codex does: one row for each open log;
  * - a process file of the agent names the PID, the start time and the session ID, as Claude Code writes;
  * - for the other rows, by the `cwd`: exactly one log of the agent in that directory, not linked to another row,
- *   began in the first 30 seconds of the process, and no other row of the agent in the directory could have begun it.
+ *   began in the first 30 seconds of the process, no other row of the agent in the directory could have begun it, and
+ *   no other log there that no other row could have begun has a later write (the process moved to it with `/new` or
+ *   `/resume`).
  * Two processes of one agent in one directory that start at nearly the same time thus get no log, and no row shows
  * the title of another session.
  */
@@ -37,7 +39,12 @@ export function linkLogs(rows, catalog) {
   for (const row of rest) {
     const candidates = [...catalog.of(row.agent)].filter(record => record.read && record.cwd === row.cwd && !claimed.has(record.path) && inWindow(row, record))
     const rivals = candidates.length === 1 && rest.some(other => other !== row && other.agent === row.agent && other.cwd === row.cwd && inWindow(other, candidates[0]))
-    if (candidates.length === 1 && !rivals) links.set(row, [{ record: candidates[0], sessionId: candidates[0].sessionId ?? '' }])
+    // After `/new` or `/resume`, the process writes to another log of the directory. So a later write to another log
+    // there, which no other row of the agent could have begun, makes the candidate uncertain.
+    const moved = candidates.length === 1 && [...catalog.of(row.agent)].some(record => record !== candidates[0] && record.read && record.cwd === row.cwd
+      && !claimed.has(record.path) && record.mtimeMs > candidates[0].mtimeMs
+      && !rest.some(other => other !== row && other.agent === row.agent && other.cwd === row.cwd && inWindow(other, record)))
+    if (candidates.length === 1 && !rivals && !moved) links.set(row, [{ record: candidates[0], sessionId: candidates[0].sessionId ?? '' }])
   }
   for (const row of rows) if (!links.has(row)) links.set(row, [{ record: undefined, sessionId: '' }])
   return links

@@ -312,7 +312,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   agent must give no link); the process file
   `~/.claude/sessions/<PID>.json` of Claude Code with the PID and the same start time; else the only log of the agent
   in the `cwd` that began in the first 30 seconds of the process, when no other row of the agent in that directory
-  could have begun it. Two processes of one agent in one directory that start at nearly the same time must not get a
+  could have begun it, and when no other log of the agent there, that no other row could have begun, has a later
+  write. Thus a process that moves to another log with `/new` or `/resume` must not keep the title of its first log.
+  Two processes of one agent in one directory that start at nearly the same time must not get a
   log, so no row shows the title of another session. A row without a certain log must have an empty `title`, a null
   `status` and `lastActivityAt`, and one entry in `incomplete` must give the count of such rows.
 - The log must give `sessionId`, `title` (a title of the user or of the agent, never a message text), `lastActivityAt`
