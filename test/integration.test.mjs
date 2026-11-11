@@ -25,7 +25,7 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000 } = {}) {
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {} } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -47,7 +47,7 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
   const launchedAgents = []
   const children = new AcpRunService(service.state, { childLaunch: async agent => {
     launchedAgents.push(agent)
-    return { env: process.env }
+    return { env: { ...process.env, ...env } }
   } }, {
     args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], deadlineMs,
     historyServer: server.historyConfiguration(),
@@ -304,7 +304,44 @@ test('an exited agent continues its session once without sending the dispatch ag
   assert.equal(continued.childSessionId, interrupted.childSessionId)
   assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')),
     { operation: 'load', sessionId: 'fake-session', claudeOptions: true })
-  assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), `crash\n${message('child.continue')}\n`)
+  assert.equal(continued.task, 'crash')
+  assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), `crash\n${message('child.continue')}\n\n${message('child.task')}\ncrash\n`)
+})
+
+test('an agent without an HTTP MCP server ends its run with that reason and gets no continuation', { timeout: 10000 }, async t => {
+  const { cwd, service } = await fixture(t, 'hello', 'claude', { env: { FAKE_ACP_HTTP: '0' } })
+  service.state.resumeDelayMs = 0
+  await service.submit('work', 'Work')
+  const state = await finishChildren(service)
+  const runs = Object.values(state.runs)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'interrupted')
+  assert.equal(runs[0].error, message('error.agentHttp'))
+  await assert.rejects(readFile(join(cwd, 'dispatches'), 'utf8'), { code: 'ENOENT' })
+})
+
+test('a stop of the daemon continues a running child without the count of an attempt, and the continuation quotes the task', { timeout: 15000 }, async t => {
+  const { cwd, service, children, server } = await fixture(t, 'wait')
+  service.state.resumeDelayMs = 0
+  await service.submit('work', 'Work')
+  await waitForState(service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  // The state names the dispatch before the agent gets the prompt. So wait until the agent recorded the prompt.
+  while (await readFile(join(cwd, 'dispatches'), 'utf8').catch(() => '') !== 'wait\n') await new Promise(resolve => setTimeout(resolve, 10))
+  await children.close()
+  const [stopped, continued] = Object.values((await service.state.snapshot()).runs)
+  assert.equal(stopped.status, 'resumed')
+  assert.equal(stopped.plannedStop, true)
+  assert.equal(continued.resumeAttempt, 0)
+  assert.equal(continued.task, 'wait')
+  // A new run service stands for the next daemon. It sends the continuation, and the fake agent ends that prompt.
+  const next = new AcpRunService(service.state, { childLaunch: async () => ({ env: process.env }) }, {
+    args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], historyServer: server.historyConfiguration(),
+  })
+  t.after(() => next.close())
+  await next.start()
+  const state = await finishChildren(service)
+  assert.equal(state.runs[continued.id].status, 'completed')
+  assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), `wait\n${message('child.continue')}\n\n${message('child.task')}\nwait\n`)
 })
 
 test('storage has one owner and rejects unauthenticated clients', { timeout: 10000 }, async t => {

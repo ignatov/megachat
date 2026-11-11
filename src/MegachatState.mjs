@@ -94,7 +94,10 @@ const plain = value => JSON.parse(JSON.stringify(value))
 
 /**
  * Replaces an interrupted run with a queued continuation in the same transaction, so a result report never sees both.
- * A prompt that may have reached the provider is never sent again: its session receives a continuation prompt instead.
+ * A prompt that may have reached the provider is never sent again as a new task: its session receives a continuation
+ * prompt instead. The continuation keeps the first prompt as its `task`, and the dispatch quotes it, because the
+ * provider can lose a prompt that it did not store.
+ * A planned stop of the daemon is no failure of the run, so its continuation does not count as an attempt.
  */
 function scheduleResume(state, run, previousStatus, delayMs) {
   const attempt = run.resumeAttempt ?? 0
@@ -103,6 +106,7 @@ function scheduleResume(state, run, previousStatus, delayMs) {
   const sent = run.dispatched || sentStates.has(previousStatus)
   if (sent && !run.providerSessionId) return
   const prompt = sent ? message('child.continue') : run.prompt
+  const task = run.task ?? (sent ? run.prompt : undefined)
   retain(state)
   const now = Date.now()
   const next = {
@@ -111,7 +115,8 @@ function scheduleResume(state, run, previousStatus, delayMs) {
     providerSessionId: run.providerSessionId ?? null, serviceSession: run.serviceSession,
     generation: null, pid: null, output: '', truncated: false, updates: [], updateBytes: 0,
     cancelRequested: false, createdAt: now, closed: false,
-    resumeOf: run.id, resumeAttempt: attempt + 1, notBefore: now + delayMs * 4 ** attempt,
+    resumeOf: run.id, resumeAttempt: run.plannedStop ? attempt : attempt + 1, notBefore: now + delayMs * 4 ** attempt,
+    ...(task === undefined ? {} : { task }),
   }
   state.runs[next.id] = next
   run.status = 'resumed'

@@ -49,16 +49,21 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A repeated request ID must return the original admission.
 - A repeated request ID with different arguments must fail.
 - An uncertain dispatch must become interrupted after a daemon restart.
-- Recovery must not send an uncertain prompt again.
+- Recovery must not send an uncertain prompt again as a new task.
 - An interrupted run must continue automatically unless the user cancelled it or it reached a limit.
 - A continuation of a sent prompt must resume the same provider session with a prompt to check the work and continue.
+- That prompt must quote the task, because the provider can lose a prompt that it did not store.
 - A run that never sent its prompt must send that prompt again.
 - A run must receive at most two automatic continuations, each after a longer delay.
+- A continuation after a planned stop of the daemon must not count as one of the two.
+- An agent that cannot use an HTTP MCP server or cannot load a session must end its run with that reason, without a continuation.
 - The interrupted run must become resumed and name its continuation. The main conversation must receive one report.
 - Cancelling a resumed run must cancel its continuation.
 - A failed final continuation must remain interrupted and must be reported.
 - An answer from a previous process generation must fail.
   [@test] ../test/state.test.mjs
+  [@test] ../test/integration.test.mjs
+  [@test] ../test/recovery.test.mjs
 
 ## User Experience
 

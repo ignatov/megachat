@@ -10,7 +10,7 @@ let cancelled = false
 let servers = []
 agent({ name: 'fake-claude' })
   .onRequest(methods.agent.initialize, () => ({ protocolVersion: 1,
-    agentCapabilities: { loadSession: true, mcpCapabilities: { http: true } }, authMethods: [] }))
+    agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [] }))
   .onRequest(methods.agent.session.new, async ctx => {
     servers = ctx.params.mcpServers
     await writeFile(join(process.cwd(), 'session-request.json'), JSON.stringify({

@@ -113,7 +113,7 @@ test('bridge exit preserves work and SIGKILL continues the child session without
   assert.equal(continued.providerSessionId, interrupted.providerSessionId)
   assert.equal(state.permissions[permission.id].status, 'stale')
   assert.equal((await daemon.json('/input', { requestId: 'original', text: 'Work' })).submissionId, receipt.submissionId)
-  assert.equal(await readFile(join(directory, 'dispatches'), 'utf8'), `approval\n${continuationPrompt('child.continue')}\n`)
+  assert.equal(await readFile(join(directory, 'dispatches'), 'utf8'), `approval\n${continuationPrompt('child.continue')}\n\n${continuationPrompt('child.task')}\napproval\n`)
 })
 
 test('a result report that SIGKILL of the daemon cuts is sent once more after the restart', { timeout: 30000 }, async t => {

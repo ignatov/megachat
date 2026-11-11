@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { waitForState } from './waitForState.mjs'
 import { VERSION } from './MegachatBuild.mjs'
-import { MegachatError, message } from './messages.mjs'
+import { MegachatError, message, requireCondition } from './messages.mjs'
 
 /**
  * Executes admitted runs. A recorded dispatch is never sent again after a process restart.
@@ -21,6 +21,7 @@ export class AcpRunService {
     this.historyServer = historyServer
     this.active = new Map()
     this.stopping = false
+    this.closing = false
   }
 
   async start() {
@@ -126,7 +127,8 @@ export class AcpRunService {
       const initialized = await ctx.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: VERSION }, clientCapabilities: {},
       })
-      if (this.historyServer && !initialized.agentCapabilities?.mcpCapabilities?.http) throw new Error('HTTP MCP is unavailable')
+      // These two faults do not go away on a new start of the agent. So they are errors that no continuation repeats.
+      requireCondition(!this.historyServer || initialized.agentCapabilities?.mcpCapabilities?.http, 'agentHttp')
       const params = {
         cwd: run.cwd, mcpServers: this.historyServer ? [this.historyServer] : [],
         ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: launch.model, settingSources: [],
@@ -134,7 +136,7 @@ export class AcpRunService {
       }
       let sessionId
       if (run.providerSessionId) {
-        if (!initialized.agentCapabilities?.loadSession) throw new Error('Session load is unavailable')
+        requireCondition(initialized.agentCapabilities?.loadSession, 'agentLoad')
         await ctx.request(methods.agent.session.load, { ...params, sessionId: run.providerSessionId })
         sessionId = run.providerSessionId
       }
@@ -157,7 +159,8 @@ export class AcpRunService {
       const result = await ctx.request(methods.agent.session.prompt, {
         sessionId, prompt: [
           ...(this.historyServer ? [{ type: 'text', text: message('history.instructions') }] : []),
-          { type: 'text', text: run.prompt },
+          // A continuation quotes its task in the same block as its prompt. The first prompt can be lost.
+          { type: 'text', text: run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}` },
         ],
       })
       await updates
@@ -174,6 +177,7 @@ export class AcpRunService {
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message
           : message(limited ? 'error.limit' : 'error.interrupted'),
         autoResume: !limited && !(error instanceof MegachatError),
+        ...(this.closing ? { plannedStop: true } : {}),
       })
     }
     finally {
@@ -192,6 +196,7 @@ export class AcpRunService {
   }
 
   async close() {
+    this.closing = true
     this.stopping = true
     clearTimeout(this.wake?.timer)
     await this.watch?.stop()

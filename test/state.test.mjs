@@ -106,6 +106,7 @@ test('an interrupted dispatch continues its provider session and the report link
   assert.equal(old.error, message('error.interrupted'))
   assert.equal(next.status, 'admitted')
   assert.equal(next.prompt, message('child.continue'))
+  assert.equal(next.task, 'Implement it')
   assert.equal(next.providerSessionId, 'provider')
   assert.equal(next.childSessionId, run.childSessionId)
   assert.equal(next.resumeOf, run.id)
@@ -179,6 +180,7 @@ test('a run that never reached its provider is dispatched again and continuation
   let snapshot = await state.snapshot()
   const first = snapshot.runs[snapshot.runs[run.id].resumedBy]
   assert.equal(first.prompt, 'Implement it')
+  assert.equal(first.task, undefined)
   assert.equal(first.providerSessionId, null)
   assert.equal(Object.keys(snapshot.runs).length, 2)
   await state.recover()
@@ -189,12 +191,35 @@ test('a run that never reached its provider is dispatched again and continuation
   snapshot = await state.snapshot()
   const second = snapshot.runs[snapshot.runs[first.id].resumedBy]
   assert.equal(second.prompt, message('child.continue'))
+  assert.equal(second.task, 'Implement it')
   assert.equal(second.resumeAttempt, 2)
   await state.transition(second.id, ['admitted'], { status: 'interrupted', error: message('error.interrupted') })
   snapshot = await state.snapshot()
   assert.equal(snapshot.runs[second.id].status, 'interrupted')
   assert.equal(snapshot.runs[second.id].resumedBy, undefined)
   assert.equal(Object.keys(snapshot.runs).length, 3)
+})
+
+test('a planned stop of the daemon continues a run without the count of an attempt', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  state.resumeDelayMs = 0
+  await state.submit('main', 'Work')
+  let run = await state.admitChild('tool', { cwd: '/workspace', prompt: 'Implement it' })
+  // More stops than the limit of automatic continuations.
+  for (let stop = 0; stop < 4; stop++) {
+    await state.transition(run.id, ['admitted'], { status: 'ready', generation: `daemon-${stop}`, providerSessionId: 'provider' })
+    await state.transition(run.id, ['ready'], { status: 'dispatched' })
+    await state.transition(run.id, ['dispatched'], { status: 'interrupted', error: message('error.interrupted'), plannedStop: true })
+    const snapshot = await state.snapshot()
+    assert.equal(snapshot.runs[run.id].status, 'resumed')
+    run = snapshot.runs[snapshot.runs[run.id].resumedBy]
+    assert.equal(run.resumeAttempt, 0)
+    assert.equal(run.task, 'Implement it')
+  }
+  await state.transition(run.id, ['admitted'], { status: 'interrupted', error: message('error.interrupted') })
+  const snapshot = await state.snapshot()
+  assert.equal(snapshot.runs[snapshot.runs[run.id].resumedBy].resumeAttempt, 1)
 })
 
 test('a cancelled or limited run is not continued and cancellation follows a continuation', { timeout: 10000 }, async t => {
