@@ -33,8 +33,9 @@ else {
     cwd = parsed.cwd
   }
   else {
+    // The module system finds the Codex ACP that npm installed: in a checkout or next to an installed copy.
     command = process.execPath
-    args = [fileURLToPath(new URL('../node_modules/@agentclientprotocol/codex-acp/dist/index.js', import.meta.url))]
+    args = [fileURLToPath(import.meta.resolve('@agentclientprotocol/codex-acp/dist/index.js'))]
   }
   env.CODEX_PATH = fileURLToPath(import.meta.url)
   env.MEGACHAT_CODEX_ARGS = JSON.stringify(process.argv.slice(2))

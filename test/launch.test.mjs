@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
-import { delimiter, dirname } from 'node:path'
+import { existsSync } from 'node:fs'
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { delimiter, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import manifest from '../package.json' with { type: 'json' }
 import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from '../src/CentralConfigurationService.mjs'
 import { daemonBuild, needsReplacement } from '../src/MegachatBuild.mjs'
+import { sourceBuildId } from '../src/sourceBuildId.mjs'
+
+const root = fileURLToPath(new URL('..', import.meta.url))
 
 test('an agent command is a JSON array, a JSON object or one path', () => {
   assert.equal(agentCommand(undefined), undefined)
@@ -46,6 +54,38 @@ test('without a passed command Claude runs the development install', async () =>
   const launch = await configuration.childLaunch('claude')
   assert.equal(launch.command, process.execPath)
   assert.match(launch.args[0], /node_modules\/@agentclientprotocol\/claude-agent-acp\/dist\/index\.js$/)
+  assert.ok(existsSync(launch.args[0]), launch.args[0])
+})
+
+/** A copy of the files that an install of the package holds, without `.git`. */
+async function packageCopy(t) {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-copy-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  for (const name of ['package.json', 'bin', 'src', 'resources']) await cp(join(root, name), join(directory, name), { recursive: true })
+  return directory
+}
+
+test('a git checkout has the build id dev, so a pull keeps its daemon', async t => {
+  const directory = await packageCopy(t)
+  await mkdir(join(directory, '.git'))
+  assert.equal(sourceBuildId(directory), 'dev')
+  await rm(join(directory, '.git'), { recursive: true })
+  // A worktree of git has a `.git` file.
+  await writeFile(join(directory, '.git'), 'gitdir: /elsewhere\n')
+  assert.equal(sourceBuildId(directory), 'dev')
+})
+
+test('a copy without .git has a stable build id, and a changed file changes it', async t => {
+  const directory = await packageCopy(t)
+  const id = sourceBuildId(directory)
+  assert.match(id, new RegExp(`^${manifest.version.replaceAll('.', '\\.')}-[0-9a-f]{16}$`))
+  assert.equal(sourceBuildId(directory), id)
+  assert.equal(sourceBuildId(await packageCopy(t)), id)
+  await writeFile(join(directory, 'src', 'main.mjs'), '// A change.\n', { flag: 'a' })
+  const changed = sourceBuildId(directory)
+  assert.notEqual(changed, id)
+  await writeFile(join(directory, 'resources', 'instructions.md'), 'A change.\n', { flag: 'a' })
+  assert.notEqual(sourceBuildId(directory), changed)
 })
 
 test('a client replaces a daemon of another build or other agent commands', () => {

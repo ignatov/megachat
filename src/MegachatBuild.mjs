@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import manifest from '../package.json' with { type: 'json' }
 import { CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from './CentralConfigurationService.mjs'
+import { sourceBuildId } from './sourceBuildId.mjs'
 
 /**
  * The version of `package.json`. The bundle holds a copy of the file, so the bundle gives the same version.
@@ -9,8 +11,11 @@ import { CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from './CentralConfigurationS
 export const VERSION = manifest.version
 
 /* global MEGACHAT_BUILD_ID */
-/** The id of this build. `build.mjs` defines it for the bundle; a source checkout is `dev`. */
-export const BUILD_ID = typeof MEGACHAT_BUILD_ID === 'string' ? MEGACHAT_BUILD_ID : 'dev'
+/**
+ * The id of this build. `build.mjs` defines it for the bundle. A git checkout is `dev`, and an installed copy gets
+ * an id from its files.
+ */
+export const BUILD_ID = typeof MEGACHAT_BUILD_ID === 'string' ? MEGACHAT_BUILD_ID : sourceBuildId(fileURLToPath(new URL('..', import.meta.url)))
 
 /**
  * What a running daemon must match to serve this client: the build and the agent commands that the IDE passed.

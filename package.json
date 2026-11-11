@@ -4,8 +4,14 @@
   "private": true,
   "type": "module",
   "bin": {
-    "megachat": "src/main.mjs"
+    "megachat": "bin/megachat.mjs"
   },
+  "files": [
+    "bin",
+    "src",
+    "resources",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22.19"
   },
@@ -13,6 +19,7 @@
     "build": "node build.mjs",
     "test": "node --import ./test/state-guard.mjs --test test/*.test.mjs",
     "test:bundle": "npm run build && node --import ./test/state-guard.mjs --test test/bundle.test.mjs",
+    "test:package": "node --import ./test/state-guard.mjs --test test/package.mjs",
     "start": "node src/main.mjs start",
     "daemon": "node src/main.mjs daemon",
     "acp": "node src/main.mjs acp"

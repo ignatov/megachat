@@ -16,7 +16,7 @@ export const CODEX_ACP_VARIABLE = 'MEGACHAT_CODEX_ACP'
 
 /**
  * Reads an agent command: a JSON array `[command, ...args]`, a JSON object `{ command, args, env, cwd }`, or one executable
- * path. An unset or blank value gives `undefined`, so the caller uses the development install in `node_modules`.
+ * path. An unset or blank value gives `undefined`, so the caller uses the agent that npm installed with Megachat.
  */
 export function agentCommand(value) {
   if (value === undefined || value.trim() === '') return undefined
@@ -112,13 +112,14 @@ export class CentralConfigurationService {
   }
 
   /**
-   * Claude runs the ACP command that the IDE passed, else the development install. Codex runs through Central, and
-   * `bin/codex` starts the Codex ACP command that the IDE passed.
+   * Claude runs the ACP command that the IDE passed, else the agent that npm installed with Megachat. Codex runs through
+   * Central, and `bin/codex` starts the Codex ACP command that the IDE passed. The module system finds the installed
+   * agent: in a checkout it is in `node_modules` of the checkout, and in an installed copy it is next to the copy.
    */
   async childLaunch(agent) {
     if (agent === 'claude') {
       const claude = agentCommand(this.environment[CLAUDE_ACP_VARIABLE]) ?? { command: process.execPath, env: {},
-        args: [fileURLToPath(new URL('../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', import.meta.url))] }
+        args: [fileURLToPath(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js'))] }
       return { command: claude.command, args: claude.args, ...(claude.cwd ? { cwd: claude.cwd } : {}),
         model: 'claude-sonnet-5-5', env: { ...claude.env, ...await this.childEnvironment() } }
     }

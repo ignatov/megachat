@@ -7,8 +7,9 @@ The later work on Megachat, in the order of the work. Each item gives its reason
 2. **Child agents that run at the same time.** Today one child runs at a time, so a long task blocks each queued task.
 3. **One layer for Central.** Remove the `bin/pi` shim, the read of `~/.claude/settings.json`, and the `bin/codex` shim.
    Today three different paths get the Central configuration, and each path can fail in its own way.
-4. **An install for colleagues.** Add a command that writes the `acp.json` entry, CI, and Linux support.
-   Today the install is manual, and only one macOS machine runs the tests.
+4. **CI, Linux support, and a lock of the installed copy.** `npx -y github:ignatov/megachat install` installs
+   Megachat and writes its `acp.json` entry. Today only one macOS machine runs the tests, and nobody tested Linux.
+   The installed copy does not use `package-lock.json`, so its indirect dependencies can differ from the tested ones.
 5. **A choice of the model for the main agent and for the children.** Today the code sets Claude Opus 5.5 for the
    main agent and Claude Sonnet 5.5 for each Claude child.
 6. **IDE tools for the children.** Today a child cannot use the tools of the IDE, so it cannot use the code insight

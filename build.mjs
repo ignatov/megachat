@@ -95,9 +95,11 @@ const result = await build({
   charset: 'utf8',
   logLevel: 'warning',
 })
-// The bundle reads `../resources` and runs `../bin` exactly as `src` does.
+// The bundle reads `../resources` and runs `../bin` exactly as `src` does. The launcher `bin/megachat.mjs` imports
+// `../src`, which the bundle does not hold, so the bundle does not get it.
+const launcher = join(root, 'bin', 'megachat.mjs')
 await cp(join(root, 'resources'), join(output, 'resources'), { recursive: true })
-await cp(join(root, 'bin'), join(output, 'bin'), { recursive: true })
+await cp(join(root, 'bin'), join(output, 'bin'), { recursive: true, filter: source => source !== launcher })
 for (const file of await files(join(output, 'bin'))) await chmod(file, 0o755)
 const { packages, text } = await notices(result.metafile)
 await writeFile(join(output, 'THIRD_PARTY_NOTICES.txt'), text)

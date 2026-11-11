@@ -5,6 +5,7 @@ style: plain-1
 targets:
   - ../src/*.mjs
   - ../resources/*
+  - ../bin/megachat.mjs
   - ../bin/pi
   - ../bin/codex
   - ../build.mjs
@@ -14,7 +15,7 @@ targets:
 # Megachat
 
 Status: Implemented
-Date: 2026-11-10
+Date: 2026-11-11
 
 ## Summary
 
@@ -198,9 +199,11 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Megachat must not bundle Claude, Codex, or their platform binaries.
 - It must start the Claude and Codex ACP agents whose commands `MEGACHAT_CLAUDE_ACP` and `MEGACHAT_CODEX_ACP` give. An IDE passes the commands of its installed agents in these variables.
 - Each command may be a JSON array, a JSON object with `command`, `args`, `env`, and `cwd`, or one executable path.
-- Without these variables, a source checkout must use its own `node_modules`.
+- Without these variables, Megachat must start the agents that npm installed with it. The module system finds them in
+  `node_modules` of a checkout and next to an installed copy.
 - The node that runs Megachat must come first on the `PATH` of its children.
   [@test] ../test/launch.test.mjs
+  [@test] ../test/package.mjs
 - The daemon must publish its build and a digest of the agent commands in its connection file.
 - A client of another build or other agent commands must stop the running daemon and start its own.
 - A source checkout must keep a daemon that publishes no build.
@@ -208,6 +211,38 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/bundle.test.mjs
   [@test] ../test/launch.test.mjs
   [@test] ../test/recovery.test.mjs
+- A git checkout is a package root with a `.git` entry. Its build must be `dev`, so a pull keeps the running daemon.
+- A copy without `.git` must have a build from the version and a digest of `package.json` and of each file in `bin`,
+  `resources` and `src`. A change of one of these files must change the build, so an update replaces the daemon.
+  [@test] ../test/launch.test.mjs
+  [@test] ../test/package.mjs
+
+## Install
+
+- The command `megachat` must check the version of Node.js before it loads Megachat. A Node.js older than the
+  `engines` range must get one line with the found and the needed version, and the exit code 1.
+- One line must install Megachat and update it: `npx -y github:ignatov/megachat install`.
+- `install` must check the platform, Central and its login, Claude Code and its key from Central, and the command
+  `codex` on the `PATH`. It must use the places that Megachat uses at run time.
+- Each check must print one line. A failed check must name what to install or do. A platform other than macOS must
+  get a line that nobody tested it there, and the install must go on.
+- `install` must not print the output of Central or of the key helper of Claude Code.
+- `install` must add the entry `Megachat` to `agent_servers` of `~/.jetbrains/acp.json`. The entry must start
+  `bin/megachat.mjs acp` of the copy with Node.js directly, not with `npx`. It must have no `application_session` key.
+- The command of the entry must be the first `node` on the `PATH` that is the same file as the running Node.js. Without
+  such a `node`, it must be the path of the running Node.js.
+- Without a file, `install` must write a file with the one entry and the mode 0600, and make its directory when
+  necessary.
+- Without the entry, `install` must copy the file to `acp.json.before-megachat-<UTC time>`, and then add the entry. It
+  must keep each other key, the key order and the mode of the file.
+- An equal entry must stay. `install` must then say that Megachat is installed already.
+- A different entry `Megachat`, or a file that is not a JSON object, must stay unchanged. `install` must print the
+  entries and what to do, and exit with 1. There is no option to replace the entry.
+- The exit code must be 0 only when the entry is in place and each check passed.
+- `MEGACHAT_ACP_CONFIG` may replace the path of `acp.json`. The tests set it to a temporary file.
+- The package must hold `bin`, `src`, `resources`, `README.md` and `package.json`, and no tests.
+  [@test] ../test/install.test.mjs
+  [@test] ../test/package.mjs
 
 ## Testing / Local Run
 
@@ -215,9 +250,12 @@ Megachat requires macOS, Node.js 22.19 or later, and a working Central configura
 Codex history requires the local Codex CLI with the app-server history API.
 Install the exact dependencies with `npm ci` in the repository root.
 `npm run build` writes the bundle into `out/bundle/` with `THIRD_PARTY_NOTICES.txt` for the bundled packages. Git ignores `out/`.
-For development, register `node src/main.mjs acp` as a custom ACP agent with absolute paths. `README.md` gives the entry.
+For development, run `node src/main.mjs install` in the checkout. It registers `bin/megachat.mjs acp` of the checkout
+as a custom ACP agent with absolute paths.
 Name the entry `Megachat`. Air derives the agent ID `acp.megachat` from that name.
-An IDE build without that derivation also needs `"application_session": true` in the entry.
+An IDE build without that derivation also needs `"application_session": true` in the entry. `install` does not write it.
+`npm run test:package` packs Megachat, installs the package into a temporary prefix, and tests that copy. `npm test`
+does not run it.
 Omit the final argument to use the shared state directory. The optional final argument selects a separate state directory for a test.
 The daemon writes its log to `daemon/daemon.log` in the state directory.
 Use `node src/main.mjs status` to inspect tasks and `node src/main.mjs stop` to stop the daemon.

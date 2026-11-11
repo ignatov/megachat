@@ -6,45 +6,68 @@ The main agent delegates file and command work to Claude Code and Codex, and lis
 A daemon keeps the conversation and the work when the IDE closes.
 All model traffic goes through JetBrains Central.
 
-## Needs
+## Install for a colleague
 
-- macOS.
+Run this line once in a terminal, then open Megachat in the IDE:
+
+```sh
+npx -y github:ignatov/megachat install
+```
+
+The line installs a copy of Megachat in the npm cache. It checks what the machine needs, and prints one line for each
+result. Then it adds the entry `Megachat` to `agent_servers` in `~/.jetbrains/acp.json`. The entry starts the installed
+copy directly with Node.js, not with `npx`. The exit code is 0 only when the entry is in place and each check passed.
+
+The machine needs:
+
+- Read access to the repository `ignatov/megachat`, and a working git access to GitHub. `npx` clones the repository.
 - Node.js 22.19 or later.
-- The Central command at `~/.local/bin/central`, with a login.
-- Claude Code at `~/.local/bin/claude`.
+- The Central command at `~/.local/bin/central`, with a login: `central login`.
+- Claude Code at `~/.local/bin/claude`, set up through Central: `central add claude-code`.
 - The Codex command, `codex`, on the `PATH`.
+- macOS. Nobody tested Megachat on another platform.
 
-## Install
+The line takes about a minute, and the copy takes about 870 MB in the npm cache. `npx` clones and installs the package
+again on each run, so the entry does not use `npx`.
+
+The installed copy does not use `package-lock.json`. So its indirect dependencies can differ from the tested ones.
+
+The entry has no `application_session` key. An IDE build from before the Air change needs that key. Nobody verified
+Megachat on such a build.
+
+When `acp.json` has another entry `Megachat`, the line does not change the file. It prints both entries and what to
+do. Two copies of Megachat on one machine replace the daemon of each other.
+
+**Update.** Run the same line. The daemon of the earlier copy stops at the next attach of the IDE, and the daemon of
+the new copy starts.
+
+**Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then run `npx clear-npx-cache`, or delete the
+directory `_npx/<hash>` in the path that `install` printed after "Megachat runs from".
+
+## Install from a checkout
+
+The checkout needs the same tools. Then run:
 
 ```sh
 npm ci
+node src/main.mjs install
 ```
 
 `npm ci` takes each package from `registry.npmjs.org`. npm 11.19 runs no install script that `allowScripts` does not
 name, so it skips the scripts of `esbuild`, `protobufjs` and `@google/genai`. The build still works, because npm
 installs `@esbuild/darwin-arm64` as an optional dependency.
 
-Then add the entry `Megachat` to `agent_servers` in `~/.jetbrains/acp.json`. Use absolute paths:
+`install` adds the entry `Megachat`, which starts `bin/megachat.mjs acp` of the checkout. Keep the name `Megachat`:
+Air derives the agent ID `acp.megachat` from it. An IDE build from before the Air change also needs
+`"application_session": true` in the entry. After that change, Air knows Megachat by its ID and ignores the key.
 
-```json
-{
-  "agent_servers": {
-    "Megachat": {
-      "command": "/opt/homebrew/bin/node",
-      "args": ["/Users/<user>/src/megachat/src/main.mjs", "acp"],
-      "application_session": true
-    }
-  }
-}
-```
-
-Keep the name `Megachat`: Air derives the agent ID `acp.megachat` from it. `application_session` is for an IDE build
-from before the Air change. After that change, Air knows Megachat by its ID and ignores the key.
+A checkout has the build `dev`, so a pull does not replace a running daemon. Run `node src/main.mjs stop` to start the
+new code at the next attach.
 
 ## Commands
 
-Run each command as `node src/main.mjs <command> [<directory>]`. The optional directory selects a state directory of
-its own, for a test or for development.
+Run each command as `node bin/megachat.mjs <command> [<directory>]`, or as `node src/main.mjs` in a checkout. The
+optional directory selects a state directory of its own, for a test or for development.
 
 | Command | What it does |
 |---|---|
@@ -53,6 +76,7 @@ its own, for a test or for development.
 | `stop` | Stops the daemon. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
 | `daemon` | Runs the daemon in the foreground. `start` runs this command. |
+| `install` | Checks the machine and adds the entry `Megachat` of this copy to `~/.jetbrains/acp.json`. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
 
 ## The state directory
 
@@ -76,6 +100,7 @@ list.
 
 | Files | Content |
 |---|---|
+| `bin/megachat.mjs` | The launcher. It checks the version of Node.js, then loads `src/main.mjs`. |
 | `src/main.mjs` | The commands. `start` connects to the daemon, replaces a daemon of another build, uses a live daemon of a legacy directory, or starts a new daemon. |
 | `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
@@ -84,7 +109,8 @@ list.
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The child runs, one at a time. The supervisor stops the child when the daemon exits. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
-| `src/MegachatBuild.mjs` | The version and the build ID. |
+| `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
+| `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the proposals. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |
@@ -96,11 +122,16 @@ list.
 ```sh
 npm test
 npm run test:bundle
+npm run test:package
 ```
 
 `npm test` runs each `test/*.test.mjs` file. `test/state-guard.mjs` gives each test process a temporary
-`MEGACHAT_HOME`, so a test cannot reach your conversation. `npm run test:bundle` builds the bundle into `out/bundle/`
-and runs `test/bundle.test.mjs` on it.
+`MEGACHAT_HOME` and a temporary `MEGACHAT_ACP_CONFIG`. So a test cannot reach your conversation or your `acp.json`.
+`npm run test:bundle` builds the bundle into `out/bundle/` and runs `test/bundle.test.mjs` on it.
+
+`npm run test:package` runs `npm pack`, installs the package into a temporary prefix with a temporary npm cache, and
+tests that copy: its daemon, its Claude and Codex agents, and its `install`. It takes about a minute and 870 MB, so
+`npm test` does not run it.
 
 In a fresh clone, `npm test` skips the bundle test, because `out/bundle/` does not exist. After a build, `npm test`
 tests the last build, and that build can be older than the source. Only `npm run test:bundle` tests a new build.

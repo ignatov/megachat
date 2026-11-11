@@ -16,6 +16,7 @@ import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
 import { daemonBuild, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
+import { install } from './MegachatInstall.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { ProjectWatchService } from './ProjectWatchService.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
@@ -150,6 +151,7 @@ try {
       break
     }
     case 'stop': await (await connect()).json('/shutdown', {}); break
+    case 'install': process.exitCode = await install(); break
     case 'acp': {
       const bridge = new AcpBridge(await start())
       const connection = bridge.app().connect(ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)))

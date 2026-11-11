@@ -7,11 +7,15 @@ Megachat is an ACP agent in plain Node.js ESM. `README.md` tells what it does an
 - Never start `src/main.mjs` without a state directory of the task. Pass the directory argument, or set `MEGACHAT_HOME`
   to a temporary directory. `~/.jetbrains/air/megachat` holds the real conversation of the user.
 - Never print, copy or commit the token of a `connection.json`.
+- Never run `install` without `MEGACHAT_ACP_CONFIG` set to a temporary file. `~/.jetbrains/acp.json` holds the entry
+  that the IDE of the user starts. `test/state-guard.mjs` sets the variable for each test.
 
 ## Tests
 
 - Run `npm test` after each change.
 - Run `npm run test:bundle` after a change of `build.mjs` or of a dependency.
+- Run `npm run test:package` after a change of `package.json`, of the launcher, of `install`, or of a path into
+  `node_modules`. It installs about 870 MB into a temporary npm cache.
 
 ## Code and documents
 
