@@ -72,6 +72,7 @@ export class AcpRunService {
     let updates = Promise.resolve()
     let dispatched = false
     let limited = false
+    let waitingPermissions = 0
     const limit = () => { limited = true; this.kill(child) }
     try {
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation })) return
@@ -102,6 +103,7 @@ export class AcpRunService {
           return updates
         })
         .onRequest(methods.client.session.requestPermission, async ({ params }) => {
+          waitingPermissions++
           clearTimeout(timer)
           try {
             const id = await this.state.requestPermission(run.id, generation, params)
@@ -113,7 +115,11 @@ export class AcpRunService {
               ? { outcome: { outcome: 'selected', optionId: permission.decision } }
               : { outcome: { outcome: 'cancelled' } }
           }
-          finally { timer = setTimeout(limit, this.launch.deadlineMs) }
+          finally {
+            // An agent can ask for more than one permission at a time. The deadline starts again only when no
+            // request waits, and only while the run is alive: after its end, nothing clears a new timer.
+            if (--waitingPermissions === 0 && !work.lifetime.signal.aborted) timer = setTimeout(limit, this.launch.deadlineMs)
+          }
         })
         .connect(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)))
       const ctx = connection.agent

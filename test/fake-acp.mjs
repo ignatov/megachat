@@ -45,6 +45,13 @@ agent({ name: 'fake-claude' })
       })
       if (answer.outcome.outcome !== 'selected') return { stopReason: 'cancelled' }
     }
+    if (text === 'approvals') {
+      const answers = await Promise.all(['first', 'second'].map(name => ctx.client.request(methods.client.session.requestPermission, {
+        sessionId: 'fake-session', toolCall: { toolCallId: name, title: `Write the ${name} file` },
+        options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }, { optionId: 'no', kind: 'reject_once', name: 'Deny' }],
+      })))
+      if (answers.some(answer => answer.outcome.outcome !== 'selected')) return { stopReason: 'cancelled' }
+    }
     let previous = await readFile(join(process.cwd(), 'dispatches'), 'utf8')
     if (text.startsWith('history:')) {
       const server = servers.find(server => server.name === 'megachat')

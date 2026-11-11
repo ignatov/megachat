@@ -170,6 +170,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Project events must coalesce into bounded batches and trigger at most one proposal per project per minute.
 - Changes during delegated work must not trigger another proposal.
 - Permission waits must suspend the child execution deadline.
+- The deadline must start again only when no permission request of the child waits.
   [@test] ../test/integration.test.mjs
   [@test] ../test/state.test.mjs
   [@test] ../test/recovery.test.mjs

@@ -25,7 +25,7 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-async function fixture(t, prompt = 'approval', agent = 'claude') {
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000 } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -49,7 +49,7 @@ async function fixture(t, prompt = 'approval', agent = 'claude') {
     launchedAgents.push(agent)
     return { env: process.env }
   } }, {
-    args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], deadlineMs: 10000,
+    args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], deadlineMs,
     historyServer: server.historyConfiguration(),
   })
   await children.start()
@@ -508,6 +508,25 @@ test('the main chat accepts another message while a child waits for permission',
   await finishChildren(service)
   assert.equal(viewer.updates.filter(event => event.update.content?.text === 'The background task finished.').length, 1)
   assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), 'approval\n')
+})
+
+test('the deadline of a child waits while one of two permission requests is pending', { timeout: 10000 }, async t => {
+  const { daemon, service } = await fixture(t, 'approvals', 'claude', { deadlineMs: 1500 })
+  const pending = state => Object.values(state.permissions).filter(permission => permission.status === 'pending')
+  await service.submit('work', 'Work')
+  const [first, second] = await waitForState(service.state, state => pending(state).length === 2 ? pending(state) : undefined)
+  const alive = async () => {
+    // The time is longer than the deadline. So a deadline that runs ends the child in this time.
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    const [run] = Object.values((await service.state.snapshot()).runs)
+    assert.ok(!terminalStates.has(run.status), `The run is ${run.status}`)
+  }
+  await alive()
+  await daemon.json('/permission', { id: first.id, decision: 'yes' })
+  await alive()
+  await daemon.json('/permission', { id: second.id, decision: 'yes' })
+  const state = await finishChildren(service)
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
 })
 
 test('new tasks queue without keeping the main conversation busy', { timeout: 10000 }, async t => {
