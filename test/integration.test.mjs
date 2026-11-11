@@ -25,7 +25,7 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError } = {}) {
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -40,7 +40,7 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
   const histories = { codex: new CodexSessionHistoryService({ command: process.execPath,
     args: [fileURLToPath(new URL('./fake-codex-app-server.mjs', import.meta.url)), await realpath(cwd)] }) }
   const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, histories,
-    { reportRetryDelayMs: 20 })
+    { reportRetryDelayMs: 20, suggestions })
   await service.state.addWorkspace(cwd)
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
@@ -516,7 +516,7 @@ test('a delegated session stays a service session after its runs are dropped', {
 })
 
 test('a project event delivers a proposal to an idle view and replay hides its internal prompt', { timeout: 10000 }, async t => {
-  const { daemon, cwd, fake, service } = await fixture(t)
+  const { daemon, cwd, fake, service } = await fixture(t, 'approval', 'claude', { suggestions: true })
   fake.setResponses([
     fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal: 'Review the code change?' }), { stopReason: 'toolUse' }),
     fauxAssistantMessage('Review the code change?'),

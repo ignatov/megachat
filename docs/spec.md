@@ -131,8 +131,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - `MEGACHAT_STREAM=0` must stop the stream. Then the chat gets a reply when its entry is written. A daemon restart applies a changed value.
 - The log of the daemon must get one line with the time from the start of a model request to its first text. The line must hold no content of the conversation.
   [@test] ../test/stream.test.mjs
-- Megachat may offer one useful next step after work ends.
-- After a refusal, it may offer two alternatives. After the third refusal, it must stop proposing work.
+- By default, Megachat must not offer a next step by itself. It may offer one when the user asks.
+- By default, the main agent must have no suggestion rules and no `agents_suggest` and `agents_feedback` tools. The stored proposal decisions must stay.
+- `MEGACHAT_SUGGESTIONS=1` must give the suggestion rules and the two tools back. A daemon restart applies a changed value.
+  [@test] ../test/suggestions.test.mjs
+- With `MEGACHAT_SUGGESTIONS=1`, Megachat may offer one useful next step after work ends.
+- After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.
 - Proposal decisions must survive a daemon restart.
 - A new project event may permit another proposal after ordinary refusals.
@@ -161,7 +165,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Unavailable histories must mark the search incomplete and preserve other matches.
 - Excerpts must identify truncated text.
   [@test] ../test/session-history.test.mjs
-- Saved source changes in registered projects may trigger a proposal while the IDE is closed.
+- Saved source changes in registered projects may trigger a project-event turn while the IDE is closed. The turn may hold a proposal only with `MEGACHAT_SUGGESTIONS=1`.
 - The watcher must ignore generated files and read no source contents.
   [@test] ../test/project-watch.test.mjs
 
@@ -219,8 +223,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A stored record without its admission time must count as older than each record with one.
 - Child output must stop growing at the configured retention limit. The daemon must keep the end of a longer output.
 - The state must keep only the text that a child agent wrote. An open of the state must drop the stored updates of an earlier build.
-- Project events must coalesce into bounded batches and trigger at most one proposal per project per minute.
-- Changes during delegated work must not trigger another proposal.
+- Project events must coalesce into bounded batches and trigger at most one project-event turn per project per minute.
+- Changes during delegated work must not trigger another project-event turn.
 - Permission waits must suspend the child execution deadline.
 - The deadline must start again only when no permission request of the child waits.
   [@test] ../test/integration.test.mjs

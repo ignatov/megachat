@@ -9,6 +9,7 @@ import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { keepAliveSettings, PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
+import { suggestionsEnabled } from './Suggestions.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -67,7 +68,7 @@ function transcript(messages) {
 }
 
 export class PiMegachatService {
-  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens(), keepAlive: keepAliveOptions, workspacePath, stateDirectory, home, projectRoots } = {}) {
+  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens(), keepAlive: keepAliveOptions, workspacePath, stateDirectory, home, projectRoots, suggestions = suggestionsEnabled() } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -83,14 +84,18 @@ export class PiMegachatService {
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
     }, context)
-    const instructions = await composeInstructions(
-      await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8'), userInstructionsPath)
+    // Without suggestions, the rules have one line that stops a proposal. With suggestions, they have the suggestion rules.
+    const bundled = await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8')
+    const suggestionRules = suggestions ? await readFile(new URL('../resources/instructions-suggestions.md', import.meta.url), 'utf8')
+      : `${message('instructions.noSuggestions')}\n`
+    const instructions = await composeInstructions(`${bundled.trimEnd()}\n${suggestionRules}`, userInstructionsPath)
     const root = await harness.root(context, { agent: { model, thinkingLevel: THINKING_LEVEL, maxTurns: 20, instructions } })
     await root.configure({ model, instructions }, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots })
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
+    service.suggestions = suggestions
     service.model = model
     service.models = models
     service.cacheRetention = keepAlive.retention
@@ -134,10 +139,10 @@ export class PiMegachatService {
     ], tools: [
       tool('list', obj({}), async () => {
         const state = await this.state.snapshot()
-        const { declines, silenced, suggestion } = state.initiative
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
           cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
-        return result({ agents: ['claude', 'codex'], workspaces: directoriesOf(state), runs, initiative: { declines, silenced, suggestion } })
+        return result({ agents: ['claude', 'codex'], workspaces: directoriesOf(state), runs,
+          ...(this.suggestions ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
       tool('history', obj({ beforeEntryId: opt(int({ minimum: 1 })), query: opt(str({ maxLength: 200 })), cursor: opt(str({ maxLength: 20 })) }),
         async args => result(await this.history(args))),
@@ -145,10 +150,13 @@ export class PiMegachatService {
         async args => result(await this.sessions.search(args))),
       tool('session_history', obj({ cwd: str(), agent: str(), sessionId: str(), query: opt(str({ maxLength: 200 })), cursor: opt(str()) }),
         async args => result(await this.sessions.read(args))),
-      tool('suggest', obj({ proposal: str() }), async (args, api) =>
-        result(await this.state.proposal(`tool:${api.taskId}:suggest`, args.proposal))),
-      tool('feedback', obj({ decision: str() }), async (args, api) =>
-        result(await this.state.feedback(`tool:${api.taskId}:feedback`, args.decision))),
+      // The suggestion tools exist only with `MEGACHAT_SUGGESTIONS=1`. The stored suggestion state stays without them.
+      ...(this.suggestions ? [
+        tool('suggest', obj({ proposal: str() }), async (args, api) =>
+          result(await this.state.proposal(`tool:${api.taskId}:suggest`, args.proposal))),
+        tool('feedback', obj({ decision: str() }), async (args, api) =>
+          result(await this.state.feedback(`tool:${api.taskId}:feedback`, args.decision))),
+      ] : []),
       tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })) }), async args => {
         requireCondition(['list', 'add', 'remove'].includes(args.action))
         const changed = args.action === 'add' ? { added: (await this.state.addProject(args.cwd)).cwd }

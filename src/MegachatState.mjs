@@ -126,7 +126,9 @@ function scheduleResume(state, run, previousStatus, delayMs) {
 
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
-  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots } = {}) {
+  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots, suggestions = false } = {}) {
+    // With suggestions, the prompt of an event turn lets the main agent offer a next step.
+    this.eventSuffix = suggestions ? '.suggest' : ''
     this.workspace = workspace
     this.repositoryOptions = { stateDirectory, home, roots: projectRoots }
     this.home = home
@@ -296,7 +298,7 @@ export class MegachatState {
       const requestId = `project:${digest(event)}`
       const mainRunId = randomUUID()
       const submissionId = await this.root.submit(tx, {
-        type: 'input', requestId, content: `${message('event.project')}\n${JSON.stringify(event)}`,
+        type: 'input', requestId, content: `${message(`event.project${this.eventSuffix}`)}\n${JSON.stringify(event)}`,
         entry: { kind: 'air.megachat.event', data: { type: 'project', ...event } },
       })
       delete state.initiative.pending[event.cwd]
@@ -333,7 +335,7 @@ export class MegachatState {
       const requestId = `children:${mainRunId}`
       const submissionId = await this.root.submit(tx, {
         type: 'input', requestId,
-        content: `${message('event.children')}\n${JSON.stringify(results)}`,
+        content: `${message(`event.children${this.eventSuffix}`)}\n${JSON.stringify(results)}`,
         entry: { kind: 'air.megachat.event', data: { type: 'children', results } },
       })
       for (const run of runs) run.reported = true

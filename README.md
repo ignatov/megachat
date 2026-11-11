@@ -187,7 +187,8 @@ of each keep-alive request and of each summary request.
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, and the origins of the list. |
-| `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the proposals. |
+| `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
+| `src/Suggestions.mjs` | The variable `MEGACHAT_SUGGESTIONS`, which lets the main agent offer a next step by itself. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |
 | `src/messages.mjs`, `resources/Megachat.properties` | The user-visible strings, the errors, and the log lines about a failure. |
