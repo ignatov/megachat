@@ -77,7 +77,12 @@ export class AcpBridge {
     const view = new AcpBridgeSession(this.daemon, this.connection, id, this)
     this.views.set(id, view)
     try { return await view.attach(ctx, loading) }
-    catch (error) { view.close(); this.views.delete(id); throw error }
+    catch (error) {
+      view.close()
+      // A later attach of the same ID can have replaced this view. Then the entry belongs to the later view.
+      if (this.views.get(id) === view) this.views.delete(id)
+      throw error
+    }
   }
 
   close() {
@@ -107,6 +112,7 @@ class AcpBridgeSession {
     this.childTasks = new Map()
     this.reply = null
     this.lastReplyTask = 0
+    this.closed = false
   }
 
   /**
@@ -149,14 +155,20 @@ class AcpBridgeSession {
 
   async attach(ctx, loading) {
     if (loading) requireCondition(ctx.params.sessionId === this.sessionId, 'missing')
+    // A later attach of the same ID, or the end of the connection, can close this view during the attach. Then the
+    // attach ends at its next step, so the closed view starts no watch and no timer.
+    const open = () => requireCondition(!this.closed, 'missing')
     await this.daemon.json('/workspace', { cwd: ctx.params.cwd })
+    open()
     await this.refreshWorkspaces()
+    open()
     this.workspaceTimer = setInterval(() => this.refreshWorkspaces().catch(() => {}), 15_000)
     this.workspaceTimer.unref()
     this.abort.abort()
     this.abort = new AbortController()
     const abort = this.abort
     await this.serial.catch(() => {})
+    open()
     this.serial = Promise.resolve()
     this.entries.clear()
     this.permissions.clear()
@@ -195,6 +207,7 @@ class AcpBridgeSession {
       }
     })
     await ready
+    open()
     await this.notify({ sessionUpdate: 'session_info_update', title: message('title') })
     return loading ? {} : { sessionId: this.sessionId }
   }
@@ -332,6 +345,7 @@ class AcpBridgeSession {
   }
 
   close() {
+    this.closed = true
     clearInterval(this.workspaceTimer)
     this.abort.abort()
   }

@@ -447,6 +447,66 @@ test('pooled ACP views share history and close independently', { timeout: 10000 
 })
 
 
+/**
+ * A daemon for a bridge without a server. Call [index] of `/workspace` returns `workspaces[index]`, else at once. Watch
+ * [index] sends the conversation and the tasks unless `quiet[index]`. `open` holds each watch until its signal aborts.
+ */
+function stubDaemon({ workspaces = [], quiet = [] } = {}) {
+  let workspaceCalls = 0
+  const daemon = { open: new Set(), watches: 0 }
+  daemon.json = async path => {
+    assert.equal(path, '/workspace')
+    return workspaces[workspaceCalls++] ?? {}
+  }
+  daemon.watch = (consumer, signal) => new Promise((resolve, reject) => {
+    const index = daemon.watches++
+    const end = () => { daemon.open.delete(index); reject(new DOMException('The operation was aborted.', 'AbortError')) }
+    if (signal.aborted) { end(); return }
+    daemon.open.add(index)
+    signal.addEventListener('abort', end, { once: true })
+    if (quiet[index]) return
+    consumer({ type: 'conversation', value: { entries: [] } })
+      .then(() => consumer({ type: 'tasks', value: { current: null, runs: {}, permissions: {} } })).catch(reject)
+  })
+  return daemon
+}
+
+function stubBridge(daemon) {
+  const bridge = new AcpBridge(daemon)
+  bridge.connection = { client: { notify: async () => {}, request: async () => ({}) }, close: () => {} }
+  return bridge
+}
+
+test('a second load of a session ID during the attach replaces the first view without a ghost watch', { timeout: 10000 }, async () => {
+  const load = { params: { sessionId: 'megachat', cwd: '/project' } }
+  // The first view closes while it waits for the daemon to register its directory.
+  const workspace = Promise.withResolvers()
+  let daemon = stubDaemon({ workspaces: [workspace.promise] })
+  let bridge = stubBridge(daemon)
+  let first = bridge.attach(load, true)
+  first.catch(() => {})
+  assert.deepEqual(await bridge.attach(load, true), {})
+  const second = bridge.view('megachat')
+  workspace.resolve({})
+  await assert.rejects(first, { code: 'missing' })
+  assert.equal(bridge.view('megachat'), second)
+  assert.equal(daemon.watches, 1)
+  bridge.close()
+  assert.equal(daemon.open.size, 0)
+  // The first view closes while it waits for the first events. Its failure must not remove the second view.
+  daemon = stubDaemon({ quiet: [true] })
+  bridge = stubBridge(daemon)
+  first = bridge.attach(load, true)
+  first.catch(() => {})
+  while (daemon.watches === 0) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(await bridge.attach(load, true), {})
+  await assert.rejects(first)
+  assert.ok(bridge.view('megachat'))
+  assert.equal(daemon.open.size, 1)
+  bridge.close()
+  assert.equal(daemon.open.size, 0)
+})
+
 test('service session registration covers live and restored children only when supported', { timeout: 10000 }, async t => {
   const { daemon, cwd } = await fixture(t, 'hello')
   const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true })

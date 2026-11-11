@@ -119,6 +119,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - History replay must include the earlier user messages.
 - Each ACP view must have its own session ID.
 - Views in one pooled process must share the conversation and close independently.
+- A second attach of a session ID must replace the earlier view of that ID, also while the earlier view attaches. The
+  earlier view must end its attach, and it must start no event stream after that.
   [@test] ../test/integration.test.mjs
 - The chat must show the text of a reply of the main agent while the model writes it. The first text must not wait for the entry of the reply.
 - The chunks of one model request must have one message ID. A reply after a tool call must be a new message.
