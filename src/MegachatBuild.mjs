@@ -27,11 +27,20 @@ export function daemonBuild(environment = process.env) {
   return `${BUILD_ID}+${agents}`
 }
 
+/** The part of a daemon build before the digest of the agent commands. */
+const buildId = build => build.slice(0, build.lastIndexOf('+'))
+
 /**
  * Whether a client of [expected] must replace the daemon that reported [actual]. A source checkout keeps a daemon
  * from before the build field, so development does not stop a daemon of an earlier prototype.
+ *
+ * A replacement stops the work of the daemon. So a client that passes no agent command keeps a daemon of its own
+ * build: it has no agents to prefer, and it uses the agents of the daemon. Such a client is a terminal command, or
+ * an IDE that passes no commands.
  */
-export function needsReplacement(actual, expected) {
+export function needsReplacement(actual, expected, environment = process.env) {
   if (actual === undefined) return !expected.startsWith('dev+')
-  return actual !== expected
+  if (actual === expected) return false
+  const passesCommands = environment[CLAUDE_ACP_VARIABLE] !== undefined || environment[CODEX_ACP_VARIABLE] !== undefined
+  return passesCommands || buildId(actual) !== buildId(expected)
 }

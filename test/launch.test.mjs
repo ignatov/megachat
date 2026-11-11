@@ -89,12 +89,27 @@ test('a copy without .git has a stable build id, and a changed file changes it',
 })
 
 test('a client replaces a daemon of another build or other agent commands', () => {
-  const build = daemonBuild({ [CLAUDE_ACP_VARIABLE]: '/a' })
+  const commands = { [CLAUDE_ACP_VARIABLE]: '/a' }
+  const build = daemonBuild(commands)
   assert.match(build, /^dev\+[0-9a-f]{12}$/)
   assert.notEqual(daemonBuild({ [CLAUDE_ACP_VARIABLE]: '/b' }), build)
-  assert.equal(needsReplacement(build, build), false)
-  assert.equal(needsReplacement('0.1.0-abc+123', build), true)
+  assert.equal(needsReplacement(build, build, commands), false)
+  assert.equal(needsReplacement('0.1.0-abc+123', build, commands), true)
+  assert.equal(needsReplacement(daemonBuild({ [CLAUDE_ACP_VARIABLE]: '/b' }), build, commands), true)
+  assert.equal(needsReplacement(daemonBuild({ [CODEX_ACP_VARIABLE]: '/b' }), build, commands), true)
   // A source checkout keeps the daemon of an earlier prototype, a bundle replaces it.
-  assert.equal(needsReplacement(undefined, build), false)
-  assert.equal(needsReplacement(undefined, '0.1.0-abc+123'), true)
+  assert.equal(needsReplacement(undefined, build, commands), false)
+  assert.equal(needsReplacement(undefined, '0.1.0-abc+123', commands), true)
+})
+
+test('a client that passes no agent command keeps a daemon of its own build', () => {
+  const own = daemonBuild({})
+  const daemon = daemonBuild({ [CLAUDE_ACP_VARIABLE]: '/a' })
+  assert.notEqual(daemon, own)
+  assert.equal(needsReplacement(daemon, own, {}), false)
+  // The other direction replaces: the client has agents that the daemon does not start.
+  assert.equal(needsReplacement(own, daemon, { [CLAUDE_ACP_VARIABLE]: '/a' }), true)
+  // A daemon of another build goes also without commands. The digest of the commands follows the last plus sign.
+  assert.equal(needsReplacement('0.1.0-abc+123456789abc', own, {}), true)
+  assert.equal(needsReplacement('0.1.0+build-abc+123456789abc', '0.1.0+build-abc+000000000000', {}), false)
 })

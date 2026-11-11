@@ -217,11 +217,14 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/package.mjs
 - The daemon must publish its build and a digest of the agent commands in its connection file.
 - A client of another build or other agent commands must stop the running daemon and start its own.
+- A client that passes no agent command must keep a daemon of its own build, whatever agent commands that daemon has.
+- Before a client stops a daemon, it must check that it can open the state. A client that cannot must leave the daemon alive.
 - A source checkout must keep a daemon that publishes no build.
 - The ACP `agentInfo` must give the version of `package.json`, in a source checkout and in the bundle.
   [@test] ../test/bundle.test.mjs
   [@test] ../test/launch.test.mjs
   [@test] ../test/recovery.test.mjs
+  [@test] ../test/home.test.mjs
 - A git checkout is a package root with a `.git` entry. Its build must be `dev`, so a pull keeps the running daemon.
 - A copy without `.git` must have a build from the version and a digest of `package.json` and of each file in `bin`,
   `resources` and `src`. A change of one of these files must change the build, so an update replaces the daemon.

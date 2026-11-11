@@ -76,7 +76,7 @@ optional directory selects a state directory of its own, for a test or for devel
 
 | Command | What it does |
 |---|---|
-| `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. |
+| `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. It also replaces a daemon with other agent commands, when this command passes agent commands. |
 | `status` | Prints the current task and the state of each child run as JSON. |
 | `stop` | Stops the daemon. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |

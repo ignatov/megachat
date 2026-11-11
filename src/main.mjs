@@ -82,6 +82,8 @@ function alive(pid) {
 /** Stops a daemon of another build and waits until its process exits, so that this build can take the lock. */
 async function stopOtherBuild(client) {
   if (!needsReplacement(client.health.build, build)) return false
+  // A build that cannot open the state must not stop the daemon that can. The check only reads the state.
+  assertSupportedState(join(directory, 'conversation.sqlite'))
   log(message('daemon.replacing', client.health.build ?? '?', build))
   try { await client.json('/shutdown', {}) }
   catch { /* The daemon may close the connection while it stops. */ }

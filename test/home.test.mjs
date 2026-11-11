@@ -197,3 +197,53 @@ test('a start that loses the race stops its own daemon', { skip: process.platfor
   for (let attempt = 0; attempt < 250 && alive(slow); attempt++) await delay(20)
   assert.equal(alive(slow), false)
 })
+
+/** The process ID and the build of the daemon of [home], from its connection file. */
+async function published(home) {
+  const { pid, build } = JSON.parse(await readFile(join(home, 'daemon', 'connection.json'), 'utf8'))
+  return { pid, build }
+}
+
+test('a start without agent commands keeps the daemon, and a start with other commands replaces it', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'megachat-replace-'))
+  const home = join(root, 'home')
+  t.after(async () => {
+    try { await stopDaemon(home) }
+    finally { await rm(root, { force: true, recursive: true }) }
+  })
+  const start = async env => {
+    const result = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_CLAUDE_ACP: undefined, MEGACHAT_CODEX_ACP: undefined, ...env })
+    assert.equal(result.code, 0, result.output)
+    return published(home)
+  }
+  const first = await start({ MEGACHAT_CLAUDE_ACP: '/air/claude-a' })
+  // A terminal passes no agent command. It must not stop the daemon that an IDE started.
+  assert.deepEqual(await start({}), first)
+  assert.deepEqual(await start({ MEGACHAT_CLAUDE_ACP: '/air/claude-a' }), first)
+  const second = await start({ MEGACHAT_CLAUDE_ACP: '/air/claude-b' })
+  assert.notEqual(second.pid, first.pid)
+  assert.notEqual(second.build, first.build)
+  assert.equal(alive(first.pid), false)
+})
+
+test('a start that cannot open the state does not stop the running daemon', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'megachat-newer-'))
+  const home = join(root, 'home')
+  t.after(async () => {
+    try { await stopDaemon(home) }
+    finally { await rm(root, { force: true, recursive: true }) }
+  })
+  const env = { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_CODEX_ACP: undefined }
+  const started = await run(['start', home], { ...env, MEGACHAT_CLAUDE_ACP: '/air/claude-a' })
+  assert.equal(started.code, 0, started.output)
+  const daemon = await published(home)
+  // The state now has the schema of a newer build, as after a start of that build.
+  const database = new DatabaseSync(join(home, 'conversation.sqlite'))
+  database.prepare('UPDATE durable_schema SET version = ? WHERE singleton = 1').run(CURRENT_SQLITE_SCHEMA_VERSION + 1)
+  database.close()
+  const refused = await run(['start', home], { ...env, MEGACHAT_CLAUDE_ACP: '/air/claude-b' })
+  assert.equal(refused.code, 1)
+  assert.match(refused.output, /created by a newer Megachat build/)
+  assert.equal(alive(daemon.pid), true)
+  assert.deepEqual(await published(home), daemon)
+})
