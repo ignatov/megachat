@@ -1,11 +1,12 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
 import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
 import { int, obj, opt, str } from '@earendil-works/pi-schema'
-import { composeInstructions } from './MegachatHome.mjs'
+import { composeInstructions, ensurePrivateDirectory } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
+import { directoriesOf } from './ProjectDirectories.mjs'
 import { keepAliveSettings, PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
@@ -65,7 +66,10 @@ function transcript(messages) {
 }
 
 export class PiMegachatService {
-  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens(), keepAlive: keepAliveOptions } = {}) {
+  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens(), keepAlive: keepAliveOptions, workspacePath, stateDirectory, home, projectRoots } = {}) {
+    // A task without a project works in this directory of Megachat, not in a directory of an IDE.
+    if (workspacePath) await ensurePrivateDirectory(workspacePath)
+    const workspace = workspacePath ? await realpath(workspacePath) : undefined
     const keepAlive = { ...keepAliveSettings(), ...keepAliveOptions }
     const registry = createRegistry()
     const contextWindow = models.getModel(model.provider, model.modelId)?.contextWindow ?? 0
@@ -80,7 +84,7 @@ export class PiMegachatService {
       await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8'), userInstructionsPath)
     const root = await harness.root(context, { agent: { model, thinkingLevel: THINKING_LEVEL, maxTurns: 20, instructions } })
     await root.configure({ model, instructions }, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs })
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
@@ -130,7 +134,7 @@ export class PiMegachatService {
         const { declines, silenced, suggestion } = state.initiative
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
           cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
-        return result({ agents: ['claude', 'codex'], workspaces: state.workspaces, runs, initiative: { declines, silenced, suggestion } })
+        return result({ agents: ['claude', 'codex'], workspaces: directoriesOf(state), runs, initiative: { declines, silenced, suggestion } })
       }),
       tool('history', obj({ beforeEntryId: opt(int({ minimum: 1 })), query: opt(str({ maxLength: 200 })), cursor: opt(str({ maxLength: 20 })) }),
         async args => result(await this.history(args))),
@@ -142,16 +146,22 @@ export class PiMegachatService {
         result(await this.state.proposal(`tool:${api.taskId}:suggest`, args.proposal))),
       tool('feedback', obj({ decision: str() }), async (args, api) =>
         result(await this.state.feedback(`tool:${api.taskId}:feedback`, args.decision))),
+      tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })) }), async args => {
+        requireCondition(['list', 'add', 'remove'].includes(args.action))
+        const changed = args.action === 'add' ? { added: (await this.state.addProject(args.cwd)).cwd }
+          : args.action === 'remove' ? { removed: (await this.state.removeProject(args.cwd)).cwd } : {}
+        return result({ ...changed, workspaces: directoriesOf(await this.state.snapshot()) })
+      }),
       tool('spawn', obj({ cwd: str(), prompt: str(), agent: opt(str()), title: opt(str({ maxLength: 60 })) }), async (args, api) =>
-        result(await this.state.admitChild(`tool:${api.taskId}:spawn`, args))),
+        result(await this.state.admitChild(`tool:${api.taskId}:spawn`, { ...args, cwd: await this.state.directory(args.cwd) }))),
       tool('resume', obj({ cwd: str(), agent: str(), sessionId: str(), prompt: str(), title: opt(str({ maxLength: 60 })) }), async (args, api) => {
         await this.sessions.read(args)
         return result(await this.state.admitChild(`tool:${api.taskId}:resume`, {
-          cwd: args.cwd, agent: args.agent, providerSessionId: args.sessionId, prompt: args.prompt, title: args.title,
+          cwd: await this.state.directory(args.cwd), agent: args.agent, providerSessionId: args.sessionId, prompt: args.prompt, title: args.title,
         }))
       }),
       tool('send', obj({ childSessionId: str(), cwd: str(), prompt: str(), title: opt(str({ maxLength: 60 })) }), async (args, api) =>
-        result(await this.state.admitChild(`tool:${api.taskId}:send`, args))),
+        result(await this.state.admitChild(`tool:${api.taskId}:send`, { ...args, cwd: await this.state.directory(args.cwd) }))),
       tool('inspect', obj({ runId: str() }), inspect),
       tool('wait', obj({ runId: str() }), inspect),
       tool('cancel', obj({ runId: str() }), async args => {

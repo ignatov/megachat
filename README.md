@@ -94,6 +94,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `conversation.sqlite` | The conversation, the child runs and the permission requests. |
 | `owner.sqlite` | The lock of the daemon. One daemon owns the directory. |
 | `search.sqlite` | The search index. The daemon builds it again from the conversation when necessary. |
+| `workspace/` | The workspace of Megachat. A task without a project works there. |
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
 | `daemon/daemon.log` | The log of a daemon that `start` started. |
@@ -147,6 +148,7 @@ of each keep-alive request and of each summary request.
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
+| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, and the origins of the list. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the proposals. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |

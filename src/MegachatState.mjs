@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
+import { isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
 export const maxAutomaticResumes = 2
@@ -125,7 +126,10 @@ function scheduleResume(state, run, previousStatus, delayMs) {
 
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
-  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000 } = {}) {
+  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots } = {}) {
+    this.workspace = workspace
+    this.repositoryOptions = { stateDirectory, home, roots: projectRoots }
+    this.home = home
     this.harness = harness
     this.root = root
     this.resumeDelayMs = resumeDelayMs
@@ -137,6 +141,9 @@ export class MegachatState {
       requireCondition(state.schema === 1, 'schema')
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {}, projects: {}, pending: {} }
       state.serviceSessions ??= serviceSessionsOf(state.runs)
+      state.projects ??= []
+      // The workspace of Megachat follows the state directory of this start, so the state does not keep an old one.
+      state.megachatWorkspace = this.workspace ?? null
       // A build from before the output limit of the tail kept each update of a run. Nothing read these updates, and
       // they were most of the document.
       for (const run of Object.values(state.runs)) {
@@ -161,6 +168,39 @@ export class MegachatState {
   async addWorkspace(cwd) {
     await this.change(state => {
       if (!state.workspaces.includes(cwd)) state.workspaces.push(cwd)
+    })
+  }
+
+  /** Gives the listed directory that [cwd] names: a project of an IDE, a known repository, or the workspace. */
+  async directory(cwd) {
+    const state = await this.snapshot()
+    // A registered path stays as the client gave it, so a follow-up names the same directory as its first task.
+    return isDirectoryOf(state, cwd) ? cwd : listedDirectory(state, cwd, this.home)
+  }
+
+  /** Adds a repository that the user named to the known list. An automatic turn cannot add one. */
+  async addProject(path) {
+    const cwd = await resolveRepository(path, this.repositoryOptions)
+    return this.change(state => {
+      requireCondition(!['event', 'report'].includes(state.current?.kind), 'proposalOnly')
+      if (!state.projects.includes(cwd)) {
+        requireCondition(state.projects.length < KNOWN_PROJECTS_LIMIT, 'limit')
+        state.projects.push(cwd)
+      }
+      return { cwd }
+    })
+  }
+
+  /** Removes a repository from the known list. A project of an IDE stays in the list of the directories. */
+  async removeProject(path) {
+    requireCondition(typeof path === 'string' && path.length > 0 && path.length <= 4096, 'directory')
+    const { projects } = await this.snapshot()
+    const cwd = projects.includes(path) ? path : await resolveRepository(path, this.repositoryOptions).catch(() => path)
+    return this.change(state => {
+      const index = state.projects.indexOf(cwd)
+      requireCondition(index >= 0, 'workspace')
+      state.projects.splice(index, 1)
+      return { cwd }
     })
   }
 
@@ -354,7 +394,7 @@ export class MegachatState {
       }
       requireCondition(state.current && !state.current.cancelling, 'inactive')
       requireCondition(!['event', 'report'].includes(state.current.kind), 'proposalOnly')
-      requireCondition(state.workspaces.includes(args.cwd), 'workspace')
+      requireCondition(isDirectoryOf(state, args.cwd), 'workspace')
       requireCondition(Object.values(state.runs).filter(run => run.mainRunId === state.current.id).length < 8, 'limit')
       requireCondition(Object.values(state.runs).filter(run => !terminalStates.has(run.status)).length < 8, 'limit')
       const previous = args.childSessionId && Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)

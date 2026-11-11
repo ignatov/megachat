@@ -1,9 +1,9 @@
 import { Buffer } from 'node:buffer'
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { realpath } from 'node:fs/promises'
 import { ClaudeSessionHistoryService } from './ClaudeSessionHistoryService.mjs'
 import { CodexSessionHistoryService } from './CodexSessionHistoryService.mjs'
 import { message, requireCondition } from './messages.mjs'
+import { listedDirectory } from './ProjectDirectories.mjs'
 
 const cursorKey = randomBytes(32)
 const sign = payload => createHmac('sha256', cursorKey).update(payload).digest()
@@ -15,7 +15,7 @@ const encode = value => {
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,200}$/
 const providerCursor = value => value === null || (typeof value === 'string' && value.length <= 4096)
 
-/** Searches provider histories only in projects registered by the user. */
+/** Searches provider histories only in the listed directories: the projects of an IDE, the known repositories, and the workspace. */
 export class SessionHistoryService {
   constructor(state, providers = { claude: new ClaudeSessionHistoryService(), codex: new CodexSessionHistoryService() }) {
     this.state = state
@@ -23,10 +23,7 @@ export class SessionHistoryService {
   }
 
   async workspace(cwd) {
-    requireCondition(typeof cwd === 'string' && cwd.length <= 4096)
-    const canonical = await realpath(cwd)
-    requireCondition((await this.state.snapshot()).workspaces.includes(canonical), 'workspace')
-    return canonical
+    return listedDirectory(await this.state.snapshot(), cwd, this.state.home)
   }
 
   position(cursor, expected) {

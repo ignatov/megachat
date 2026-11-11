@@ -157,7 +157,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The state must live in `~/.jetbrains/air/megachat/` for each user: `%USERPROFILE%\.jetbrains\air\megachat` on Windows.
 - All JetBrains products of the user must share this directory, its daemon, and its conversation.
 - `MEGACHAT_HOME` or the final command argument may select another directory for a test or development.
-- The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, and `daemon/` with the connection file and log.
+- The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log.
 - The name `memory.md` is reserved for learned memory that the user can edit. Megachat does not read it yet.
 - The directories must be private to the user: mode 0700 for directories and 0600 for files on macOS and Linux.
 - Only one daemon may own a storage directory.
@@ -178,7 +178,17 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The local HTTP connection must require the private connection token.
 - The daemon must accept an input of 100,000 characters in each script. It must refuse a request body of more than 1,000,000 bytes.
 - A history request must return at most 100 entries.
-- The daemon must use only project directories registered by a client.
+- A child must work only in a listed directory: a project directory that a client registered, a known repository, or the workspace of Megachat.
+- The workspace of Megachat must be the directory `workspace` in the state directory. The daemon must make it at its start with the mode 0700. A task without a project works there.
+- The state must keep the list of the known repositories through a daemon restart. The list must start empty, and it must hold at most 100 repositories.
+- The tool `agents_projects` must list the directories, add a known repository, and remove one. Only a turn of the user may add a repository.
+- A known repository must be an absolute path or a path that starts with `~`. The state must keep its real path.
+- That real path must be an existing directory in the home directory of the user or in a root of `MEGACHAT_PROJECT_ROOTS`. Thus a symbolic link must not lead out of these directories.
+- The home directory itself, its `Library` directory, its hidden directories, and the state directory of Megachat must be refused.
+- A child in a known repository must have that repository as its working directory, also when no IDE has opened it.
+- A task, a follow-up, a continued session, and a session search must refuse a directory that is not listed.
+- `agents_list` must give each listed directory one time with its origin: `ide`, `known`, or `megachat`. The workspace of Megachat must have the name "Megachat workspace".
+  [@test] ../test/projects.test.mjs
 - A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
 - The daemon must run at most one child at a time.
 - It may retain at most eight unfinished child tasks, including queued tasks.
