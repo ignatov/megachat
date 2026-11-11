@@ -49,6 +49,10 @@ one attach can send 5,000 requests. Nobody measured that time in Air. `docs/road
 - Air sends `clientMessageId` in `_meta.jetbrains.air` of `session/prompt`. Megachat uses it as the request ID of the
   input. A repeated ID returns the first admission, so a retry of Air admits the message once.
 - `session/cancel` cancels the current main task and each child that it owns.
+- Megachat accepts the content blocks `text` and `resource_link` in `session/prompt`. This is the base protocol: ACP
+  requires these two types of each agent, and Megachat announces no other prompt capability. The main agent gets each
+  link as the Markdown link `[name](uri)` on a line of its own, in the order of the blocks. Megachat refuses each other
+  block type. The input of the main agent has at most 100,000 characters, with the links.
 
 ## The background tasks
 

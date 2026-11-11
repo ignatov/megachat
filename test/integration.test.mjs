@@ -507,6 +507,23 @@ test('a second load of a session ID during the attach replaces the first view wi
   assert.equal(daemon.open.size, 0)
 })
 
+test('a prompt gives each resource_link block to the main agent as a Markdown link, and refuses an image', { timeout: 10000 }, async t => {
+  const { daemon, cwd, fake } = await fixture(t)
+  fake.setResponses([fauxAssistantMessage('Read.')])
+  const viewer = await attach(daemon, cwd)
+  t.after(() => viewer.connection.close())
+  const prompt = blocks => viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: blocks })
+  await assert.rejects(prompt([{ type: 'text', text: 'Look' }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }]))
+  const { stopReason } = await prompt([{ type: 'text', text: 'Read this file:' },
+    { type: 'resource_link', name: 'notes.md', uri: 'file:///project/notes.md', mimeType: 'text/markdown' },
+    { type: 'text', text: 'and say what it holds.' }])
+  assert.equal(stopReason, 'end_turn')
+  const restored = await attach(daemon, cwd)
+  t.after(() => restored.connection.close())
+  assert.deepEqual(restored.updates.filter(event => event.update.sessionUpdate === 'user_message_chunk').map(event => event.update.content.text),
+    ['Read this file:\n[notes.md](file:///project/notes.md)\nand say what it holds.'])
+})
+
 test('service session registration covers live and restored children only when supported', { timeout: 10000 }, async t => {
   const { daemon, cwd } = await fixture(t, 'hello')
   const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true })

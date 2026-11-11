@@ -32,6 +32,17 @@ export function taskRows(state) {
   return rows
 }
 
+/**
+ * The text of a prompt for the main agent, one line for each block in the order of the blocks. ACP says that each agent
+ * must accept the blocks `text` and `resource_link`. A link becomes a Markdown link with its name and its URI, so the
+ * main agent can give it to a child. Each other block type is refused. The daemon refuses a text that is too long.
+ */
+function promptText(prompt) {
+  requireCondition(prompt.every(block => block.type === 'text'
+    || (block.type === 'resource_link' && typeof block.name === 'string' && typeof block.uri === 'string')))
+  return prompt.map(block => block.type === 'text' ? block.text : `[${block.name}](${block.uri})`).join('\n')
+}
+
 /** Routes ACP views to one daemon conversation. Each view owns its transcript projection. */
 export class AcpBridge {
   constructor(daemon) { this.daemon = daemon; this.views = new Map() }
@@ -128,12 +139,12 @@ class AcpBridgeSession {
 
   async prompt(ctx) {
     requireCondition(ctx.params.sessionId === this.sessionId)
-    requireCondition(ctx.params.prompt.every(block => block.type === 'text'))
+    const text = promptText(ctx.params.prompt)
     requireCondition(!this.promptInFlight, 'busy')
     this.promptInFlight = true
     try {
       const receipt = await this.daemon.json('/input', {
-        requestId: ctx.params._meta?.jetbrains?.air?.clientMessageId ?? randomUUID(), text: ctx.params.prompt.map(block => block.text).join('\n'),
+        requestId: ctx.params._meta?.jetbrains?.air?.clientMessageId ?? randomUUID(), text,
       })
       this.promptRunId = receipt.mainRunId
       // A stop can arrive before the daemon admits the input. Then the turn had no ID yet.

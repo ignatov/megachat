@@ -117,6 +117,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Reconnection must restore the conversation without child lifecycle rows.
 - A completed main reply must arrive before the prompt response.
 - History replay must include the earlier user messages.
+- A prompt may hold the blocks `text` and `resource_link`, as ACP requires of each agent. The main agent must get each
+  link as a Markdown link with its name and its URI, in the order of the blocks. Each other block type must be refused.
 - Each ACP view must have its own session ID.
 - Views in one pooled process must share the conversation and close independently.
 - A second attach of a session ID must replace the earlier view of that ID, also while the earlier view attaches. The
