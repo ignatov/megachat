@@ -95,10 +95,14 @@ export class DailySpend {
     this.save()
   }
 
-  /** The spend of today for the output of `agents_settings get`. */
+  /**
+   * The spend of today for the output of `agents_settings get`. `warned` tells that a turn with the warning ended today.
+   * `warningPending` tells that the warning waits for the end of a turn that has it.
+   */
   report(limit) {
     const data = this.today()
-    return { day: data.day, usd: Math.round(data.usd * 10000) / 10000, limit, warned: data.warning !== 'none' }
+    return { day: data.day, usd: Math.round(data.usd * 10000) / 10000, limit, warned: data.warning === 'shown',
+      warningPending: data.warning === 'pending' }
   }
 
   /** Writes a copy through a temporary file and a rename, one write at a time. A failed write keeps the count in memory. */

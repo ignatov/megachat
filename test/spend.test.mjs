@@ -40,8 +40,10 @@ test('the count of a day stays in a private file across a restart, starts again 
   await first.save()
   assert.equal((await stat(path)).mode & 0o777, 0o600)
   const second = await DailySpend.open(path, clock)
-  assert.deepEqual(second.report(1), { day: localDay(clock.now()), usd: 0.8, limit: 1, warned: false })
+  assert.deepEqual(second.report(1), { day: localDay(clock.now()), usd: 0.8, limit: 1, warned: false, warningPending: false })
   assert.equal(second.add(0.4, 1), true)
+  // A pending warning did not go out yet.
+  assert.deepEqual([second.report(1).warned, second.report(1).warningPending], [false, true])
   assert.deepEqual(second.notice(1), { day: localDay(clock.now()), usd: 1.2000000000000002, limit: 1 })
   // A higher limit hides the warning, and a lower one brings it back.
   assert.equal(second.notice(5), undefined)
@@ -51,9 +53,9 @@ test('the count of a day stays in a private file across a restart, starts again 
   assert.equal(second.notice(1), undefined)
   await second.save()
   const third = await DailySpend.open(path, clock)
-  assert.equal(third.report(1).warned, true)
+  assert.deepEqual([third.report(1).warned, third.report(1).warningPending], [true, false])
   clock.advance(3 * HOUR)
-  assert.deepEqual(third.report(1), { day: localDay(clock.now()), usd: 0, limit: 1, warned: false })
+  assert.deepEqual(third.report(1), { day: localDay(clock.now()), usd: 0, limit: 1, warned: false, warningPending: false })
   assert.notEqual(third.report(1).day, second.data.day)
   assert.equal(third.add(2, 1), true)
   // A limit of 0 is no limit.
