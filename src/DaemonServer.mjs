@@ -39,7 +39,8 @@ export class DaemonServer {
     let length = 0
     for await (const chunk of request) {
       length += chunk.length
-      requireCondition(length <= 128000)
+      // An input has at most 100,000 characters, and one character can take 6 bytes in JSON.
+      requireCondition(length <= 1000000)
       chunks.push(chunk)
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))

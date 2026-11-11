@@ -62,3 +62,15 @@ test('waiting for a long task keeps the response open and returns valid JSON', {
   }
   assert.deepEqual(JSON.parse(body), completed)
 })
+
+test('the daemon accepts an input of 100,000 characters that are not ASCII, and refuses a larger body', { timeout: 10000 }, async t => {
+  const received = []
+  const server = new DaemonServer({ submit: async (requestId, text) => { received.push(text); return { requestId } } })
+  const daemon = new DaemonClient(await server.listen())
+  t.after(() => server.close())
+  const text = 'ж'.repeat(100000)
+  assert.deepEqual(await daemon.json('/input', { requestId: 'long', text }), { requestId: 'long' })
+  assert.equal(received[0], text)
+  await assert.rejects(daemon.json('/input', { requestId: 'larger', text: 'x'.repeat(1000001) }))
+  assert.equal(received.length, 1)
+})

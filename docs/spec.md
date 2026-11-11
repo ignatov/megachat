@@ -147,6 +147,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A directory with an explicit path must not receive a copy.
   [@test] ../test/home.test.mjs
 - The local HTTP connection must require the private connection token.
+- The daemon must accept an input of 100,000 characters in each script. It must refuse a request body of more than 1,000,000 bytes.
 - A history request must return at most 100 entries.
 - The daemon must use only project directories registered by a client.
 - The daemon must run at most one child at a time.
@@ -170,6 +171,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/integration.test.mjs
   [@test] ../test/state.test.mjs
   [@test] ../test/recovery.test.mjs
+  [@test] ../test/transport.test.mjs
 
 ## Error Handling
 
