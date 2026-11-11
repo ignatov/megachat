@@ -3,14 +3,17 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { waitForState } from './waitForState.mjs'
-import { logFailure, MegachatError, requireCondition } from './messages.mjs'
+import { logEvent, logFailure, MegachatError, requireCondition } from './messages.mjs'
 import { MegachatHistoryServer } from './MegachatHistoryServer.mjs'
+import { ReplyStream, streamEnabled } from './ReplyStream.mjs'
 
 export class DaemonServer {
-  constructor(service, shutdown = () => {}, { build } = {}) {
+  constructor(service, shutdown = () => {}, { build, stream = streamEnabled(), streamIntervalMs } = {}) {
     this.service = service
     this.shutdown = shutdown
     this.build = build
+    this.stream = stream
+    this.streamIntervalMs = streamIntervalMs
     this.token = randomBytes(32).toString('hex')
     this.historyToken = randomBytes(32).toString('hex')
     this.history = new MegachatHistoryServer(service)
@@ -154,10 +157,22 @@ export class DaemonServer {
       const conversation = await this.service.root.watch(BACKGROUND_CONTEXT, { min: 100, max: 200 })
       views.push(conversation)
       await publish('conversation', conversation.value)
-      conversation.start(async call => { if (call.kind === 'value') await publish('conversation', call.value) })
       const tasks = await this.service.state.watch()
       views.push(tasks)
       await publish('tasks', tasks.value)
+      const stream = this.stream ? new ReplyStream(publish, { intervalMs: this.streamIntervalMs, onFirstText: (reply, ms) => this.firstText(reply, ms) }) : undefined
+      response.once('close', () => stream?.stop())
+      // The partial reply changes the view many times in a second. Only a view with other entries is a new conversation.
+      const mark = view => `${view.before ?? 0}:${view.entries.at(-1)?.id ?? 0}`
+      let sent = mark(conversation.value)
+      // A client that connects in the middle of a reply gets the text so far, after the conversation and the tasks.
+      await stream?.observe(conversation.value)
+      conversation.start(async call => {
+        if (call.kind !== 'value') return
+        const next = mark(call.value)
+        if (next !== sent) { sent = next; await publish('conversation', call.value) }
+        await stream?.observe(call.value)
+      })
       tasks.start(async call => { if (call.kind === 'value') await publish('tasks', call.value) })
       if (response.destroyed) await stop()
     }
@@ -165,6 +180,14 @@ export class DaemonServer {
       await stop()
       throw error
     }
+  }
+
+  /** Writes the time to the first text of a model request to the log, one time for all the clients. */
+  firstText(reply, ms) {
+    const key = `${reply.taskId}:${reply.attempt}`
+    if (this.loggedReply === key) return
+    this.loggedReply = key
+    logEvent('log.stream.first', Math.round(ms))
   }
 
   async close() {

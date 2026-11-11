@@ -4,6 +4,7 @@ import { agent, methods } from '@agentclientprotocol/sdk/unstable'
 import { VERSION } from './MegachatBuild.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
 import { serviceSessionsOf, terminalStates } from './MegachatState.mjs'
+import { replyText } from './ReplyStream.mjs'
 
 /** A short row title: the first prompt line without Markdown markers. */
 export function taskTitle(prompt) {
@@ -84,6 +85,8 @@ class AcpBridgeSession {
     this.currentRunId = null
     this.cancelPending = false
     this.childTasks = new Map()
+    this.reply = null
+    this.lastReplyTask = 0
   }
 
   /**
@@ -115,8 +118,9 @@ class AcpBridgeSession {
       await this.enqueue(async () => { await this.conversation(view, false); await this.tasks(state) })
       if (settled.status === 'interrupted') {
         // A daemon from before the reason field gives no reason. Then the text of a stopped process stays.
+        // The notice is a message of its own. It does not continue the partial reply that the chat shows.
         const text = message(settled.reason === 'model_error' ? 'error.model' : 'error.interrupted')
-        await this.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+        await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-notice-${receipt.mainRunId}`, content: { type: 'text', text } })
       }
       return { stopReason: settled.status === 'completed' ? 'end_turn' : 'cancelled' }
     }
@@ -137,6 +141,8 @@ class AcpBridgeSession {
     this.entries.clear()
     this.permissions.clear()
     this.childTasks.clear()
+    this.reply = null
+    this.lastReplyTask = 0
     this.replayIndex = 0
     let resolveReady
     let rejectReady
@@ -157,6 +163,7 @@ class AcpBridgeSession {
         await this.conversation(event.value, !received.has('conversation'), true)
       }
       if (event.type === 'tasks') await this.tasks(event.value)
+      if (event.type === 'stream') await this.stream(event.value)
       received.add(event.type)
       if (received.has('conversation') && received.has('tasks')) resolveReady()
     }), abort.signal).then(() => { if (!abort.signal.aborted) throw new Error('Daemon stream ended') }).catch(error => {
@@ -196,6 +203,42 @@ class AcpBridgeSession {
     await this.connection.client.notify(methods.client.session.update, { sessionId: this.sessionId, update, _meta: meta })
   }
 
+  /**
+   * Shows the partial reply of the main agent. The chunks of one model request have one message ID, so Air appends
+   * them to one message. Air cannot replace or remove a sent chunk. So a partial reply without an entry stays in the
+   * open chat as it is, and a replay does not show it.
+   */
+  async stream(event) {
+    // The entry of this request, or of a later one, is in the chat already. Then the event is late.
+    if (event.taskId <= this.lastReplyTask) return
+    if (this.reply?.taskId !== event.taskId || this.reply.attempt !== event.attempt) {
+      this.reply = { taskId: event.taskId, attempt: event.attempt, messageId: `megachat-reply-${event.taskId}-${event.attempt}`, sent: '' }
+    }
+    const text = event.text.slice(this.reply.sent.length - event.offset)
+    if (event.offset > this.reply.sent.length || !text) return
+    this.reply.sent += text
+    await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: this.reply.messageId, content: { type: 'text', text } })
+  }
+
+  /**
+   * The chunks of the entry of an assistant message. The entry of a reply that the chat got as a stream gives only
+   * the text that the stream did not send, with the message ID of the stream. Each other entry is a message of its own.
+   */
+  replyChunks(entry, model) {
+    const chunk = (messageId, text) => ({ sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text } })
+    const reply = this.reply
+    // The main agent has one model request at a time. So an entry without a task is the entry of the open stream.
+    const streamed = reply && (entry.byTaskId === undefined || entry.byTaskId === reply.taskId)
+    this.lastReplyTask = Math.max(this.lastReplyTask, entry.byTaskId ?? 0, streamed ? reply.taskId : 0)
+    if (reply && reply.taskId <= this.lastReplyTask) this.reply = null
+    const blocks = model.content.filter(block => block.type === 'text' && block.text)
+    if (!streamed || !reply.sent) return blocks.map(block => chunk(`megachat-entry-${entry.id}`, block.text))
+    const text = replyText(model)
+    if (text.startsWith(reply.sent)) return text.length > reply.sent.length ? [chunk(reply.messageId, text.slice(reply.sent.length))] : []
+    // The provider changed the text at its end. Air cannot replace the sent text, so the entry is a second message.
+    return text ? [chunk(`megachat-entry-${entry.id}`, text)] : []
+  }
+
   async conversation(view, replayUsers, endReplay = false) {
     const updates = []
     for (const entry of view.entries) {
@@ -209,11 +252,7 @@ class AcpBridgeSession {
             : model.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
           updates.push({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } })
         }
-        if (model.role === 'assistant') {
-          for (const block of model.content) {
-            if (block.type === 'text') updates.push({ sessionUpdate: 'agent_message_chunk', content: block })
-          }
-        }
+        if (model.role === 'assistant') updates.push(...this.replyChunks(entry, model))
       }
     }
     for (const [index, update] of updates.entries()) {

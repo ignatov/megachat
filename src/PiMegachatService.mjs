@@ -8,6 +8,7 @@ import { MegachatState, terminalStates } from './MegachatState.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { keepAliveSettings, PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
+import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -75,7 +76,9 @@ export class PiMegachatService {
     const contextWindow = models.getModel(model.provider, model.modelId)?.contextWindow ?? 0
     const harness = await Harness.open(storage, {
       models, registry,
-      settings: { retry: { enabled: false }, stream: { timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: keepAlive.retention }, compaction: compactionSettings(contextWindow, limit) },
+      settings: { retry: { enabled: false }, stream: { timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: keepAlive.retention }, compaction: compactionSettings(contextWindow, limit),
+        // Pi Durable puts the partial reply into `pi.live` at this interval. The daemon sends it to the chat from there.
+        progress: { partialIntervalMs: STREAM_INTERVAL_MS } },
       // Pi Durable reports each failure of a task, an extension or the storage here, and nowhere else.
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),

@@ -118,6 +118,19 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Each ACP view must have its own session ID.
 - Views in one pooled process must share the conversation and close independently.
   [@test] ../test/integration.test.mjs
+- The chat must show the text of a reply of the main agent while the model writes it. The first text must not wait for the entry of the reply.
+- The chunks of one model request must have one message ID. A reply after a tool call must be a new message.
+- The entry of a reply must add only the text that the stream did not send. The chat must not show a text two times.
+- A reply that the user stopped, or that failed, must keep its partial text in the chat one time. That text must be an entry, so a replay shows it too. The notice of a failed reply must be a message of its own.
+- When the entry of a reply does not start with the sent text, the entry must be a second message, because Air cannot replace a sent chunk.
+- A replay must hold only entries. A view that connects in the middle of a reply must get the text so far as a live chunk after the replay, and then the text that follows.
+- Each connected view must get each text one time.
+- The text before a call of a tool of the main agent must be a stream. The call must stay hidden.
+- The stream must not hold the thinking of the model.
+- The daemon must send at most 20 stream events in a second to one client. A partial reply must not send the conversation again.
+- `MEGACHAT_STREAM=0` must stop the stream. Then the chat gets a reply when its entry is written. A daemon restart applies a changed value.
+- The log of the daemon must get one line with the time from the start of a model request to its first text. The line must hold no content of the conversation.
+  [@test] ../test/stream.test.mjs
 - Megachat may offer one useful next step after work ends.
 - After a refusal, it may offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.

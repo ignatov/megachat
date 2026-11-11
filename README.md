@@ -166,6 +166,7 @@ of each keep-alive request and of each summary request.
 | `MEGACHAT_CACHE_TTL` | `1h` is the default. `5m` asks for the 5-minute cache, and the idle daemon then acts after 4 minutes 10 seconds. |
 | `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out. The default is `6`. |
 | `MEGACHAT_KEEPALIVE` | `0` stops the keep-alive requests and the summary of an idle conversation. |
+| `MEGACHAT_STREAM` | `0` stops the stream of a reply. Then the chat shows a reply when the model has written all of it. |
 
 ## Code map
 
@@ -181,6 +182,7 @@ of each keep-alive request and of each summary request.
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The child runs, one at a time. The supervisor stops the child when the daemon exits. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
+| `src/ReplyStream.mjs` | The stream of the partial reply of the main agent from the daemon to each client. |
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |

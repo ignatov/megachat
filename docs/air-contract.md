@@ -75,6 +75,27 @@ Megachat replays the conversation on `session/new` and on `session/load`. Each r
 `loadSessionReplayIndex` in its `_meta`. The last update of the replay also has `loadSessionReplaySize` and
 `loadSessionEndOfRecordedHistory: true`. After the replay, Megachat sends `session_info_update` with the title.
 
+## The reply stream
+
+Megachat sends the text of the main agent as `agent_message_chunk` with the ACP field `messageId`. Air appends a chunk
+to the message with the same ID, and a new ID starts a new message. This needs no change in Air.
+
+| Message ID | Chunks |
+|---|---|
+| `megachat-reply-<task>-<attempt>` | The text of one model request while the model writes it, in parts. The entry of that reply then adds only the text that the parts did not hold. |
+| `megachat-entry-<entry>` | The text of an entry that the view did not get as a stream: each replayed entry, and each reply with `MEGACHAT_STREAM=0`. |
+| `megachat-notice-<turn>` | The notice of a reply that failed. |
+
+- A chunk of a stream has no `loadSessionReplayIndex`. It can arrive without a prompt of the view: for a turn of another
+  view, for an automatic turn, and after a replay for a view that connects in the middle of a reply.
+- Air has no update that replaces or removes a sent chunk. So Megachat only appends. A reply that stops in the middle
+  keeps its partial text, and the same text is in its entry. When an entry does not start with the sent text, Megachat
+  sends the entry as a second message with the ID `megachat-entry-<entry>`.
+- A partial text without an entry stays in the open chat, and the next replay does not show it. This can occur when the
+  daemon stops in the middle of a reply.
+- Megachat sends no `agent_thought_chunk`.
+- Megachat sends at most 20 chunks of a stream in a second.
+
 ## The permissions
 
 Megachat sends each pending permission request of a child through `session/request_permission` in the main session.
