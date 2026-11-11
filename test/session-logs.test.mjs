@@ -372,6 +372,26 @@ test('the read from the end of a log gives the last messages and a cursor, and a
   assert.ok(!(await readFile(new URL('../src/MegachatHistoryServer.mjs', import.meta.url), 'utf8')).includes('readNewest'))
 })
 
+test('the pages of a read from the end give each entry exactly one time, also a line across the 8 MB limit of a page', async t => {
+  const home = await temporary(t)
+  const cwd = '/work/long'
+  // 300 messages of about 100 KB each make a log of about 30 MB, so most pages stop at their limit of bytes.
+  await claudeLog(home, cwd, 'long', Array.from({ length: 300 }, (_, index) => ({ uuid: `n${index}`, ...claude.prompt(`n${index} ${'v'.repeat(100 * 1024)}`) })))
+  const { catalog } = await catalogOf(t, home)
+  const sessions = new SessionHistoryService(fakeState(), {}, { logs: catalog })
+  const seen = []
+  let pages = 0
+  for (let cursor; ;) {
+    const page = await sessions.readNewest({ agent: 'claude', sessionId: 'long', limit: 100, cursor })
+    seen.unshift(...page.entries.map(entry => entry.id))
+    pages++
+    if (!page.nextCursor) break
+    cursor = page.nextCursor
+  }
+  assert.ok(pages >= 4, `${pages} pages`)
+  assert.deepEqual(seen, Array.from({ length: 300 }, (_, index) => `n${index}`))
+})
+
 test('Megachat writes to no provider file: each file keeps its size and mtime, and the code opens it read-only', async t => {
   const home = await temporary(t)
   const paths = [

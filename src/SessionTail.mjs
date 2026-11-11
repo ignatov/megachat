@@ -7,10 +7,10 @@ import { indexedText } from './SessionText.mjs'
  * newline. The bytes after the last newline before [end] are a line that a writer has not completed, so they stay
  * unread. A line above [maxLine] bytes gives `line` null, because the parse of such a line blocks the event loop.
  * The reader reads blocks of [blockBytes] from the end, so a large file costs only the bytes of the lines that the
- * caller takes. After [budget] bytes, the reader stops with `{ line: null, start, cut: true }`, where `start` is the
- * offset where it stopped: one line without a newline in a large part of a file then costs no read of the whole file.
- * A next read can start there, because the bytes after the last newline before its end stay unread. The file opens
- * read-only.
+ * caller takes. After [budget] bytes, the reader stops with `{ line: null, start, cut: true }`: one line without a
+ * newline in a large part of a file then costs no read of the whole file. `start` is the start of the oldest line that
+ * came out of this read, so a next read that ends there reads the open line whole. When no line came out, `start` is
+ * the offset where the reader stopped, so a next read moves on. The file opens read-only.
  */
 export async function* readBackward(fs, path, { end, blockBytes = 64 * 1024, maxLine = 4 * 1024 * 1024, budget = Infinity } = {}) {
   const handle = await fs.open(path, 'r')
@@ -22,6 +22,8 @@ export async function* readBackward(fs, path, { end, blockBytes = 64 * 1024, max
     let length = 0
     let skipping = false
     let lineEnd
+    // The start of the oldest line that came out of this read.
+    let oldest
     const collect = part => {
       if (skipping || !part.length) return
       if (length + part.length > maxLine) { skipping = true; parts = []; length = 0; return }
@@ -48,13 +50,14 @@ export async function* readBackward(fs, path, { end, blockBytes = 64 * 1024, max
         if (index < 0) break
         if (lineEnd !== undefined) {
           collect(buffer.subarray(index + 1, to))
-          yield emit(position + index + 1)
+          oldest = position + index + 1
+          yield emit(oldest)
         }
         lineEnd = position + index
         to = index
       }
       if (lineEnd !== undefined) collect(buffer.subarray(0, to))
-      if (position > 0 && first - position >= budget) { yield { line: null, start: position, end: position, cut: true }; return }
+      if (position > 0 && first - position >= budget) { yield { line: null, start: oldest ?? position, end: oldest ?? position, cut: true }; return }
     }
     if (lineEnd !== undefined && (length || skipping)) yield emit(0)
   }
