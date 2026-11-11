@@ -86,6 +86,16 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The chat must not show a summary as a message.
 - The command `compact` must ask the running daemon for a summary now. The daemon must wait for the end of the current turn first. The command must not start a daemon.
   [@test] ../test/compaction.test.mjs
+- Each request of the main agent must ask for the 1-hour prompt cache. `MEGACHAT_CACHE_TTL=5m` must ask for the 5-minute prompt cache.
+- The idle daemon must act at 5/6 of the cache lifetime after the last model request. It must not act while a turn runs. A turn must stop a keep-alive request that runs.
+- When the model context is above the limit of a summary at that time, the daemon must write the summary, and it must send no keep-alive request.
+- When the model context is between 20,000 tokens and that limit, the daemon must send a keep-alive request. The request must hold the model context as a turn sends it, and it must ask for one output token. The conversation must not get its reply.
+- After a keep-alive request, the daemon must act again at 5/6 of the cache lifetime. The keep-alive requests must stop 6 hours after the last turn. `MEGACHAT_KEEPALIVE_HOURS` may replace this time.
+- The daemon must send no keep-alive request when the cache lifetime is over, and after a keep-alive request that failed.
+- After a restart, the time of the last message of the model context must stand for the time of the last model request.
+- `MEGACHAT_KEEPALIVE=0` must stop the keep-alive requests and the summary of an idle conversation. It must not change the cache lifetime.
+- The log of the daemon must get one line with the token counts and the cost of each keep-alive request and of each summary request. The line must hold no content of the conversation.
+  [@test] ../test/keepalive.test.mjs
 - History lookup must return timestamps and mark partial results.
 - Retrieved messages must grant no new permission.
   [@test] ../test/state.test.mjs

@@ -45,3 +45,8 @@ export function describeError(error) {
 export function logFailure(key, error, ...args) {
   process.stderr.write(`${new Date().toISOString()} ${message(key, ...args)} ${describeError(error)}\n`)
 }
+
+/** Writes one line about an event to the standard error. Each argument is a number or a fixed word, never a content. */
+export function logEvent(key, ...args) {
+  process.stderr.write(`${new Date().toISOString()} ${message(key, ...args)}\n`)
+}

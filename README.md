@@ -111,6 +111,26 @@ wait for you, and the recent decisions. `resources/compaction.md` holds its inst
 search index keep each message, so the agent still finds the earlier details. `node src/main.mjs compact` writes a
 summary at once.
 
+## The prompt cache
+
+A request reads the model context from the prompt cache at a twentieth of the input price. After the lifetime of the
+cache, the next request writes the whole context again, which is slow and costs 40 reads. So the daemon asks for the
+1-hour cache, and an idle daemon acts 50 minutes after its last model request:
+
+- Above the limit of a summary, it writes the summary. Your next message then starts from a small context.
+- Between 20,000 tokens and that limit, it sends a keep-alive request. The request reads the context from the cache
+  for one output token, and the cache lives another hour. The conversation does not get the reply. For a context of
+  100,000 tokens, one request costs about $0.02 at the list price of Claude Opus 5.5.
+
+The keep-alive requests stop 6 hours after the last turn. The log of the daemon has one line with the token counts
+of each keep-alive request and of each summary request.
+
+| Variable of the daemon | Effect |
+|------------------------|--------|
+| `MEGACHAT_CACHE_TTL` | `1h` is the default. `5m` asks for the 5-minute cache, and the idle daemon then acts after 4 minutes 10 seconds. |
+| `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out. The default is `6`. |
+| `MEGACHAT_KEEPALIVE` | `0` stops the keep-alive requests and the summary of an idle conversation. |
+
 ## Code map
 
 | Files | Content |
@@ -120,6 +140,7 @@ summary at once.
 | `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
+| `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The child runs, one at a time. The supervisor stops the child when the daemon exits. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |

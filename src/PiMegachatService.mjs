@@ -1,10 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
-import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook } from '@earendil-works/pi-durable'
+import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
+import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
 import { int, obj, opt, str } from '@earendil-works/pi-schema'
 import { composeInstructions } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
-import { logFailure, message, requireCondition } from './messages.mjs'
+import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
+import { keepAliveSettings, PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -20,6 +22,11 @@ const SUMMARY_TIMEOUT_MS = 600000
 const SUMMARY_MAX_TOKENS = 16000
 const SUMMARY_TOOL_RESULT_LIMIT = 2000
 const SUMMARY_TASK_LIMIT = 30
+/** The main agent and a keep-alive request think at the same level. Another level would miss the prompt cache. */
+const THINKING_LEVEL = 'low'
+const STREAM_TIMEOUT_MS = 60000
+/** The lifetimes of the prompt cache of a model that states none: those of Anthropic. */
+const CACHE_LIFETIME_SECONDS = { short: 300, long: 3600 }
 
 export function compactTokens(environment = process.env) {
   const value = environment[COMPACT_TOKENS_VARIABLE]
@@ -58,25 +65,34 @@ function transcript(messages) {
 }
 
 export class PiMegachatService {
-  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens() } = {}) {
+  static async open(storage, models, model = { provider: 'anthropic', modelId: 'claude-opus-5-5' }, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, compactTokens: limit = compactTokens(), keepAlive: keepAliveOptions } = {}) {
+    const keepAlive = { ...keepAliveSettings(), ...keepAliveOptions }
     const registry = createRegistry()
     const contextWindow = models.getModel(model.provider, model.modelId)?.contextWindow ?? 0
     const harness = await Harness.open(storage, {
       models, registry,
-      settings: { retry: { enabled: false }, stream: { timeoutMs: 60000, maxRetries: 0 }, compaction: compactionSettings(contextWindow, limit) },
+      settings: { retry: { enabled: false }, stream: { timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: keepAlive.retention }, compaction: compactionSettings(contextWindow, limit) },
       // Pi Durable reports each failure of a task, an extension or the storage here, and nowhere else.
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
     }, context)
     const instructions = await composeInstructions(
       await readFile(new URL('../resources/instructions.md', import.meta.url), 'utf8'), userInstructionsPath)
-    const root = await harness.root(context, { agent: { model, thinkingLevel: 'low', maxTurns: 20, instructions } })
+    const root = await harness.root(context, { agent: { model, thinkingLevel: THINKING_LEVEL, maxTurns: 20, instructions } })
     await root.configure({ model, instructions }, context)
     const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     service.model = model
+    service.models = models
+    service.cacheRetention = keepAlive.retention
+    if (keepAlive.enabled) service.keepAlive = new PromptCacheKeepAlive({
+      ttlMs: (models.getModel(model.provider, model.modelId)?.promptCache?.[keepAlive.retention] ?? CACHE_LIFETIME_SECONDS[keepAlive.retention]) * 1000,
+      windowMs: keepAlive.windowMs, compactTokens: limit, clock: keepAlive.clock,
+      ...(keepAlive.minTokens === undefined ? {} : { minTokens: keepAlive.minTokens }),
+      tokens: () => service.contextTokens(), ping: signal => service.ping(signal), compact: () => service.compact(),
+    })
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await readFile(new URL('../resources/compaction.md', import.meta.url), 'utf8')).trim().split('\n\n')
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
@@ -166,6 +182,7 @@ export class PiMegachatService {
       { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() },
     ] }, { timeoutMs: SUMMARY_TIMEOUT_MS, maxRetries: 0, cacheRetention: 'none', signal: hookContext?.abortSignal,
       maxTokens: model.maxTokens > 0 ? Math.min(SUMMARY_MAX_TOKENS, model.maxTokens) : SUMMARY_MAX_TOKENS })
+    logEvent('log.summary', answer.usage.input, answer.usage.cacheRead, answer.usage.cacheWrite, answer.usage.output, answer.usage.cost?.total ?? 0)
     const summary = answer.stopReason === 'stop' && !answer.content.some(block => block.type === 'toolCall')
       ? blockText(answer.content).trim() : ''
     if (!summary) return undefined
@@ -194,11 +211,54 @@ export class PiMegachatService {
     })().finally(() => { this.compacting = undefined })
   }
 
+  /**
+   * The size of the next model request: the usage of the last reply, plus an estimate of the messages after it.
+   * A summary replaces the reply with the usage, so the context after a summary has an estimate only.
+   */
+  async contextTokens() {
+    const { messages } = await this.root.context(context)
+    const measured = messages.findLastIndex(model => model.role === 'assistant' && calculateContextTokens(model.usage) > 0)
+    return messages.slice(measured + 1).reduce((sum, model) => sum + estimateMessageTokens(model),
+      measured < 0 ? 0 : calculateContextTokens(messages[measured].usage))
+  }
+
+  /**
+   * Sends the model context as the main agent sends it, for one output token. The request reads the prompt cache, and
+   * that starts the lifetime of the cache again. The conversation does not get the reply. Returns the usage.
+   */
+  async ping(signal) {
+    const model = this.models.getModel(this.model.provider, this.model.modelId)
+    const { messages } = await this.root.context(context)
+    const answer = await this.models.completeSimple(model, { messages: [...messages] }, {
+      timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: this.cacheRetention, maxTokens: 1, reasoning: THINKING_LEVEL, signal,
+      sessionId: (await this.harness.snapshot(ProviderDoc, this.root.id, context))?.sessionId,
+    })
+    if (answer.stopReason === 'error') throw new Error('keep-alive')
+    return answer.usage
+  }
+
+  /** The time of the last message of the model context. After a restart, it stands for the last model request. */
+  async lastMessageTime() {
+    const { messages } = await this.root.context(context)
+    return messages.findLast(model => Number.isFinite(model.timestamp))?.timestamp
+  }
+
   async resume() {
     const snapshot = await this.state.snapshot()
     if (snapshot.current) this.follow(snapshot.inputs[snapshot.current.requestId])
+    if (snapshot.current) this.keepAlive?.turnStarted()
+    else {
+      const last = await this.lastMessageTime()
+      if (last !== undefined) this.keepAlive?.turnEnded(last)
+    }
+    let running = Boolean(snapshot.current)
     this.eventWatch = await this.state.watch()
     const observe = snapshot => {
+      if (running !== Boolean(snapshot.current)) {
+        running = Boolean(snapshot.current)
+        if (running) this.keepAlive?.turnStarted()
+        else this.keepAlive?.turnEnded()
+      }
       if (snapshot.current) return
       const now = Date.now()
       const unreported = Object.values(snapshot.runs).filter(run => terminalStates.has(run.status) && !run.reported)
@@ -342,6 +402,7 @@ export class PiMegachatService {
   async close() {
     this.lifetime.abort()
     clearTimeout(this.reportTimer)
+    await this.keepAlive?.close()
     await this.eventWatch?.stop()
     await this.eventPump.catch(() => {})
     await this.search?.close()
