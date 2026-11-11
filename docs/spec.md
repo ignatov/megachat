@@ -317,7 +317,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The tool `agents_projects` must list the directories, add a known repository, and remove one. Only a turn of the user may add a repository.
 - A known repository must be an absolute path or a path that starts with `~`. The state must keep its real path.
 - That real path must be an existing directory in the home directory of the user or in a root of `MEGACHAT_PROJECT_ROOTS`. Thus a symbolic link must not lead out of these directories.
-- The home directory itself, its `Library` directory, its hidden directories, and the state directory of Megachat must be refused.
+- The home directory itself, its `Library` directory, the hidden directories directly in it, and the state directory of Megachat must be refused. A repository that the user names may be in a hidden directory deeper in the home directory or in a root.
 - A child in a known repository must have that repository as its working directory, also when no IDE has opened it.
 - A task, a follow-up, a continued session, and a session search must refuse a directory that is not listed.
 - `agents_list` must give each listed directory one time with its origin: `ide`, `known`, or `megachat`. The workspace of Megachat must have the name "Megachat workspace".
@@ -326,7 +326,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The scan must not go into a repository or a hidden directory, must follow no symbolic link, and must read no file. It must give at most 200 repositories, the newest change of `.git` first, and `truncated` when more exist. It must add nothing to the list.
 - The setting `projects.newRoot` must name the directory of a new project without a named location: an absolute path or a path that starts with `~`. The default is `~/src`.
 - The action `create` must make `<projects.newRoot>/<name>`, or `<name>-2` and so on when the name is taken, and add it to the known list. The name must be one directory name of at most 100 characters that is not hidden.
-- The root of a new project must be in the home directory or in a root of `MEGACHAT_PROJECT_ROOTS`, out of a hidden directory and out of the state directory. The daemon may make a root that does not exist. Only a turn of the user may make a project.
+- The root of a new project must be in the home directory or in a root of `MEGACHAT_PROJECT_ROOTS`, out of the state directory, and no directory below the home directory or below the root on its path may be hidden. The daemon may make a root that does not exist. Only a turn of the user may make a project.
   [@test] ../test/discovery.test.mjs
 - A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
   This also applies to the working directory of `session/new` and `session/load`.

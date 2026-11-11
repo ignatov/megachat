@@ -89,11 +89,18 @@ test('create makes a new project in projects.newRoot with a number when the name
   // A root that does not exist yet is made.
   await tool('settings', { action: 'set', key: 'projects.newRoot', value: '~/work/new/' })
   assert.equal((await tool('projects', { action: 'create', name: 'tool' })).created, join(home, 'work', 'new', 'tool'))
-  for (const root of [outside, '~/.config/projects', join(directories.stateDirectory, 'projects')]) {
+  // A nested hidden directory in the home directory or in a root is no place for a new project.
+  for (const root of [outside, '~/.config/projects', join(directories.stateDirectory, 'projects'), '~/src/.hidden/projects',
+    '~/src/.new', join(directories.roots[0], '.cache', 'new')]) {
     await tool('settings', { action: 'set', key: 'projects.newRoot', value: root })
     await assert.rejects(tool('projects', { action: 'create', name: 'refused' }), { code: 'newRoot' }, root)
   }
   assert.deepEqual(await readdir(outside), ['linked', 'roots'])
+  assert.deepEqual(await readdir(directories.roots[0]), ['extra'])
+  assert.deepEqual(await readdir(join(home, 'src', '.hidden')), ['secret'])
+  // A repository that the user names can be in a nested hidden directory.
+  assert.ok((await tool('projects', { action: 'add', cwd: '~/src/.hidden/secret' })).workspaces
+    .some(item => item.cwd === join(home, 'src', '.hidden', 'secret')))
   await assert.rejects(tool('settings', { action: 'set', key: 'projects.newRoot', value: 'relative/path' }), { code: 'settingValue' })
   // An automatic turn cannot make a project.
   await service.state.change(state => { state.current = { id: 'event', requestId: 'event', cancelling: false, kind: 'event' } })

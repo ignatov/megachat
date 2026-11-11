@@ -32,8 +32,8 @@ const inside = (root, path) => {
 /**
  * Gives the real path of a directory that can become a known repository. The path must be absolute or start with `~`.
  * The real path must be an existing directory in the home directory of the user or in an allowed root. Thus a
- * symbolic link cannot lead out of these directories. The home directory itself, its application data, its hidden
- * directories and the state directory of Megachat are refused.
+ * symbolic link cannot lead out of these directories. The home directory itself, its application data, the hidden
+ * directories directly in it and the state directory of Megachat are refused.
  */
 export async function resolveRepository(path, { home = homedir(), roots = projectRoots(), stateDirectory } = {}) {
   requireCondition(typeof path === 'string' && path.length > 0 && path.length <= 4096 && !path.includes('\0'), 'directory')
@@ -47,23 +47,29 @@ export async function resolveRepository(path, { home = homedir(), roots = projec
 
 const real = directory => realpath(directory).catch(() => undefined)
 
+/** Tells whether a directory of the relative path [rest] is hidden. */
+const hidden = rest => rest.split(sep).some(part => part.startsWith('.'))
+
 /**
  * Tells whether a real path can hold a known repository: it is in an allowed root or in the home directory, out of the
- * application data and the hidden directories of the home directory, and out of the state directory. [permitHome] permits
- * the home directory itself, for the directory of the new projects.
+ * application data and the hidden directories of the home directory, and out of the state directory. A repository that
+ * the user names can be in a hidden directory deeper in the home directory or in a root. [newProjects] is for the
+ * directory of the new projects: it permits the home directory itself, and it refuses each hidden directory below the
+ * home directory or the root, because Megachat chooses that place itself.
  */
-async function allowedLocation(canonical, { home, roots, stateDirectory, permitHome = false }) {
+async function allowedLocation(canonical, { home, roots, stateDirectory, newProjects = false }) {
   const state = stateDirectory && await real(stateDirectory)
   if (state && (canonical === state || inside(state, canonical))) return false
   for (const root of roots) {
     const allowed = await real(root)
-    if (allowed && (canonical === allowed || inside(allowed, canonical))) return true
+    if (allowed && (canonical === allowed || inside(allowed, canonical))) return !newProjects || !hidden(relative(allowed, canonical))
   }
   const userHome = await real(home)
-  if (permitHome && canonical === userHome) return true
+  if (newProjects && canonical === userHome) return true
   if (!userHome || !inside(userHome, canonical)) return false
-  const first = relative(userHome, canonical).split(sep)[0]
-  return !first.startsWith('.') && !applicationDirectories.has(first)
+  const rest = relative(userHome, canonical)
+  const first = rest.split(sep)[0]
+  return !first.startsWith('.') && !applicationDirectories.has(first) && !(newProjects && hidden(rest))
 }
 
 /** The real path of [path], also when its last parts do not exist yet: the real path of the nearest existing parent. */
@@ -86,7 +92,7 @@ export async function createProjectDirectory(root, name, { home = homedir(), roo
   requireCondition(typeof name === 'string' && PROJECT_NAME.test(name), 'projectName')
   requireCondition(typeof root === 'string' && isAbsolute(expandHome(root, home)), 'newRoot')
   const planned = await plannedPath(resolve(expandHome(root, home)))
-  requireCondition(planned && await allowedLocation(planned, { home, roots, stateDirectory, permitHome: true }), 'newRoot')
+  requireCondition(planned && await allowedLocation(planned, { home, roots, stateDirectory, newProjects: true }), 'newRoot')
   await mkdir(planned, { recursive: true })
   for (let count = 1; count <= 100; count++) {
     const path = join(planned, count === 1 ? name : `${name}-${count}`)
