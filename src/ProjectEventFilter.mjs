@@ -3,12 +3,17 @@ export const DEFAULT_EVENT_IGNORE = ['*.tmbundle', 'build/download', '.claude/se
 const PATTERN_LIMIT = 50
 const PATTERN_LENGTH = 200
 
-/** Gives the pattern without a leading `./` or `/` and without a trailing `/`, or `undefined` for an invalid pattern. */
+/**
+ * Gives the pattern without a trailing `/`, or `undefined` for an invalid pattern. A leading `./` or `/` becomes one
+ * `/`, which keeps the match from the root of the project.
+ */
 function normalizePattern(text) {
   if (typeof text !== 'string') return undefined
-  const pattern = text.trim().replace(/^(\.\/)+/, '').replace(/^\/+/, '').replace(/\/+$/, '')
+  const trimmed = text.trim()
+  const pattern = trimmed.replace(/^(\.\/)+/, '').replace(/^\/+/, '').replace(/\/+$/, '')
   if (!pattern || pattern.length > PATTERN_LENGTH || /[\0\\]/.test(pattern)) return undefined
-  return pattern.split('/').some(part => part === '' || part === '.' || part === '..') ? undefined : pattern
+  if (pattern.split('/').some(part => part === '' || part === '.' || part === '..')) return undefined
+  return /^\.?\//.test(trimmed) ? `/${pattern}` : pattern
 }
 
 /**
@@ -96,12 +101,12 @@ function globAutomaton(pattern, prefix) {
 
 /**
  * Gives a function that tells whether Megachat does not report a project-relative path. A pattern without a slash
- * matches the name of a file or a directory at each depth. A pattern with a slash matches the path from the root of the
- * project. A path in a matching directory matches too.
+ * matches the name of a file or a directory at each depth. A pattern with a slash, also a leading slash, matches the
+ * path from the root of the project. A path in a matching directory matches too.
  */
 export function eventMatcher(patterns) {
   const tests = patterns.map(pattern => {
-    if (pattern.includes('/')) return globAutomaton(pattern, true)
+    if (pattern.includes('/')) return globAutomaton(pattern.replace(/^\//, ''), true)
     const matches = globAutomaton(pattern, false)
     return path => path.split('/').some(matches)
   })

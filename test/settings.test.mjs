@@ -186,7 +186,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
   // A list is no single value, so its cases compare the whole list.
-  assert.deepEqual((await settings.set('events.ignore', ' ./gen/ , *.log\n\n**/tmp/*.kt,*.log')).value, ['gen', '*.log', '**/tmp/*.kt'])
+  assert.deepEqual((await settings.set('events.ignore', ' ./gen/ , *.log\n\n**/tmp/*.kt,*.log')).value, ['/gen', '*.log', '**/tmp/*.kt'])
   assert.deepEqual((await settings.set('events.ignore', [])).value, [])
   for (const [key, cases] of Object.entries(accepted)) {
     for (const [value, normalized] of cases) assert.equal((await settings.set(key, value)).value, normalized, `${key} ${value}`)

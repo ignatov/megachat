@@ -27,6 +27,14 @@ test('a pattern matches a name at each depth without a slash, the path from the 
   for (const value of ['../a', 'a/./b', '/', 'x'.repeat(201)]) assert.equal(eventPatterns(value), undefined, value)
 })
 
+test('a pattern with a leading slash or ./ keeps the slash and matches the path from the root', () => {
+  assert.deepEqual(eventPatterns(['/build', './build', '//build/', './/build', 'build', './a/b']), ['/build', 'build', '/a/b'])
+  const ignored = eventMatcher(eventPatterns(['./build', '/*.log']))
+  for (const path of ['build', 'build/Main.kt', 'run.log']) assert.ok(ignored(path), path)
+  for (const path of ['src/app/build/Main.kt', 'logs/run.log', 'build.kt']) assert.ok(!ignored(path), path)
+  assert.ok(eventMatcher(eventPatterns(['/a/b']))('a/b/c'))
+})
+
 test('each pattern of a table matches the same paths as the earlier regular expressions', () => {
   const paths = ['Main.kt', 'src/Main.kt', 'src/app/build/Main.kt', 'build/download/lib.json', 'build/x', 'a/b', 'a/x/y/b',
     'a/xb', 'a/b/c', 'ab/b', 'a/c/b', 'x.md', 'src/x.md', 'src/a/x', 'src/ab/x', 'a-b.json', 'dir/a-b-c.json', 'abc', 'aXbYc/d',
