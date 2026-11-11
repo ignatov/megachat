@@ -152,7 +152,8 @@ export class SessionIndexService {
   }
 
   #request({ full = false }) {
-    if (full) this.pending.full = true
+    // A pass that failed runs again on the next request, such as a change of a session file.
+    if (full || this.passFailed) { this.pending.full = true; this.passFailed = false }
     this.loop ??= this.#run().finally(() => { this.loop = undefined })
   }
 
@@ -169,6 +170,7 @@ export class SessionIndexService {
         logFailure('log.sessions', error)
         // A damaged file was made again, so the next pass imports each file again.
         if (this.index.damaged) { this.index.damaged = false; this.firstPassAt = undefined; this.pending.full = true; await pause() }
+        else if (full) this.passFailed = true
       }
     }
   }
@@ -245,33 +247,42 @@ export class SessionIndexService {
       step = next
       await this.state.sessionsTask({ id: `sessions:${passId}:${step}`, done, total: work.length })
     }
-    await report()
-    // A new file without a project in its path needs its `cwd` first, so the order can put the projects of an IDE first.
-    const ordered = []
-    for (const file of work) {
-      if (signal.aborted) return
-      if (!file.directory && !file.row) {
-        file.cwd = (await this.#peek(file.source, file.path)) ?? null
-        file.directory = file.cwd ? directoryOf(file.cwd, directories) : undefined
-        if (!file.directory) {
-          await this.index.outside({ ...file, agent: file.source.agent }, file.cwd)
-          done++
-          await report()
-          continue
-        }
-      }
-      ordered.push(file)
-    }
-    const rank = file => ORIGIN_RANK[file.directory?.origin ?? (file.row?.cwd && directoryOf(file.row.cwd, directories)?.origin)] ?? 3
-    ordered.sort((left, right) => rank(left) - rank(right) || right.mtimeMs - left.mtimeMs)
-    for (const file of ordered) {
-      if (signal.aborted) return
-      await this.#import(file, directories, { signal })
-      done++
+    try {
       await report()
+      // A new file without a project in its path needs its `cwd` first, so the order can put the projects of an IDE first.
+      const ordered = []
+      for (const file of work) {
+        if (signal.aborted) return
+        if (!file.directory && !file.row) {
+          try {
+            file.cwd = (await this.#peek(file.source, file.path)) ?? null
+            file.directory = file.cwd ? directoryOf(file.cwd, directories) : undefined
+            if (!file.directory) await this.index.outside({ ...file, agent: file.source.agent }, file.cwd)
+          }
+          catch (error) { await this.#failed(file, error); file.directory = undefined }
+          if (!file.directory) {
+            done++
+            await report()
+            continue
+          }
+        }
+        ordered.push(file)
+      }
+      const rank = file => ORIGIN_RANK[file.directory?.origin ?? (file.row?.cwd && directoryOf(file.row.cwd, directories)?.origin)] ?? 3
+      ordered.sort((left, right) => rank(left) - rank(right) || right.mtimeMs - left.mtimeMs)
+      for (const file of ordered) {
+        if (signal.aborted) return
+        try { await this.#import(file, directories, { signal }) }
+        catch (error) { await this.#failed(file, error) }
+        done++
+        await report()
+      }
     }
-    this.progress = undefined
-    if (visible) await this.state.sessionsTask(null)
+    finally {
+      this.progress = undefined
+      // After a stop, the stop clears the task.
+      if (visible && !signal.aborted) await this.state.sessionsTask(null)
+    }
     if (first && !signal.aborted) {
       this.firstPassAt = this.clock.now()
       await this.index.markFirstPass(this.firstPassAt)
@@ -292,8 +303,23 @@ export class SessionIndexService {
         if (await this.index.file(path)) await this.index.dropFile(path, pause)
         continue
       }
-      await this.#import({ source, path, ...identity(stat) }, directories, { signal: this.lifetime.signal })
+      const file = { source, path, ...identity(stat) }
+      try { await this.#import(file, directories, { signal: this.lifetime.signal }) }
+      catch (error) { await this.#failed(file, error) }
     }
+  }
+
+  /**
+   * Records a file that the import could not read, for example a file without the read permission, so the import
+   * reads it again only after a change of the file. The log names only the agent. A stop or a damaged index file ends
+   * the pass.
+   */
+  async #failed(file, error) {
+    if (this.lifetime.signal.aborted || this.index.damaged) throw error
+    logFailure('log.sessions.file', error, file.source.agent)
+    const row = await this.index.file(file.path).catch(() => undefined)
+    // A file in the index keeps its entries and its offset, so its next change reads only the lines after the offset.
+    await (row?.state === 'indexed' ? this.index.touch(file) : this.index.outside({ ...file, agent: file.source.agent }, null)).catch(() => {})
   }
 
   /** Runs one import of a file at a time. A second import of the same file waits for the first one. */

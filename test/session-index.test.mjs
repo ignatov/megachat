@@ -110,6 +110,14 @@ function countingFs() {
   return { calls, readdir: wrap('readdir'), stat: wrap('stat'), open: wrap('open') }
 }
 
+/** A file system that fails to open each path in [blocked], as for a file with the mode 000. */
+function blockingFs(blocked = new Set()) {
+  const open = (path, ...args) => blocked.has(String(path))
+    ? Promise.reject(Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })) : fsp.open(path, ...args)
+  const opened = []
+  return { blocked, opened, readdir: fsp.readdir, stat: fsp.stat, open: (path, ...args) => { opened.push(String(path)); return open(path, ...args) } }
+}
+
 /** A watch that records the roots and lets a test send a change. */
 function fakeWatch() {
   const watchers = []
@@ -322,6 +330,63 @@ test('the first pass imports the projects of an IDE first and the newest files f
   assert.equal(new Set(state.tasks.filter(Boolean).map(task => task.id)).size, 3, 'Each step is a task of its own')
   assert.equal(state.summaries.length, 1)
   assert.deepEqual([state.summaries[0].sessions, state.summaries[0].projects], [3, 2])
+})
+
+test('a file that the import cannot read does not stop the pass, and the import reads it again after its next change', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  await claudeSession(home, project, 'new', [claudeLine('u1', 'user', 'juniper new', project)], NOW - DAY)
+  const bad = await claudeSession(home, project, 'bad', [claudeLine('u2', 'user', 'juniper bad', project)], NOW - 2 * DAY)
+  await claudeSession(home, project, 'old', [claudeLine('u3', 'user', 'juniper old', project)], NOW - 3 * DAY)
+  const fs = blockingFs(new Set([bad]))
+  const state = fakeState({ workspaces: [project] })
+  const { index, watch } = await service(t, directories, state, { fs })
+  await index.apply(ON)
+  await index.idle()
+  assert.equal(state.tasks.at(-1), null, 'The task of the pass ends')
+  assert.equal((await index.status()).state, 'ready')
+  assert.equal(state.summaries.length, 1)
+  assert.deepEqual((await hits(index, 'claude', project, 'juniper')).map(hit => hit.session.sessionId).sort(), ['new', 'old'])
+  assert.equal(await index.catchUp(project), true, 'A search is complete without the unreadable file')
+  fs.opened.length = 0
+  await index.catchUp(project)
+  assert.ok(!fs.opened.includes(bad), 'The import does not read the unreadable file again before it changes')
+
+  // A change of the unreadable file, and of a file that becomes unreadable after the first pass.
+  const root = join(home, '.claude', 'projects')
+  const name = file => `${project.replace(/[^a-zA-Z0-9]/g, '-')}/${file}.jsonl`
+  const newPath = join(root, name('new'))
+  await appendFile(newPath, claudeLine('u4', 'user', 'juniper newer', project))
+  fs.blocked.add(newPath)
+  watch.change(root, name('new'))
+  await index.idle()
+  fs.blocked.clear()
+  await appendFile(bad, claudeLine('u5', 'user', 'juniper later', project))
+  watch.change(root, name('bad'))
+  await index.idle()
+  assert.deepEqual((await hits(index, 'claude', project, 'juniper')).map(hit => hit.session.sessionId).sort(), ['bad', 'new', 'old'])
+  await appendFile(newPath, claudeLine('u6', 'user', 'juniper newest', project))
+  watch.change(root, name('new'))
+  await index.idle()
+  assert.equal((await hits(index, 'claude', project, 'newer')).length, 1, 'The import reads the lines that it could not read before')
+})
+
+test('a pass that failed runs again on the next change of a session file', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  await claudeSession(home, project, 'one', [claudeLine('u1', 'user', 'juniper', project)])
+  const state = fakeState({ workspaces: [project] })
+  const snapshot = state.snapshot
+  let failures = 1
+  state.snapshot = async () => { if (failures-- > 0) throw new Error('A state that cannot be read'); return snapshot() }
+  const { index, watch } = await service(t, directories, state)
+  await index.apply(ON)
+  await index.idle()
+  assert.equal((await index.status()).state, 'importing')
+  watch.change(join(home, '.claude', 'projects'), `${project.replace(/[^a-zA-Z0-9]/g, '-')}/one.jsonl`)
+  await index.idle()
+  assert.equal((await index.status()).state, 'ready')
+  assert.equal(state.summaries.length, 1)
 })
 
 test('the age limit skips old sessions, and a session that gets too old leaves the index at the next start', async t => {
