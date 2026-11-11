@@ -27,6 +27,53 @@ test('a pattern matches a name at each depth without a slash, the path from the 
   for (const value of ['../a', 'a/./b', '/', 'x'.repeat(201)]) assert.equal(eventPatterns(value), undefined, value)
 })
 
+test('each pattern of a table matches the same paths as the earlier regular expressions', () => {
+  const paths = ['Main.kt', 'src/Main.kt', 'src/app/build/Main.kt', 'build/download/lib.json', 'build/x', 'a/b', 'a/x/y/b',
+    'a/xb', 'a/b/c', 'ab/b', 'a/c/b', 'x.md', 'src/x.md', 'src/a/x', 'src/ab/x', 'a-b.json', 'dir/a-b-c.json', 'abc', 'aXbYc/d',
+    'x/y', 'x/a/b/y', 'x/a/y/z', 'gen/generated/A.kt', 'generated/sub/A.kt', 'a+b(1)/q', 'test/x', 'a/test', 'a/testx']
+  // The results come from the matcher with regular expressions, before the matcher without backtracking.
+  const table = {
+    '*.kt': ['Main.kt', 'src/Main.kt', 'src/app/build/Main.kt', 'gen/generated/A.kt', 'generated/sub/A.kt'],
+    'build': ['src/app/build/Main.kt', 'build/download/lib.json', 'build/x'],
+    'build/download': ['build/download/lib.json'],
+    '**/generated/*.kt': ['gen/generated/A.kt'],
+    'src/**': ['src/Main.kt', 'src/app/build/Main.kt', 'src/x.md', 'src/a/x', 'src/ab/x'],
+    'src/**.kt': ['src/Main.kt', 'src/app/build/Main.kt'],
+    '**': paths,
+    '***': paths,
+    '*': paths,
+    '**/*.json': ['build/download/lib.json', 'a-b.json', 'dir/a-b-c.json'],
+    'a/**/b': ['a/b', 'a/x/y/b', 'a/b/c', 'a/c/b'],
+    'a/**b': ['a/b', 'a/x/y/b', 'a/xb', 'a/b/c', 'a/c/b'],
+    'a**/b': ['a/b', 'a/x/y/b', 'a/b/c', 'ab/b', 'a/c/b'],
+    '?.md': ['x.md', 'src/x.md'],
+    'src/?/x': ['src/a/x'],
+    '*-*.json': ['a-b.json', 'dir/a-b-c.json'],
+    'a*b*c': ['abc', 'aXbYc/d'],
+    'x/**/**/y': ['x/y', 'x/a/b/y', 'x/a/y/z'],
+    'a+b(1)': ['a+b(1)/q'],
+    '**/test': ['test/x', 'a/test'],
+  }
+  for (const [pattern, expected] of Object.entries(table)) {
+    const matches = eventMatcher(eventPatterns([pattern]))
+    assert.deepEqual(paths.filter(path => matches(path)), expected, pattern)
+  }
+})
+
+test('a pattern with many wildcards ends at once on a long path', () => {
+  const name = `${'x-'.repeat(63)}y.txt`
+  const patterns = ['**/*-*-*-*-*-*-*-*.json', '*-*-*-*-*-*-*-*.json', 'a/**/**/**/**/**/**/**/*-*-*-*-*-*.json',
+    `${'*-'.repeat(99)}*`.slice(0, 200), `**${'/**'.repeat(66)}`.slice(0, 200)]
+  const started = performance.now()
+  for (const pattern of patterns) {
+    const ignored = eventMatcher(eventPatterns([pattern]))
+    for (const path of [name, `a/${name}`, `${'a/'.repeat(400)}${name}`]) ignored(path)
+  }
+  assert.ok(performance.now() - started < 1000, `${performance.now() - started} ms`)
+  assert.ok(eventMatcher(['*-*-*.json'])(`a/${'x-'.repeat(63)}y.json`))
+  assert.ok(!eventMatcher(['**/*'])(`${'a/'.repeat(1000)}b`), 'a path of more than 1024 characters does not match')
+})
+
 test('the watcher drops a path of the ignore list at each file event and reads a changed list at the next one', { timeout: 10000 }, async t => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'megachat-filter-watch-')))
   for (const directory of ['src', 'lib', 'Kotlin.tmbundle']) await mkdir(join(cwd, directory))
