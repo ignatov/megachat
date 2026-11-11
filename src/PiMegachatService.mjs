@@ -1,8 +1,9 @@
 import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
-import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
+import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, GenerationTask, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
+import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { MegachatState, terminalStates } from './MegachatState.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
@@ -65,7 +66,7 @@ function harnessSettings(values, models) {
  * the onboarding is pending. The defaults give the rules from before the settings. The rules are a section of their
  * own, so a change sends only this section to the model again, and not the bundled rules.
  */
-function settingsRules(values, onboarding, rules) {
+function settingsRules(values, onboarding, rules, notice) {
   const language = values['reply.language']
   return [
     message(`instructions.length.${values['reply.length']}`),
@@ -74,6 +75,7 @@ function settingsRules(values, onboarding, rules) {
     values['reply.suggestions'] ? rules.suggestions.trimEnd() : message('instructions.noSuggestions'),
     message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
+    ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')
 }
 
@@ -114,9 +116,9 @@ function transcript(messages) {
 export class PiMegachatService {
   /**
    * An explicit [model], `compactTokens`, `suggestions` or `keepAlive` setting wins over the environment and over
-   * `settings.json`, for a test. The daemon passes none of them.
+   * `settings.json`, for a test. The daemon passes none of them. [clock] gives the time of the daily spend, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -147,7 +149,7 @@ export class PiMegachatService {
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     state.projectFilter = () => service.projectFilter()
-    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions })
+    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, spend: await DailySpend.open(spendPath, clock) })
     service.adopt(values)
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
@@ -191,6 +193,8 @@ export class PiMegachatService {
     this.thinkingLevel = values['coordinator.thinking']
     this.cacheRetention = CACHE_RETENTION[values['cache.ttl']]
     this.suggestions = values['reply.suggestions']
+    // The warning about the spend is a line of the rules, so it changes only between two turns, as each setting does.
+    this.notice = this.spend.notice(values['budget.dailyUsd'])
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
     this.state.eventSuffix = this.suggestions ? '.suggest' : ''
     const ttlSeconds = this.models.getModel(this.model.provider, this.model.modelId)?.promptCache?.[this.cacheRetention]
@@ -247,6 +251,18 @@ export class PiMegachatService {
     return { enabled: this.settings.entry('events.enabled').value, ignored: this.ignored }
   }
 
+  /**
+   * Counts the cost of one model request of the main agent. When the spend of the day passes the limit, the warning
+   * goes into the rules of the next turn. A failure here must not fail the request, so it goes to the log only.
+   */
+  countSpend(usage, model) {
+    try {
+      if (this.spend.add(requestCost(usage, model), this.settings.entry('budget.dailyUsd').value))
+        this.settingsChanged().catch(error => logFailure('log.settings.failed', error))
+    }
+    catch (error) { logFailure('log.settings.failed', error) }
+  }
+
   /** The rules paragraph of the next child. It reads the stored settings, so a change in a turn reaches the next child. */
   childRules() {
     return childRulesText(this.settings.values())
@@ -255,7 +271,9 @@ export class PiMegachatService {
   /** The tool `agents_settings`. A project event or a child result cannot change a setting. */
   async settingsTool(args) {
     requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
-    if (args.action === 'get') return this.settings.describe()
+    if (args.action === 'get') {
+      return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') } }
+    }
     requireCondition(!['event', 'report'].includes((await this.state.snapshot()).current?.kind), 'settingEvent')
     let changed
     if (args.action === 'onboarding') {
@@ -279,8 +297,10 @@ export class PiMegachatService {
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: 'air.megachat', sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
-      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules) },
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.notice) },
     ], hooks: [
+      // Each reply of the model, also a reply with tool calls, is one request that costs money.
+      hook(GenerationTask, { afterResponse: (answer, api) => this.countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
       hook(CompactionTask, { beforeCompact: (compaction, api, hookContext) => this.summarize(compaction, api, hookContext) }),
     ], tools: [
       tool('list', obj({}), async () => {
@@ -356,6 +376,7 @@ export class PiMegachatService {
     ] }, { timeoutMs: SUMMARY_TIMEOUT_MS, maxRetries: 0, cacheRetention: 'none', signal: hookContext?.abortSignal,
       maxTokens: model.maxTokens > 0 ? Math.min(SUMMARY_MAX_TOKENS, model.maxTokens) : SUMMARY_MAX_TOKENS })
     logEvent('log.summary', answer.usage.input, answer.usage.cacheRead, answer.usage.cacheWrite, answer.usage.output, answer.usage.cost?.total ?? 0)
+    this.countSpend(answer.usage, model)
     const summary = answer.stopReason === 'stop' && !answer.content.some(block => block.type === 'toolCall')
       ? blockText(answer.content).trim() : ''
     if (!summary) return undefined
@@ -408,6 +429,7 @@ export class PiMegachatService {
       ...(this.thinkingLevel === 'off' ? {} : { reasoning: this.thinkingLevel }),
       sessionId: (await this.harness.snapshot(ProviderDoc, this.root.id, context))?.sessionId,
     })
+    this.countSpend(answer.usage, model)
     if (answer.stopReason === 'error') throw new Error('keep-alive')
     return answer.usage
   }
@@ -498,6 +520,11 @@ export class PiMegachatService {
       if (settled.status !== 'done') reason = settled.reason
     }
     catch { this.lifetime.signal.throwIfAborted(); status = 'interrupted' }
+    // The turn had the warning about the spend in its rules. A failed turn keeps it for the next turn.
+    if (this.notice && status === 'completed') {
+      this.spend.shown()
+      this.settingsPending = true
+    }
     // The turn still holds the state, so the next turn starts with the new settings.
     if (this.settingsPending) await this.applySettings().catch(error => logFailure('log.settings.failed', error))
     await this.state.settleInput(receipt.mainRunId, status, reason)
@@ -588,5 +615,7 @@ export class PiMegachatService {
     await this.harness.close(context)
     await Promise.allSettled([...this.waiters.values()])
     await this.sessions.close()
+    // The last count of the spend goes to its file before the daemon ends.
+    await this.spend.queue
   }
 }

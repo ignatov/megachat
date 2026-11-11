@@ -109,6 +109,12 @@ export const SETTINGS = [
       return path.length <= 4096 && !path.includes('\0') && (path === '~' || /^~[/\\]/.test(path) || isAbsolute(path)) ? path : undefined
     },
     allowed: () => ({ other: message('settings.newRoot.other') }) },
+  { key: 'budget.dailyUsd', default: 0, applies: 'nextTurn',
+    validate: value => {
+      const usd = toNumber(value)
+      return Number.isFinite(usd) && usd >= 0 && usd <= 100000 ? usd : undefined
+    },
+    allowed: () => ({ minimum: 0, maximum: 100000 }) },
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))

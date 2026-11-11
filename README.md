@@ -132,6 +132,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `workspace/` | The workspace of Megachat. A task without a project works there. |
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
 | `settings.json` | The settings that you gave in the chat, and the status of the setup. |
+| `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
 | `daemon/daemon.log` | The log of a daemon that `start` started. |
 
@@ -196,6 +197,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `events.enabled` | `true` | | Megachat reports a change of the files of a project to the main agent. |
 | `events.ignore` | `*.tmbundle`, `build/download`, `.claude/settings.local.json` | | The path patterns that Megachat does not report. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
+| `budget.dailyUsd` | `0` | | The daily spend limit of the main agent in USD, with one warning on each day. `0` is no limit. |
 
 The daemon adds the rules of `children.commit`, `children.push` and `children.daemonRestart` to the prompt of each
 child at its dispatch, also to a follow-up and to a continuation. With `ask`, the child does the step only when its task
@@ -208,6 +210,11 @@ In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaPr
 The scan follows no symbolic link and reads no file. You choose the repositories, and the agent adds them to the known
 list. When you ask for a new project without a location, the agent makes `<projects.newRoot>/<name>`, with a number at
 the end when the name is taken, and adds it.
+
+Megachat counts the cost of each request of the main agent on the local day: the replies, the summaries and the
+keep-alive requests. The cost of the children is not in the count, because the accounts of Claude and Codex pay for
+them. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
+`spend.json` keeps the count across a restart. Ask the agent for the settings to see the spend of the day.
 
 A pattern of `events.ignore` is a glob on the path from the root of the project: `*` matches in one path segment, `**`
 across segments, and `?` one character. A pattern without a slash, such as `*.tmbundle`, matches a name at each
@@ -245,6 +252,7 @@ does not offer it again. Ask the agent to run the setup again at any time. A fil
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
 | `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
+| `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/ProjectEventFilter.mjs` | The path patterns of `events.ignore`: their syntax and their match. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The variable `MEGACHAT_SUGGESTIONS`, which lets the main agent offer a next step by itself. |

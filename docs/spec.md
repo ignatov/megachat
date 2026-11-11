@@ -166,6 +166,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The rules of the main agent must give the default agent and the three values, so the agent does not promise the user other rules.
 - A project event or a child result must not change these settings.
   [@test] ../test/child-settings.test.mjs
+- The setting `budget.dailyUsd` must be a daily spend limit of the main agent in USD, from 0 to 100,000. The default 0 means no limit.
+- Megachat must count the cost of each model request of the main agent on the local day: each reply, also a reply with tool calls, each summary and each keep-alive request. A request without a cost from its provider must get the cost from the prices of its model data. The cost of the children must not be in the count.
+- The count must stay in `spend.json` in the state directory with the mode 0600, so a daemon restart keeps it. The count must start again at the local midnight.
+- When the count passes the limit, the rules of the next turn must hold one line with the spend and the limit, which asks for one short warning. The line must go away after a completed turn that had it. The user must get at most one warning on each day. Megachat must not stop the work.
+- `agents_settings get` must give the spend of the day, the limit, whether the warning went out, and a note that the children are not in the count.
+  [@test] ../test/spend.test.mjs
 - With `MEGACHAT_SUGGESTIONS=1`, Megachat may offer one useful next step after work ends.
 - After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.
@@ -210,7 +216,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The state must live in `~/.jetbrains/air/megachat/` for each user: `%USERPROFILE%\.jetbrains\air\megachat` on Windows.
 - All JetBrains products of the user must share this directory, its daemon, and its conversation.
 - `MEGACHAT_HOME` or the final command argument may select another directory for a test or development.
-- The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log. It may hold `settings.json`.
+- The directory must hold `conversation.sqlite`, `owner.sqlite`, `search.sqlite`, `workspace/`, and `daemon/` with the connection file and log. It may hold `settings.json` and `spend.json`.
 - The name `memory.md` is reserved for learned memory that the user can edit. Megachat does not read it yet.
 - The directories must be private to the user: mode 0700 for directories and 0600 for files on macOS and Linux.
 - Only one daemon may own a storage directory.
