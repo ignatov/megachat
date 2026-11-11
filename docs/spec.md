@@ -368,6 +368,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The state must keep only the reason code of a failed reply, not the error text of the provider.
   [@test] ../test/integration.test.mjs
 - A child agent must not stay alive after its daemon. This also applies when the agent still writes output.
+- A helper of a child agent in its process group, such as an MCP server or a background shell, must not stay alive after
+  the agent ends by itself.
 - A daemon that gets SIGTERM or SIGINT, or a storage error, during its start must end the start and exit. It must not
   publish its connection file after it released the lock.
   [@test] ../test/recovery.test.mjs

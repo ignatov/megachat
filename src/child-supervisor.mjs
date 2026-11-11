@@ -16,7 +16,14 @@ const stop = () => {
   }
 }
 child.once('error', () => process.exit(1))
-child.once('exit', code => { lifetime.destroy(); process.exit(code ?? 1) })
+child.once('exit', code => {
+  // A helper of the agent, such as an MCP server or a background shell, is in the process group of the agent. Without
+  // the kill, it stays alive after the agent ended.
+  try { process.kill(-child.pid, 'SIGKILL') }
+  catch (error) { if (error.code !== 'ESRCH') process.exitCode = 1 }
+  lifetime.destroy()
+  process.exit(code ?? 1)
+})
 process.stdin.pipe(child.stdin)
 child.stdout.pipe(process.stdout)
 child.stderr.pipe(process.stderr)

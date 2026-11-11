@@ -185,3 +185,26 @@ test('the supervisor stops a child that writes after the daemon closed the outpu
     catch (error) { if (error.code === 'ESRCH') return true; throw error }
   })
 })
+
+test('the supervisor stops the process group of an agent that ends by itself', { timeout: 10000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-supervisor-group-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const pidFile = join(directory, 'helper.pid')
+  // The agent starts a helper in its process group, such as an MCP server, and ends at once.
+  const supervisor = spawn(globalThis.process.execPath, [fileURLToPath(new URL('../src/child-supervisor.mjs', import.meta.url)),
+    '/bin/sh', '-c', `sleep 47 >/dev/null 2>&1 & echo $! > '${pidFile}'; exit 0`], { stdio: ['pipe', 'pipe', 'ignore', 'pipe'] })
+  let helperPid
+  t.after(() => {
+    supervisor.kill('SIGKILL')
+    try { if (helperPid) globalThis.process.kill(helperPid, 'SIGKILL') }
+    catch (error) { if (error.code !== 'ESRCH') throw error }
+  })
+  const [code] = await once(supervisor, 'exit')
+  assert.equal(code, 0)
+  helperPid = Number(await readFile(pidFile, 'utf8'))
+  assert.ok(helperPid > 0)
+  await poll(() => {
+    try { globalThis.process.kill(helperPid, 0); return false }
+    catch (error) { if (error.code === 'ESRCH') return true; throw error }
+  })
+})
