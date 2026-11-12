@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +15,7 @@ import { AcpRunService } from '../src/AcpRunService.mjs'
 import { ChildSlot } from '../src/ChildSlot.mjs'
 import { serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
-import { childEnvironment, readTool } from '../src/PiChild.mjs'
+import { childEnvironment, readTool, repositoryRules } from '../src/PiChild.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { PiRunService } from '../src/PiRunService.mjs'
 import { ProjectReadEnv } from '../src/ProjectReadEnv.mjs'
@@ -386,6 +386,42 @@ test('the environment of a pi child reads the files of its project and refuses e
   assert.equal((await env.remove(join(cwd, 'README.md'), undefined, context)).ok, false)
   assert.equal((await env.exec('touch new.txt', undefined, context)).ok, false)
   assert.equal(await readFile(join(cwd, 'README.md'), 'utf8'), README)
+})
+
+/**
+ * Makes the environment of [cwd] swap the directory [directory] for a symbolic link to [target] after the path check of
+ * its first open, as another process with write access to the project can do.
+ */
+function swapAfterCheck(cwd, directory, target) {
+  const env = new ProjectReadEnv(cwd)
+  const openReader = env.inner.openBinaryReader.bind(env.inner)
+  let swapped = false
+  env.inner.openBinaryReader = async (...args) => {
+    if (!swapped) {
+      swapped = true
+      await rename(directory, `${directory}-old`)
+      await symlink(target, directory)
+    }
+    return openReader(...args)
+  }
+  return env
+}
+
+test('a directory that another process swaps after the path check does not lead the read of a pi child out of the project', async t => {
+  const { directory, cwd } = await temporary(t)
+  await mkdir(join(cwd, 'docs'))
+  await writeFile(join(cwd, 'docs', 'notes.txt'), 'inside')
+  await mkdir(join(directory, 'outside'))
+  await writeFile(join(directory, 'outside', 'notes.txt'), 'TOP SECRET')
+  await writeFile(join(directory, 'outside', 'AGENTS.md'), 'TOP SECRET')
+  const env = swapAfterCheck(cwd, join(cwd, 'docs'), join(directory, 'outside'))
+  const api = { env, agent: async () => ({}), models: { getModel: () => undefined } }
+  await assert.rejects(readTool.execute({ path: 'docs/notes.txt' }, api, context), { message: message('error.pi.changed', join(cwd, 'docs', 'notes.txt')) })
+  // The rules file reads through the same environment. Here the project directory itself is swapped.
+  const rulesEnv = swapAfterCheck(cwd, cwd, join(directory, 'outside'))
+  assert.equal(await repositoryRules(cwd, rulesEnv), undefined)
+  // Without a swap, the rules file of the project counts.
+  assert.deepEqual(await repositoryRules(`${cwd}-old`), { name: 'AGENTS.md', text: RULES, truncated: false })
 })
 
 const STEER = 'Also check the license.'

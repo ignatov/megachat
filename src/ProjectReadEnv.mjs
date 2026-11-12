@@ -1,4 +1,4 @@
-import { realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import { sep } from 'node:path'
 import { err, ExecutionError, FileError, ok } from '@earendil-works/pi-durable/env'
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
@@ -44,8 +44,29 @@ export class ProjectReadEnv {
   readTextLines(path, options, context) { return this.checked(path, context, real => this.inner.readTextLines(real, options, context)) }
   readBinaryFile(path, context) { return this.checked(path, context, real => this.inner.readBinaryFile(real, context)) }
   openTextLineReader(path, context) { return this.checked(path, context, real => this.inner.openTextLineReader(real, context)) }
-  openBinaryReader(path, _options, context) {
-    return this.checked(path, context, real => this.inner.openBinaryReader(real, { noFollow: true }, context))
+  /**
+   * The tool `read` reads only through this method. Another process can swap a directory of the path between the check
+   * and the open. So after the open, the path must still have the same real path in the project, and the open file
+   * must be the file at that real path. Else the read is refused.
+   */
+  async openBinaryReader(path, _options, context) {
+    const real = await this.resolve(path, context)
+    if (!real.ok) return real
+    const opened = await this.inner.openBinaryReader(real.value, { noFollow: true }, context)
+    if (!opened.ok || await this.opensInside(path, real.value, opened.value.file, context)) return opened
+    await opened.value.close(context)
+    return err(new FileError('permission_denied', message('error.pi.changed', path), path))
+  }
+
+  /** Tells whether [path] still has the real path [real] in the project, and the open [file] is the file at [real]. */
+  async opensInside(path, real, file, context) {
+    try {
+      const again = await this.resolve(path, context)
+      if (!again.ok || again.value !== real) return false
+      const [open, named] = await Promise.all([file.stat({ bigint: true }), lstat(real, { bigint: true })])
+      return open.dev === named.dev && open.ino === named.ino
+    }
+    catch { return false }
   }
   listDir(path, context) { return this.checked(path, context, real => this.inner.listDir(real, context)) }
   openDirReader(path, context) { return this.checked(path, context, real => this.inner.openDirReader(real, context)) }

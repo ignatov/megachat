@@ -1,10 +1,8 @@
-import { constants } from 'node:fs'
-import { open, realpath } from 'node:fs/promises'
-import { join } from 'node:path'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, defineExtension, GenerationTask, hook } from '@earendil-works/pi-durable'
 import { createReadTool } from '@earendil-works/pi-durable/tools'
 import { message } from './messages.mjs'
-import { isInside, ProjectReadEnv } from './ProjectReadEnv.mjs'
+import { ProjectReadEnv } from './ProjectReadEnv.mjs'
 
 /** The name of the extension that a pi child selects. It is the only extension of a child conversation. */
 export const CHILD_EXTENSION = 'air.megachat.child'
@@ -13,6 +11,7 @@ export const CHILD_TURNS = 20
 /** The repository rules that a pi child gets, at most this count of bytes. */
 export const RULES_LIMIT = 32000
 const RULES_FILES = ['AGENTS.md', 'CLAUDE.md']
+const context = BACKGROUND_CONTEXT
 
 /**
  * Marks a child conversation and names the directory that its environment may read. The daemon writes it in the commit
@@ -46,29 +45,22 @@ export async function childEnvironment(target, context) {
 }
 
 /**
- * The rules of the repository in [cwd] for a pi child: `AGENTS.md`, else `CLAUDE.md`, at most `RULES_LIMIT` bytes. A
- * file whose real path is out of the directory does not count, as for the tool `read`.
+ * The rules of the repository in [cwd] for a pi child: `AGENTS.md`, else `CLAUDE.md`, at most `RULES_LIMIT` bytes. The
+ * read goes through [env], as for the tool `read`. So a file whose real path is out of the directory, a file that is not
+ * a regular file, such as a FIFO, and a path that changes during the open do not count.
  */
-async function repositoryRules(cwd) {
-  const root = await realpath(cwd)
+export async function repositoryRules(cwd, env = new ProjectReadEnv(cwd)) {
   for (const name of RULES_FILES) {
-    let path
-    try { path = await realpath(join(cwd, name)) }
-    catch { continue }
-    if (!isInside(root, path)) continue
-    let file
+    const opened = await env.openBinaryReader(name, undefined, context)
+    if (!opened.ok) continue
     try {
-      // A FIFO must not wait for a writer, and the real path must not end in a symbolic link that came later.
-      file = await open(path, process.platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
-      if (!(await file.stat()).isFile()) continue
-      const buffer = Buffer.alloc(RULES_LIMIT + 1)
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
-      const text = new TextDecoder().decode(buffer.subarray(0, Math.min(bytesRead, RULES_LIMIT))).trim()
+      const bytes = await opened.value.read(0, RULES_LIMIT + 1, context)
+      if (!bytes.ok) continue
+      const text = new TextDecoder().decode(bytes.value.subarray(0, RULES_LIMIT)).trim()
       if (!text) continue
-      return { name, text, truncated: bytesRead > RULES_LIMIT }
+      return { name, text, truncated: bytes.value.length > RULES_LIMIT }
     }
-    catch { continue }
-    finally { await file?.close() }
+    finally { await opened.value.close(context) }
   }
   return undefined
 }
