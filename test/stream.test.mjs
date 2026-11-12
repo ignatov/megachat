@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,7 @@ import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxProvider, fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { AcpBridge } from '../src/AcpBridge.mjs'
+import { CentralConfigurationService } from '../src/CentralConfigurationService.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
@@ -138,6 +140,74 @@ test('the text before a tool call is a stream, and the tool call stays hidden', 
   assert.ok(viewer.chunks().filter(chunk => chunk.text !== before && before.startsWith(chunk.text)).length >= 1, 'the first text arrived in parts')
   assert.deepEqual([...new Set(viewer.updates.map(event => event.update.sessionUpdate))].sort(),
     ['agent_message_chunk', 'session_info_update'])
+})
+
+const SHORT = 'A short reply. It has about one hundred characters, so the model writes it in less than a second.'
+
+/**
+ * A fake Anthropic API with the event order of Claude Opus 5.5 through Central, as a run on 2026-11-12 recorded it. The
+ * thinking block opens at once, and the model thinks for 400 ms. With the display `summarized`, the API then sends the
+ * summary and the text that the model wrote in the meantime in one burst, and the response ends 20 ms later. With the
+ * display `omitted`, the thinking block closes without text, and the text follows as the model writes it.
+ */
+async function fakeAnthropic(t) {
+  const requests = []
+  const server = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    requests.push(body)
+    response.writeHead(200, { 'content-type': 'text/event-stream' })
+    const send = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+    const text = index => ({ index: 1, delta: { type: 'text_delta', text: SHORT.slice(index, index + 4) } })
+    send('message_start', { message: { id: `msg_${requests.length}`, type: 'message', role: 'assistant', model: body.model, content: [],
+      stop_reason: null, usage: { input_tokens: 10, output_tokens: 1 } } })
+    send('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } })
+    await sleep(400)
+    const summarized = body.thinking?.display !== 'omitted'
+    if (summarized) send('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'The user greets me.' } })
+    send('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'c2lnbmF0dXJl' } })
+    send('content_block_stop', { index: 0 })
+    send('content_block_start', { index: 1, content_block: { type: 'text', text: '' } })
+    for (let index = 0; index < SHORT.length; index += 4) {
+      send('content_block_delta', text(index))
+      if (!summarized) await sleep(10)
+    }
+    if (summarized) await sleep(20)
+    send('content_block_stop', { index: 1 })
+    send('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 40 } })
+    send('message_stop', {})
+    response.end()
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)) })
+  return { requests, baseUrl: `http://127.0.0.1:${server.address().port}/wire/test` }
+}
+
+test('a short reply that starts with thinking arrives in parts, because the model sends thinking blocks without text', { timeout: 20000 }, async t => {
+  const anthropic = await fakeAnthropic(t)
+  const configuration = new CentralConfigurationService({ environment: {} })
+  configuration.pi = async () => ({ baseUrl: anthropic.baseUrl, apiKey: 'test-key' })
+  const service = await PiMegachatService.open(new MemoryStorage(), configuration.models(), { provider: 'anthropic', modelId: 'claude-opus-5-5' }, {},
+    { keepAlive: { enabled: false } })
+  const server = new DaemonServer(service)
+  const daemon = new DaemonClient(await server.listen())
+  await service.resume()
+  const cwd = await mkdtemp(join(tmpdir(), 'megachat-stream-'))
+  t.after(async () => { await server.close(); await service.close(); await rm(cwd, { force: true, recursive: true }) })
+  const viewer = await attach(t, daemon, cwd)
+  const reply = viewer.prompt('Hello')
+  await until(() => viewer.chunks().length >= 2, 'no second chunk arrived')
+  assert.deepEqual(await assistantTexts(service), [], 'the chunks arrived before the entry')
+  assert.equal((await reply).stopReason, 'end_turn')
+  assert.deepEqual(messages(viewer.chunks()), [SHORT])
+  assert.match(viewer.chunks()[0].id, /^megachat-reply-\d+-1$/)
+  assert.ok(anthropic.requests.length >= 1)
+  for (const body of anthropic.requests) assert.equal(body.thinking.display, 'omitted')
+  // The thinking block keeps its signature, so the next request can send it back.
+  const thinking = (await service.view()).entries.flatMap(entry => entry.model ?? []).find(model => model.role === 'assistant')
+    .content.find(block => block.type === 'thinking')
+  assert.deepEqual([thinking.thinking, thinking.thinkingSignature], ['', 'c2lnbmF0dXJl'])
 })
 
 test('MEGACHAT_STREAM=0 sends a reply only as its entry', { timeout: 20000 }, async t => {

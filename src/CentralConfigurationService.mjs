@@ -35,6 +35,17 @@ export function agentCommand(value) {
   return { command: parsed.command, args: parsed.args ?? [], env: parsed.env ?? {}, ...(parsed.cwd ? { cwd: parsed.cwd } : {}) }
 }
 
+/**
+ * Asks the model for thinking blocks without text. The chat never shows the thinking. With the display `summarized`,
+ * which pi-ai sends by default, the API sends the text of a reply only after the summary of the thinking. So the first
+ * part of each reply arrives as one chunk, and a short reply arrives whole at its end. The thinking itself and its cost
+ * stay the same. The function wraps the payload hook of Pi Durable, so the hook still sees and changes each request.
+ */
+const omitThinkingText = onPayload => async (params, model) => {
+  const payload = (await onPayload?.(params, model)) ?? params
+  return payload.thinking?.display === undefined ? payload : { ...payload, thinking: { ...payload.thinking, display: 'omitted' } }
+}
+
 export class CentralConfigurationService {
   constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'),
     settings = join(homedir(), '.claude/settings.json'), environment = process.env } = {}) {
@@ -73,12 +84,15 @@ export class CentralConfigurationService {
   models() {
     const models = createModels()
     const provider = anthropicProvider()
+    const omitted = options => ({ ...options, onPayload: omitThinkingText(options?.onPayload) })
     models.setProvider({
       ...provider,
       auth: { apiKey: { name: 'JetBrains Central', resolve: async ({ signal }) => {
         const { baseUrl, apiKey } = await this.pi(signal)
         return { auth: { baseUrl, apiKey }, source: 'JetBrains Central' }
       } } },
+      stream: (model, context, options) => provider.stream(model, context, omitted(options)),
+      streamSimple: (model, context, options) => provider.streamSimple(model, context, omitted(options)),
     })
     return models
   }

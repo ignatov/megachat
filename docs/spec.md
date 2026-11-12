@@ -181,6 +181,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Each connected view must get each text one time.
 - The text before a call of a tool of the main agent must be a stream. The call must stay hidden.
 - The stream must not hold the thinking of the model.
+- Each model request through Central must ask for thinking blocks without text (the display `omitted`). With a summary
+  of the thinking, the API sends the text of a reply only after the summary. Then the first part of a reply arrives as
+  one chunk, and a short reply arrives whole at its end.
 - The daemon must send at most 20 stream events in a second to one client. A partial reply must not send the conversation again.
 - `MEGACHAT_STREAM=0` must stop the stream. Then the chat gets a reply when its entry is written. A daemon restart applies a changed value.
 - The log of the daemon must get one line with the time from the start of a model request to its first text. The line must hold no content of the conversation.
@@ -658,3 +661,21 @@ in the mode `queue` gave the word during the command.
 - Neither adapter gave the steered message in `session/update` on the protocol version 1: no `user_message_chunk`.
 - The check did not try a steer at the end of a turn. The Codex adapter says that a turn can end before Codex reads an
   injected message, and that it then drops the message. The fake agent tests that case.
+
+One manual check of the reply stream ran on 2026-11-12 against Claude Opus 5.5 through Central, with the reasoning level
+`low` and a temporary state directory. It recorded the provider events, the partial reply in `pi.live`, the `stream`
+events of the daemon and the ACP chunks. The fake API in `test/stream.test.mjs` gives the event order of the first item.
+
+- With the display `summarized`, the thinking block opened about 1.5 s after the request, and no event followed while the
+  model thought. Then the summary, the signature and the text that the model wrote in the meantime arrived in one burst:
+  100 to 250 characters, or the whole reply when it was short. A reply of 121 characters arrived 30 ms before the end of
+  its response, so the chat got it as one chunk. With the display `omitted`, the first burst held 3 to 6 characters, and
+  the text after it came as the model wrote it.
+- When the request held a tool result, Claude Opus 5.5 sent the whole text of the reply in the last 10 ms of the
+  response, with each display. Claude Sonnet 5.5 did the same with the display `summarized`. Without a thinking block,
+  the response itself started only at its end. A direct request through pi-ai, without Pi Durable and the daemon, gave the same result, so the cause is not in
+  Megachat. Central streamed the same request for Claude Opus 5, Claude Sonnet 5 and Claude Haiku 5.5, so the cause is
+  probably in the provider. It agrees with the documented change of Claude Opus 5.5 and Claude Sonnet 5.5: their text
+  between tool calls becomes a thinking block, so the API cannot send a text before it knows that no tool call follows.
+  So the reply after a tool call of the main agent arrives as one chunk. Each display, a request without each beta of
+  pi-ai, and a request without the effort messages gave the same result.
