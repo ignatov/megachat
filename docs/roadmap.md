@@ -21,30 +21,27 @@ The later work on Megachat, in the order of the work. Each item gives its reason
      `@openai/codex-darwin-arm64`, so its Codex agent failed. Nobody tested whether a later start of the `npx` entry
      repairs such a copy.
    - `install` does not check that the IDE build has the Air support for Megachat.
-2. **A Stop action on each running job.** Send `canStop: true` and handle `_session/async_task/stop` for one child.
-   Today the user can stop one child only through a message to the main agent.
-   `agents_steer` already sends a request to a child during its turn through the state, so the stop can use that path.
-3. **One layer for Central.** Remove the `bin/pi` shim, the read of `~/.claude/settings.json`, and the `bin/codex` shim.
+2. **One layer for Central.** Remove the `bin/pi` shim, the read of `~/.claude/settings.json`, and the `bin/codex` shim.
    Today three different paths get the Central configuration, and each path can fail in its own way.
-4. **CI, Linux support, and a lock of the installed copy.** Today only one macOS machine runs the tests and makes
+3. **CI, Linux support, and a lock of the installed copy.** Today only one macOS machine runs the tests and makes
    each release, and nobody tested Linux. The installed copy does not use `package-lock.json`, so its indirect
    dependencies can differ from the tested ones. npm also ignores an `npm-shrinkwrap.json` in a package from git: a
    test installed 18 packages of 223 in a later version. So the lock needs another form of the release.
-5. **A choice of the model for a Codex child.** The setting `children.claudeModel` can select the model of a Claude
+4. **A choice of the model for a Codex child.** The setting `children.claudeModel` can select the model of a Claude
    child, and `children.piModel` selects the model of a pi child. Today Megachat does not select the model of a Codex
    child.
-6. **IDE tools for the children.** Today a child cannot use the tools of the IDE, so it cannot use the code insight
+5. **IDE tools for the children.** Today a child cannot use the tools of the IDE, so it cannot use the code insight
    of the project.
-7. **Types: TypeScript, or `tsc --checkJs`.** Today no type check runs, so a wrong field name shows only in a test or
+6. **Types: TypeScript, or `tsc --checkJs`.** Today no type check runs, so a wrong field name shows only in a test or
    at run time.
-8. **A login service, so the daemon starts with the system.** Today no daemon runs after a restart of the computer
+7. **A login service, so the daemon starts with the system.** Today no daemon runs after a restart of the computer
    until an IDE opens Megachat. So the timer of the morning report does not run, and no report comes until then.
-9. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
+8. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
    Air does not know. Today each attach sends one `_session/service/record` for each address, up to 5,000.
-10. **A refusal text of its own for each limit of work in progress.** Today `error.limit` names a time or output
-    limit also for eight child runs of one main task, eight unfinished tasks, and 32 permissions of one run. So the
-    model does not see the real reason.
-11. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
+9. **A refusal text of its own for each limit of work in progress.** Today `error.limit` names a time or output
+   limit also for eight child runs of one main task, eight unfinished tasks, and 32 permissions of one run. So the
+   model does not see the real reason.
+10. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
     hook that makes a permission request in the state, as an ACP child asks for a permission. These tools need a
     sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.
     Also decide whether the pi children move out of the daemon process, to a worker thread or to a second process.
@@ -52,5 +49,5 @@ The later work on Megachat, in the order of the work. Each item gives its reason
     one storage of Pi Durable: its README says that one process owns a storage at a time. A cache lifetime of its own
     for a child request needs a rewrite of the provider request, because Pi Durable reads the stream options of the
     harness without the conversation.
-12. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
+11. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
     `conversation.sqlite` keeps each pi child after the prune drops its runs.

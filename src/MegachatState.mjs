@@ -890,6 +890,27 @@ export class MegachatState {
     })
   }
 
+  /**
+   * Cancels one child run for the Stop action of its row in the chat. The stop needs no turn: the user stops the run
+   * also while no turn runs. The stop goes to the last continuation of the run. The run services then end the run, as
+   * for `agents_cancel`, and its pending permission requests become stale. The run gets no continuation, and its
+   * report gives `cancelled`. Tells whether the stop is accepted: an unknown run and a finished run give `false`.
+   */
+  async stopChild(runId) {
+    return this.change(state => {
+      let run = Object.hasOwn(state.runs, runId) ? state.runs[runId] : null
+      // A report can keep a run while `retain` drops its continuation. So the walk stops at a dropped run.
+      while (run && state.runs[run.resumedBy]) run = state.runs[run.resumedBy]
+      if (!run || terminalStates.has(run.status)) return false
+      run.cancelRequested = true
+      if (run.status === 'admitted') {
+        run.status = 'cancelled'
+        run.finishedAt = Date.now()
+      }
+      return true
+    })
+  }
+
   async closeChild(childSessionId) {
     await this.change(state => {
       requireCondition(state.current?.kind !== 'morning', 'morningReport')

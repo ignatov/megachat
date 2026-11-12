@@ -33,7 +33,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 |---|---|---|---|
 | `_workspaces/list` | Megachat | `{}` | Air returns `directories`: the trusted open project directories. Megachat registers each one in the daemon, and skips a directory that the daemon cannot read. Megachat asks on each attach and every 15 seconds while a view is open. |
 | `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code or Codex, so Megachat sends no record for it. |
-| `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat has no handler today, so it sends `canStop: false`. Air expects `{ "stopped": true }`. The task stays active until its terminal update. `docs/roadmap.md` has the change. |
+| `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat cancels the child run of that row, and no other work. It answers `{ "stopped": true }` when it accepted the stop, and `{ "stopped": false }` for each other case. Then the row ends with its terminal update. See "The Stop of a row" below. |
 
 Megachat sends `_session/service/record` once for each attach, for each address in the `serviceSessions` map of the
 daemon state. The daemon adds an address when a delegated run gets its provider session, and it keeps the address
@@ -101,19 +101,45 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 
 - `asyncTaskId`, `name`, `taskType` and `showInTranscript` are required.
 - Megachat sends one task for each unfinished child run. `name` is the title of the task. `description` gives the
-  agent (`Claude`, `Codex` or `Pi`), the project and the phase. `taskType` is `agent`, `showInTranscript` is `false`, and `canStop` is `false`.
+  agent (`Claude`, `Codex` or `Pi`), the project and the phase. `taskType` is `agent`, `showInTranscript` is `false`, and `canStop` is `true`.
 - The ID is `<run ID>:<phase>`. The phase is `queued`, `resuming`, `approval` or `running`. A change of the phase ends
   the task of the old phase with `completed` and sends a new task.
 - A run that ends gives `completed` when it completed, `stopped` when the user cancelled it, and `failed` otherwise.
 - Megachat also sends a task for a pass of the import of past sessions, with the same updates and fields. This is a
   second use of the updates, and Air needs no change for it. `name` is "Index of past sessions", and `description`
-  gives the count of the imported files and of all the files of the pass. The other fields are as for a child run.
+  gives the count of the imported files and of all the files of the pass. `canStop` is `false`. The other fields are as
+  for a child run.
 - The ID of that task is `sessions:<pass>:<step>`. The step is the tenth of the files that the pass imported. A new
   step ends the task of the old step with `completed` and sends a new task, as a change of the phase does. So the chat
   shows the progress, and one pass gives at most eleven tasks. The end of the pass ends its last task with `completed`.
 - Air treats a task type other than `turn` as ordinary background work. Air accepts a task while no prompt runs.
 - Air drops a second `async_task_spawned` with the ID of an open task. Air fails each open task when a new agent
   process connects. So Megachat forgets its sent tasks on each attach and sends them again.
+
+## The Stop of a row
+
+This is a request that Air of today sends. It is not an extension of Megachat, and it needs no change in Air. The
+guide `plugins/air/docs/guides/acp-async-tasks-guide.md` of Air describes it.
+
+- Air reads `canStop` only in `async_task_spawned`, and only the value `true` gives the task a Stop
+  (`AcpSessionRuntimeFacts.kt`, `mapAsyncTaskSpawned`). The row shows Stop while the task is `running` or `paused`
+  (`AsyncTaskListRow.kt`).
+- A click sends `_session/async_task/stop` with the session ID of the view and the ID of the row
+  (`AcpProtocolSession.kt`, `stopAsyncTask`). Air accepts the stop only for a result with `stopped: true`. A result
+  `false`, and an error answer, restore Stop and show a status message. After an accepted stop, the row shows
+  "Stopping…" until the terminal update of the task arrives. Air does not end the task by itself.
+- Megachat takes the run ID from the ID of the row, `<run ID>:<phase>`, so a stop that comes during a change of the
+  phase stops the same run. The daemon cancels the run through `/child/stop`, as `agents_cancel` cancels it, also while
+  no turn runs. A queued run ends at once. A run that runs gets a cancel of its turn, and its pending permission
+  requests become stale. The run gets no continuation. Then the row ends with `stopped`, and the main agent gets the
+  result `cancelled` in a turn of its own.
+- The answer is `{ "stopped": false }`, and nothing changes, for a run that ended, an unknown run, a row of another
+  kind (the import of past sessions), an unknown session, a client that did not send `asyncTasks`, and a daemon of an
+  earlier build without the route.
+- Air hides the Background Tasks tab while a permission request shows in the composer
+  (`AirFollowUpQueueTabbedPanel.kt`, `setHiddenForSecurityApproval`). So a view that shows the permission request of a
+  child shows no Stop until the request closes. Megachat handles the stop of such a run all the same, for example from
+  another view.
 
 ## The replay
 

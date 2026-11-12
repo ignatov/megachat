@@ -223,6 +223,24 @@ test('agents_cancel stops a pi child, and the main conversation continues', { ti
   assert.equal(state.inputs.hello.status, 'completed')
 })
 
+test('the Stop of the row stops a pi child without a turn of the user, and the report gives cancelled', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Wait.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('It stopped.')],
+    child: [hang],
+  })
+  await service.submit('spawn', 'Work')
+  const run = await waitForState(service.state, state => state.current ? undefined : Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(() => requests.some(request => request.child))
+  assert.equal(await service.state.stopChild(run.id), true)
+  const state = await finished(service)
+  assert.equal(state.runs[run.id].status, 'cancelled')
+  assert.equal(Object.keys(state.runs).length, 1)
+  assert.equal((await reports(service)).at(-1).data.results[0].status, 'cancelled')
+  assert.equal(await service.state.stopChild(run.id), false)
+})
+
 test('the deadline stops a pi child without a continuation, and the main conversation continues', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd } = project
@@ -348,7 +366,7 @@ test('one child runs in a directory at a time: a pi run waits for an ACP run in 
 
 test('the chat lists a pi child as a background task of the agent Pi', () => {
   const run = { id: 'run', status: 'dispatched', agent: 'pi', cwd: '/work/project', prompt: 'Read the README.', title: 'README' }
-  assert.deepEqual([...taskRows({ runs: { run } }).values()], [{ name: 'README', description: message('child.running', 'Pi', 'project') }])
+  assert.deepEqual([...taskRows({ runs: { run } }).values()], [{ name: 'README', description: message('child.running', 'Pi', 'project'), canStop: true }])
   assert.deepEqual([...taskRows({ runs: { run: { ...run, status: 'admitted' } } }).values()][0].description, message('child.queued', 'Pi', 'project'))
 })
 

@@ -337,6 +337,18 @@ message. A task that waits in the queue gets the message in its prompt. The task
 each message before it sends it, so a message survives a restart of the daemon. After a restart, a message that the
 child can have already says that it can be a repeat.
 
+## Stop one task
+
+The Background Tasks tab of the chat lists each unfinished child task. Click Stop on the row of a task to stop that
+task alone. The other tasks and the turn of the main agent go on, and the stop needs no message to the main agent. A
+task that waits in the queue ends before its start. A task that runs gets a cancel of its turn, and its pending
+permission requests end. The task gets no continuation. Then the main agent gets the result `cancelled` in a turn of
+its own. It tells you that the task stopped, and it does not start the task again unless you ask. The row of the import
+of past sessions has no Stop.
+
+Air hides the Background Tasks tab while the chat shows a permission request. Answer the request first, or ask the main
+agent to cancel the task.
+
 ## Pi children: cheap tasks that only read
 
 Say "ask pi to summarize the README of project X" to give a small task to a pi child. A pi child is a conversation of

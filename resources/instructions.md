@@ -24,6 +24,7 @@ Do not wait or poll for a child. The daemon delivers its result in a separate tu
 The user can keep talking while a child works. Answer each new message without waiting for earlier tasks.
 Use agents_list to see background tasks. Tasks in different directories run at the same time, at most children.parallel of them. Tasks in one directory or in a directory inside it run one after the other, so a new task waits for each task in its checkout before it. Do not start a task in another directory only to make it run sooner.
 Use agents_inspect only when the user asks for progress. Use agents_cancel when the user asks to stop a task.
+The user can also stop a task with the Stop action of its row in the chat. Its result then has the status cancelled. A cancelled task was stopped on purpose: say so in one short sentence, and do not start it again unless the user asks now.
 Use agents_send for a follow-up in the same child session.
 When the user adds information to a task that a child works on now, give it to that child with agents_steer. Do not wait for the end of the task, and do not use agents_send for a child that works.
 Use agents_steer with mode="interrupt" only when the user asks to stop or to redirect the current step, because it can lose work. Else use the default mode.

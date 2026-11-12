@@ -23,9 +23,13 @@ function runTitle(state, run) {
   return run.title ?? first.title ?? taskTitle(first.prompt)
 }
 
+/** The phases of a child run in the ID of its row. */
+const phases = ['queued', 'resuming', 'approval', 'running']
+
 /**
  * The background tasks of the chat for [state], by task ID: each unfinished child run, and a pass of the import of the
  * past sessions. Each run has a row with its own phase, so the list shows each of the children that run at the same time.
+ * The row of a child run has the Stop action of Air. The row of the import has none.
  */
 export function taskRows(state) {
   const rows = new Map()
@@ -33,12 +37,19 @@ export function taskRows(state) {
     if (terminalStates.has(run.status)) continue
     const phase = run.status === 'admitted' ? run.resumeOf ? 'resuming' : 'queued' : run.status === 'approval' ? 'approval' : 'running'
     rows.set(`${run.id}:${phase}`, { name: runTitle(state, run), description: message(`child.${phase}`,
-      agentName(run.agent), basename(run.cwd)) })
+      agentName(run.agent), basename(run.cwd)), canStop: true })
   }
   // The import of the past sessions is a task too. Its ID changes at each tenth of the files, as a phase of a run does.
   const imported = state.sessionIndex?.task
-  if (imported) rows.set(imported.id, { name: message('sessions.task'), description: message('sessions.task.progress', imported.done, imported.total) })
+  if (imported) rows.set(imported.id, { name: message('sessions.task'), description: message('sessions.task.progress', imported.done, imported.total), canStop: false })
   return rows
+}
+
+/** The run ID of the row [asyncTaskId] of a child run, or `null` for each other ID. */
+export function rowRunId(asyncTaskId) {
+  if (typeof asyncTaskId !== 'string' || asyncTaskId.length > 300) return null
+  const index = asyncTaskId.lastIndexOf(':')
+  return index > 0 && phases.includes(asyncTaskId.slice(index + 1)) ? asyncTaskId.slice(0, index) : null
 }
 
 /**
@@ -76,6 +87,10 @@ export class AcpBridge {
       .onRequest(methods.agent.session.load, ctx => this.attach(ctx, true))
       .onRequest(methods.agent.session.prompt, ctx => this.view(ctx.params.sessionId).prompt(ctx))
       .onNotification(methods.agent.session.cancel, ctx => this.view(ctx.params.sessionId).cancel())
+      // The Stop action of a row in the chat. Air shows it only for a row with `canStop: true`, and it accepts the stop
+      // only for the answer `stopped: true`. The row then ends with its terminal update.
+      .onRequest('_session/async_task/stop', params => params, ctx => this.views.get(ctx.params?.sessionId)?.stopTask(ctx.params.asyncTaskId)
+        ?? { stopped: false })
       .onRequest(methods.agent.session.close, async ctx => {
         this.view(ctx.params.sessionId).close()
         this.views.delete(ctx.params.sessionId)
@@ -153,6 +168,22 @@ class AcpBridgeSession {
     else if (this.shownSuggestion) {
       await this.daemon.json('/prompt-suggestion/withdraw', { id: this.shownSuggestion.id })
         .catch(error => { if (!(error instanceof MegachatError)) throw error })
+    }
+  }
+
+  /**
+   * Stops the child run of the row [asyncTaskId], and no other work: not the turn, and not another child. The daemon
+   * refuses an unknown run and a finished run. A row of another kind, such as the row of the import, has no stop. A
+   * daemon of an earlier build has no route for the stop, so it refuses the stop too. A client without `asyncTasks`
+   * got no row, so its stop is refused.
+   */
+  async stopTask(asyncTaskId) {
+    const runId = this.nativeTurns ? rowRunId(asyncTaskId) : null
+    if (!runId) return { stopped: false }
+    try { return { stopped: (await this.daemon.json('/child/stop', { runId })).stopped === true } }
+    catch (error) {
+      if (error instanceof MegachatError) return { stopped: false }
+      throw error
     }
   }
 
@@ -401,7 +432,7 @@ class AcpBridgeSession {
       if (this.childTasks.has(id)) continue
       this.childTasks.set(id, id.slice(0, id.lastIndexOf(':')))
       await this.notify({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, ...row,
-        taskType: 'agent', canStop: false, showInTranscript: false })
+        taskType: 'agent', showInTranscript: false })
     }
   }
 

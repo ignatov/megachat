@@ -414,7 +414,7 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   assert.deepEqual(tasks[0], { id: tasks[0].id, done: 0, total: 2 })
   assert.match(tasks[0].id, /^sessions:[a-z0-9-]+:0$/)
   const rows = taskRows({ runs: {}, sessionIndex: { task: tasks[0] } })
-  assert.deepEqual([...rows.values()], [{ name: message('sessions.task'), description: message('sessions.task.progress', 0, 2) }])
+  assert.deepEqual([...rows.values()], [{ name: message('sessions.task'), description: message('sessions.task.progress', 0, 2), canStop: false }])
   const settled = await waitForState(main.state, value => {
     const events = Object.keys(value.inputs).filter(id => id.startsWith('sessions:'))
     return events.length && !value.current ? { value, events } : undefined

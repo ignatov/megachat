@@ -206,6 +206,19 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The list must show no run IDs or prompts. A finished task must leave the list.
 - Permission requests must appear in the main conversation. The title of a request must name the agent and the task, because several children can ask at the same time.
 - Reconnection must restore the conversation without child lifecycle rows.
+  [@test] ../test/integration.test.mjs
+  [@test] ../test/parallel.test.mjs
+- Each row of a child run must have the Stop action of Air (`canStop: true`), in each phase: queued, resuming, waiting
+  for permission and running. The row of the import of past sessions must have none.
+- A Stop of a row must cancel only the child run of that row, as `agents_cancel` does, also while no turn runs. The
+  other children and the turn must go on. A queued run must end before its start. A run that waits for a permission
+  must end, and its pending permission requests must become stale. The run must get no continuation. The row must end
+  with `stopped`, and the main agent must get the result `cancelled` in a turn of the result.
+- The answer to an accepted Stop must be `stopped: true`. A Stop of a run that ended, of an unknown run, of a row of
+  another kind, of an unknown session, and of a client without `asyncTasks` must give `stopped: false` and change
+  nothing.
+  [@test] ../test/integration.test.mjs
+  [@test] ../test/pi-child.test.mjs
 - A completed main reply must arrive before the prompt response.
 - History replay must include the earlier user messages.
 - A prompt may hold the blocks `text` and `resource_link`, as ACP requires of each agent. The main agent must get each

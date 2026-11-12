@@ -130,6 +130,12 @@ export class DaemonServer {
         send({ cancelled: await this.service.cancel(body.mainRunId) })
         return
       }
+      case '/child/stop': {
+        // The Stop action of a row in the chat. It needs no turn, so it does not use `/cancel`.
+        requireCondition(typeof body.runId === 'string' && body.runId.length <= 200)
+        send({ stopped: await this.service.state.stopChild(body.runId) })
+        return
+      }
       case '/compact': {
         // A summary of a large conversation takes minutes, so the response stays open as `/wait` does.
         response.setHeader('content-type', 'application/json')

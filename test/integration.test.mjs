@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -278,7 +279,7 @@ test('the chat lists running children instead of coordinator tool calls', { time
   await finishChildren(service)
   const spawned = rows().filter(update => update.sessionUpdate === 'async_task_spawned')
   assert.ok(spawned.length >= 2)
-  assert.ok(spawned.every(update => update.name === 'Fix the icon' && update.taskType === 'agent' && !update.canStop
+  assert.ok(spawned.every(update => update.name === 'Fix the icon' && update.taskType === 'agent' && update.canStop === true
     && update.description.startsWith(`Claude · ${project}`) && !update.description.includes('approval\n')))
   assert.ok(spawned.some(update => update.description === `Claude · ${project}`))
   const closed = new Set(rows().filter(update => update.sessionUpdate === 'async_task_state_update').map(update => update.asyncTaskId))
@@ -1262,4 +1263,128 @@ test('a turn of a child result or of the sessions summary cannot steer, and a fo
   }))
   t.after(() => history.close())
   assert.deepEqual((await history.listTools()).tools.map(item => item.name), ['history', 'sessions', 'session_history'])
+})
+
+/** The rows of the chat that [viewer] got, by the kind of the update. */
+const spawnedRows = viewer => viewer.updates.map(event => event.update).filter(update => update.sessionUpdate === 'async_task_spawned')
+const stopTask = (viewer, asyncTaskId, sessionId = viewer.sessionId) =>
+  viewer.connection.agent.request('_session/async_task/stop', { sessionId, asyncTaskId })
+
+/** Waits until the view got a row for each run of [runIds] in [phase], and gives the rows in that order. */
+async function rowsOf(viewer, runIds, phase) {
+  for (;;) {
+    const rows = runIds.map(id => spawnedRows(viewer).find(update => update.asyncTaskId === `${id}:${phase}`))
+    if (rows.every(Boolean)) return rows
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+test('the Stop of a row stops one of two parallel children, and the main agent gets the result cancelled', { timeout: 15000 }, async t => {
+  const { daemon, cwd, fake, service } = await fixture(t, 'wait')
+  const other = await realpath(await mkdtemp(join(tmpdir(), 'megachat-integration-')))
+  t.after(() => rm(other, { force: true, recursive: true }))
+  await service.state.addWorkspace(other)
+  const reports = []
+  const report = context => { reports.push(JSON.stringify(context.messages.at(-1))); return fauxAssistantMessage('Reported.') }
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'wait', title: 'First' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd: other, prompt: 'wait', title: 'Second' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    report, report,
+  ])
+  const viewer = await attach(daemon, cwd, { native: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
+  const runs = await waitForState(service.state, state => {
+    const values = Object.values(state.runs)
+    return values.length === 2 && values.every(run => run.status === 'dispatched') ? values : undefined
+  })
+  const [first, second] = ['First', 'Second'].map(title => runs.find(run => run.title === title))
+  const [firstRow, secondRow] = await rowsOf(viewer, [first.id, second.id], 'running')
+  assert.equal(firstRow.canStop, true)
+  assert.equal(secondRow.canStop, true)
+  const ended = viewer.connection.nextUpdate(event => event.update.asyncTaskId === firstRow.asyncTaskId && event.update.sessionUpdate === 'async_task_state_update')
+  assert.deepEqual(await stopTask(viewer, firstRow.asyncTaskId), { stopped: true })
+  assert.deepEqual((await ended).update, { sessionUpdate: 'async_task_state_update', asyncTaskId: firstRow.asyncTaskId, state: 'stopped' })
+  // The other child and the conversation go on. The main agent gets the result `cancelled`, and it starts no new task.
+  const reported = await waitForState(service.state, state => !state.current && state.runs[first.id].reported ? state : undefined)
+  assert.equal(reported.runs[first.id].status, 'cancelled')
+  assert.equal(reported.runs[second.id].status, 'dispatched')
+  assert.equal(reports.length, 1)
+  assert.match(reports[0], /\\"status\\":\\"cancelled\\"/)
+  assert.equal(Object.keys(reported.runs).length, 2)
+  // A stop of an ended run, of an unknown ID, of the row of the import, and of an unknown session changes nothing.
+  assert.deepEqual(await stopTask(viewer, firstRow.asyncTaskId), { stopped: false })
+  assert.deepEqual(await stopTask(viewer, `${randomUUID()}:running`), { stopped: false })
+  assert.deepEqual(await stopTask(viewer, 'sessions:pass:1'), { stopped: false })
+  assert.deepEqual(await stopTask(viewer, 42), { stopped: false })
+  assert.deepEqual(await stopTask(viewer, secondRow.asyncTaskId, 'megachat-00000000-0000-0000-0000-000000000000'), { stopped: false })
+  assert.equal((await service.state.snapshot()).runs[second.id].status, 'dispatched')
+  assert.deepEqual(await stopTask(viewer, secondRow.asyncTaskId), { stopped: true })
+  const state = await finishChildren(service)
+  assert.deepEqual([state.runs[first.id].status, state.runs[second.id].status], ['cancelled', 'cancelled'])
+  assert.equal(Object.keys(state.runs).length, 2)
+})
+
+test('the Stop of a row that waits for a permission cancels the run and its permission request', { timeout: 15000 }, async t => {
+  const { daemon, cwd, fake, service } = await fixture(t, 'approval')
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'approval' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    fauxAssistantMessage('Reported.'),
+  ])
+  const viewer = await attach(daemon, cwd, { native: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
+  const permission = await waitForState(service.state, state => Object.values(state.permissions).find(p => p.status === 'pending'))
+  const [row] = await rowsOf(viewer, [permission.runId], 'approval')
+  assert.equal(row.canStop, true)
+  const ended = viewer.connection.nextUpdate(event => event.update.asyncTaskId === row.asyncTaskId && event.update.sessionUpdate === 'async_task_state_update')
+  assert.deepEqual(await stopTask(viewer, row.asyncTaskId), { stopped: true })
+  assert.equal((await ended).update.state, 'stopped')
+  const state = await finishChildren(service)
+  assert.equal(state.runs[permission.runId].status, 'cancelled')
+  assert.equal(state.permissions[permission.id].status, 'stale')
+  await assert.rejects(daemon.json('/permission', { id: permission.id, decision: 'yes' }), { code: 'stale' })
+})
+
+test('the Stop of a queued row cancels that run before its start, and the run before it goes on', { timeout: 15000 }, async t => {
+  const { daemon, cwd, fake, service } = await fixture(t, 'wait')
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'wait', title: 'First' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'second', title: 'Second' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    fauxAssistantMessage('Reported.'), fauxAssistantMessage('Reported.'),
+  ])
+  const viewer = await attach(daemon, cwd, { native: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
+  const runs = Object.values(await waitForState(service.state, state => Object.values(state.runs).some(run => run.status === 'dispatched') ? state.runs : undefined))
+  const [first, second] = ['First', 'Second'].map(title => runs.find(run => run.title === title))
+  assert.equal(second.status, 'admitted')
+  const [queued] = await rowsOf(viewer, [second.id], 'queued')
+  assert.equal(queued.canStop, true)
+  assert.deepEqual(await stopTask(viewer, queued.asyncTaskId), { stopped: true })
+  assert.equal((await service.state.snapshot()).runs[second.id].status, 'cancelled')
+  assert.equal((await service.state.snapshot()).runs[first.id].status, 'dispatched')
+  const [running] = await rowsOf(viewer, [first.id], 'running')
+  assert.deepEqual(await stopTask(viewer, running.asyncTaskId), { stopped: true })
+  await finishChildren(service)
+  assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), 'wait\n')
+})
+
+test('a client without asyncTasks gets no row and no stop', { timeout: 15000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t, 'wait')
+  const updates = []
+  const connection = rawClient(new AcpBridge(daemon), updates, false, [], [])
+  t.after(() => connection.close())
+  await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} })
+  const { sessionId } = await connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [] })
+  await service.submit('work', 'Work')
+  const run = await waitForState(service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  assert.deepEqual(await connection.agent.request('_session/async_task/stop', { sessionId, asyncTaskId: `${run.id}:running` }), { stopped: false })
+  assert.equal((await service.state.snapshot()).runs[run.id].status, 'dispatched')
+  assert.ok(!updates.some(event => event.update.sessionUpdate?.startsWith('async_task')))
+  await service.state.stopChild(run.id)
+  await finishChildren(service)
 })
