@@ -446,7 +446,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Each row must get its session log only by a certain link: the session ID of a Megachat run; an open log of the process
   (Codex keeps its log open, one row for each open log of a `codex app-server`; an open `.jsonl` file of another
   agent must give no link); the process file
-  `~/.claude/sessions/<PID>.json` of Claude Code with the PID and the same start time; else the only log of the agent
+  `~/.claude/sessions/<PID>.json` of Claude Code with the PID and the same start time, a regular file of at most 16 KB
+  and not a symbolic link; else the only log of the agent
   in the `cwd` that began in the first 30 seconds of the process, when no other row of the agent in that directory
   could have begun it, and when no other log of the agent there, that no other row could have begun, has a later
   write. Thus a process that moves to another log with `/new` or `/resume` must not keep the title of its first log.
@@ -454,7 +455,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   log, so no row shows the title of another session. A row without a certain log must have an empty `title`, a null
   `status` and `lastActivityAt`, and one entry in `incomplete` must give the count of such rows.
 - The log must give `sessionId`, `title` (a title of the user or of the agent, never a message text), `lastActivityAt`
-  (the time of the last write) and `status`. The status is a reading of the log tail, not a fact from the agent:
+  (the time of the last write) and `status`. The status is a reading of the log tail, not a fact from the agent, except
+  `waiting_for_permission`:
   - `working`: the tail ends with a tool call, a tool result or a message without a reply, and the last write is less
     than 10 minutes old. Without a write and a CPU load for 2 to 10 minutes, the status stays `working`.
   - `stuck`: such an open step and no write for 10 minutes or more.
@@ -462,9 +464,20 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
     command of Claude Code (such as `/model`), a shell line of its bash mode (`!`), a note of its memory mode (`#`)
     and the output of each one start no turn.
   - `idle`: a finished turn and no write for 30 minutes or more.
-  - `waiting_for_permission` must not be given: Claude Code, Codex and pi write no record of a permission request to
-    the log. Without the state request of Air it is not knowable. A pending permission prompt shows as `working`, then
-    as `stuck`.
+  - `waiting_for_permission`: the process file `~/.claude/sessions/<PID>.json` of a Claude Code session says that the
+    session waits for a permission: the field `status` is `waiting`, and the field `waitingFor` is `permission prompt`,
+    `sandbox request`, `worker request` or `goal proposal`. Claude Code puts these four values in the group
+    `permission` of its own status line. `input needed` (a question) and `dialog open` are no permission request and
+    must give the status of the log. This status must replace `working`, `stuck`, `waiting_for_user` and `idle`, so a
+    session that waits for a permission does not become `stuck` because its log is silent.
+  - The process file is a hint of another program. Its status must count only when the file gives the link of the row,
+    so a file with another PID, another start time, a symbolic link, a file above 16 KB and a file that is not valid
+    JSON give no status. Its field `statusUpdatedAt` must be a number and must not be more than 1 minute in the
+    future. The log must have no write more than 10 seconds after `statusUpdatedAt`. A CPU load of the process at the
+    scan must cancel a wait that started 2 minutes ago or more, because a process that waits uses no CPU. Else the row
+    must get the status of its log, and a file that Megachat cannot read must give no error.
+  - Codex and pi write no record of a permission request, and no other file of them tells it. A pending permission
+    prompt of a Codex session shows as `working`, then as `stuck`. pi has no permissions.
 - A session in a detached `tmux` keeps its multiplexer owner and gets its status from its log as each other session.
 - `incomplete` must name the first pass of the table while it reads the files of the last 24 hours, the count of the
   rows without a certain log, and the count of the logs that Megachat could not read.

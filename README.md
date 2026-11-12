@@ -366,15 +366,20 @@ title, the time of the last write to its log, and a status:
 - `stuck`: such an open step, and no write for 10 minutes or more.
 - `waiting_for_user`: the log ends with a finished turn.
 - `idle`: a finished turn, and no write for 30 minutes or more.
+- `waiting_for_permission`: Claude Code says in `~/.claude/sessions/<PID>.json` that the session waits for a
+  permission of the user, such as a prompt for a tool call or a network request of the sandbox.
 
-The status is a reading of the log, not a fact from the agent. Claude Code, Codex and pi write no record of a
-permission prompt to their logs. So a session that waits for a permission shows as `working`, and after 10 minutes as
-`stuck`. Megachat links a process to its log only when the link is certain: Codex keeps its log open, Claude Code
-writes `~/.claude/sessions/<PID>.json`, and for pi the log must begin in the first 30 seconds of the process. A session
-without a certain link has no title and no status, and the answer says so. A `codex app-server` gives one row for each
-open session. Then ask "what is session X doing?": the main agent reads the last messages of the session from the end
-of its log, also for a log of hundreds of MB. Without the consent, Megachat reads no session log, and the answer says
-so.
+The other statuses are a reading of the log, not a fact from the agent. Claude Code, Codex and pi write no record of a
+permission prompt to their logs. Megachat takes `waiting_for_permission` only from the process file of Claude Code,
+and only when the file has the PID and the start time of the process, the log has no later write, and the process has
+no CPU load after the first 2 minutes of the wait. A question of the agent is no permission request. Codex writes no
+file that tells a permission prompt, so a Codex session that waits for a permission shows as `working`, and after 10
+minutes as `stuck`. Megachat links a process to its log only when the link is certain: Codex keeps its log open,
+Claude Code writes `~/.claude/sessions/<PID>.json`, and for pi the log must begin in the first 30 seconds of the
+process. A session without a certain link has no title and no status, and the answer says so. A `codex app-server`
+gives one row for each open session. Then ask "what is session X doing?": the main agent reads the last messages of
+the session from the end of its log, also for a log of hundreds of MB. Without the consent, Megachat reads no session
+log, and the answer says so.
 
 ## Stop an orphan session
 

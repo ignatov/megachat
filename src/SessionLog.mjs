@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { constants } from 'node:fs'
 import { sep } from 'node:path'
 import { SOURCE_TEXT_LIMIT } from './SessionText.mjs'
 
@@ -72,10 +73,22 @@ export function parseLine(source, line, path) {
   return { value, parsed: source.parse(value, line, path) }
 }
 
-/** The text of a small file, at most [limit] bytes. A larger file gives an error. The file opens read-only. */
+/**
+ * The flags of the open of a small file of another program: read-only, no open through a symbolic link, and no wait
+ * for a writer when the path is a FIFO.
+ */
+export const SMALL_FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+
+/**
+ * The text of a small regular file, at most [limit] bytes. A larger file, a symbolic link and a path that is not a
+ * regular file give an error. The file opens read-only.
+ */
 export async function readSmall(fs, path, limit = 64 * 1024) {
-  const handle = await fs.open(path, 'r')
+  const handle = await fs.open(path, SMALL_FILE_FLAGS)
   try {
+    const stat = await handle.stat()
+    if (!stat.isFile()) throw new Error('type')
+    if (stat.size > limit) throw new Error('large')
     const buffer = Buffer.alloc(limit + 1)
     let length = 0
     for (;;) {

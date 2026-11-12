@@ -27,6 +27,19 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
  * no field `procStart`. On the Mac of the author, 26 of 27 files had at most 6 seconds.
  */
 const START_SLACK_MS = 10000
+/**
+ * The largest process file that Megachat reads. Claude Code writes some scalar fields: on the Mac of the author, each
+ * of 22 files had less than 1 KB. Claude Code itself reads at most 256 KB.
+ */
+export const PROCESS_FILE_LIMIT = 16 * 1024
+/**
+ * The values of the field `waitingFor` of a process file with the status `waiting` that mean a permission request to
+ * the user. Claude Code 2.1.311 to 2.1.322 put these four values in the group `permission` of its own status line:
+ * a prompt for a tool call or for a plan, a network request of the sandbox, a request of a teammate, and a proposal of
+ * a session goal. The other values, `input needed` (a question) and `dialog open` (a dialog of the user), are no
+ * permission request.
+ */
+export const PERMISSION_WAITS = new Set(['permission prompt', 'sandbox request', 'worker request', 'goal proposal'])
 
 /** The time of the text that `ps -o lstart` gives in UTC, such as `Wed Nov 11 18:22:25 2026`, or undefined. */
 function utcStart(text) {
@@ -92,20 +105,25 @@ export class ClaudeSessionSource {
   pathOf(cwd, sessionId) { return join(this.root, encode(cwd).full, `${sessionId}.jsonl`) }
 
   /**
-   * The session of a running process from its process file, as `{ sessionId, cwd }`, or undefined. The file must name
-   * the PID, and its start time must be the start time of the process: else the PID is of another process. The field
-   * `procStart` has the form of `ps -o lstart` in UTC, so it gives the start time to the second.
+   * The session of a running process from its process file, as `{ sessionId, cwd, permissionSince }`, or undefined.
+   * The file must name the PID, and its start time must be the start time of the process: else the PID is of another
+   * process. The field `procStart` has the form of `ps -o lstart` in UTC, so it gives the start time to the second.
+   * The file must be a regular file of at most 16 KB in the directory: a symbolic link, a larger file and a file that
+   * is not valid JSON give undefined. `permissionSince` is the time of the field `statusUpdatedAt` when the process
+   * says that it waits for a permission of the user.
    */
   async processSession(pid, startedAt, fs) {
     let value
-    try { value = JSON.parse(await readSmall(fs, join(this.processes, `${pid}.json`))) }
+    try { value = JSON.parse(await readSmall(fs, join(this.processes, `${pid}.json`), PROCESS_FILE_LIMIT)) }
     catch { return undefined }
     if (!value || value.pid !== pid || typeof value.sessionId !== 'string' || !value.sessionId) return undefined
     const start = utcStart(value.procStart)
     const same = start !== undefined ? Math.abs(start - startedAt) < 1000
       : typeof value.startedAt === 'number' && Math.abs(value.startedAt - startedAt) <= START_SLACK_MS
     if (!same) return undefined
-    return { sessionId: value.sessionId, ...(typeof value.cwd === 'string' ? { cwd: value.cwd } : {}) }
+    const permission = value.status === 'waiting' && PERMISSION_WAITS.has(value.waitingFor) && Number.isFinite(value.statusUpdatedAt)
+    return { sessionId: value.sessionId, ...(typeof value.cwd === 'string' ? { cwd: value.cwd } : {}),
+      ...(permission ? { permissionSince: value.statusUpdatedAt } : {}) }
   }
 
   async files(directories, fs) {

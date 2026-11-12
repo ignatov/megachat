@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { constants } from 'node:fs'
 import * as fsp from 'node:fs/promises'
-import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, utimes, writeFile, appendFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, symlink, utimes, writeFile, appendFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
@@ -13,6 +14,7 @@ import { RunningAgents, SNAPSHOT_TTL_MS } from '../src/RunningAgents.mjs'
 import { SessionCatalog, TAIL_BYTES } from '../src/SessionCatalog.mjs'
 import { SessionHistoryService } from '../src/SessionHistoryService.mjs'
 import { SessionIndex } from '../src/SessionIndex.mjs'
+import { SMALL_FILE_FLAGS } from '../src/SessionLog.mjs'
 import { newestPage, PAGE_SCAN_BYTES } from '../src/SessionTail.mjs'
 import { sessionSources } from '../src/SessionSources.mjs'
 import { IDLE_MS, sessionStatus, STUCK_MS } from '../src/SessionStatus.mjs'
@@ -161,7 +163,7 @@ const fakeState = () => ({ snapshot: async () => ({ runs: {} }) })
 const running = (catalog, table, clock = fakeClock()) => new RunningAgents(fakeState(), { table, clock, daemonPid: 900, logs: () => catalog })
 const byPid = answer => Object.fromEntries(answer.sessions.map(row => [`${row.pid}${row.sessionId ? `:${row.sessionId}` : ''}`, row]))
 
-test('the status of each agent comes from the tail of its log, and no agent gets waiting_for_permission', async t => {
+test('the status of each agent comes from the tail of its log, and the log alone gives no waiting_for_permission', async t => {
   const home = await temporary(t)
   const cases = [
     [claudeLog, 'c-call', [claude.prompt(), claude.call()], MINUTE, 'working'],
@@ -466,7 +468,10 @@ test('Megachat writes to no provider file: each file keeps its size and mtime, a
   assert.deepEqual(after, before)
   const opens = fs.calls.filter(([name]) => name === 'open')
   assert.ok(opens.length >= 4)
-  assert.ok(opens.every(([, , flags]) => flags === 'r'), 'Each provider file opens read-only')
+  assert.ok(opens.every(([, path, flags]) => flags === (path === pidFile ? SMALL_FILE_FLAGS : 'r')), 'Each provider file opens read-only')
+  // The process file opens read-only, and not through a symbolic link.
+  assert.deepEqual([SMALL_FILE_FLAGS & (constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND), SMALL_FILE_FLAGS & constants.O_NOFOLLOW],
+    [0, constants.O_NOFOLLOW])
   assert.ok(opens.some(([, path]) => path === pidFile))
 })
 
@@ -527,6 +532,75 @@ test('a process file of Claude Code maps a process to its log, and a file of a r
   // The session of a new process has no log before its first message: the ID is certain, and the log is not there yet.
   assert.deepEqual([rows[12].sessionId, rows[12].title, rows[12].status, rows[12].lastActivityAt], ['claude-three', '', null, null])
   assert.deepEqual(answer.incomplete, [message('running.incomplete.unlinked', 2)])
+})
+
+test('the process file of Claude Code gives waiting_for_permission only for its own process, and a stale, broken, large or linked file gives the status of the log', async t => {
+  const home = await temporary(t)
+  const processes = join(home, '.claude', 'sessions')
+  await mkdir(processes, { recursive: true })
+  const started = pid => NOW - 2 * HOUR + pid * 1000
+  // Each log began 1 second after the start of its process, so a row without a process file links to it too.
+  const log = (pid, age, records = [claude.prompt(), claude.call()]) =>
+    claudeLog(home, `/work/${pid}`, `s${pid}`, records, { start: started(pid) + 1000, mtime: NOW - age })
+  const fields = (pid, since, extra = {}) => ({ pid, sessionId: `s${pid}`, cwd: `/work/${pid}`, procStart: lstart(started(pid)), kind: 'interactive',
+    status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: since, updatedAt: since, ...extra })
+  const processFile = (pid, since, extra) => writeFile(join(processes, `${pid}.json`), JSON.stringify(fields(pid, since, extra)))
+  const QUIET = 20 * MINUTE
+  // 10: a wait for a permission for 20 minutes. Without the process file, the silent log gives stuck.
+  await log(10, QUIET)
+  await processFile(10, NOW - QUIET)
+  // 11 and 12: the other kinds of a permission request; 13: a CPU load just after the start of the wait.
+  await log(11, MINUTE)
+  await processFile(11, NOW - MINUTE, { waitingFor: 'sandbox request' })
+  await log(12, MINUTE, [claude.prompt(), claude.reply(), claude.end()])
+  await processFile(12, NOW - MINUTE + 5000, { waitingFor: 'worker request' })
+  await log(13, 30000)
+  await processFile(13, NOW - 30000)
+  // 20 and 21: a question and a busy session are no permission request.
+  await log(20, QUIET)
+  await processFile(20, NOW - QUIET, { waitingFor: 'input needed' })
+  await log(21, MINUTE)
+  await processFile(21, NOW - MINUTE, { status: 'busy', waitingFor: undefined })
+  // 30: the file names another PID; 31: the process with this PID started at another time.
+  await log(30, QUIET)
+  await processFile(30, NOW - QUIET, { pid: 99 })
+  await log(31, QUIET)
+  await processFile(31, NOW - QUIET, { procStart: lstart(started(31) - HOUR) })
+  // 32: the log got a write after the start of the wait; 33: a CPU load 5 minutes after the start of the wait.
+  await log(32, MINUTE)
+  await processFile(32, NOW - 3 * MINUTE)
+  await log(33, 5 * MINUTE)
+  await processFile(33, NOW - 5 * MINUTE)
+  // 34: a time in the future.
+  await log(34, MINUTE)
+  await processFile(34, NOW + HOUR)
+  // 40: no valid JSON; 41: a file above 16 KB; 42: a symbolic link to a file out of the directory; 43: a directory.
+  await log(40, QUIET)
+  await writeFile(join(processes, '40.json'), JSON.stringify(fields(40, NOW - QUIET)).slice(0, -1))
+  await log(41, QUIET)
+  await processFile(41, NOW - QUIET, { pad: 'p'.repeat(20 * 1024) })
+  await log(42, QUIET)
+  await writeFile(join(home, 'outside.json'), JSON.stringify(fields(42, NOW - QUIET)))
+  await symlink(join(home, 'outside.json'), join(processes, '42.json'))
+  await log(43, QUIET)
+  await mkdir(join(processes, '43.json'))
+  // 50: no process file.
+  await log(50, QUIET)
+  const { catalog } = await catalogOf(t, home)
+  const pids = [10, 11, 12, 13, 20, 21, 30, 31, 32, 33, 34, 40, 41, 42, 43, 50]
+  const busy = new Set([13, 33])
+  const table = fakeTable(pids.map(pid => proc(pid, 2, 'claude', { cpu: busy.has(pid) ? 40 : 0 })), Object.fromEntries(pids.map(pid => [pid, { cwd: `/work/${pid}` }])))
+  const answer = await running(catalog, table).query({ limit: 50 })
+  const rows = Object.fromEntries(answer.sessions.map(row => [row.pid, row.status]))
+  assert.deepEqual(rows, {
+    10: 'waiting_for_permission', 11: 'waiting_for_permission', 12: 'waiting_for_permission', 13: 'waiting_for_permission',
+    20: 'stuck', 21: 'working', 30: 'stuck', 31: 'stuck', 32: 'working', 33: 'working', 34: 'working',
+    40: 'stuck', 41: 'stuck', 42: 'stuck', 43: 'stuck', 50: 'stuck',
+  })
+  // The wait ends: Claude Code writes the status busy, and the log gets the result of the tool.
+  await processFile(10, NOW, { status: 'busy', waitingFor: undefined })
+  const clock = fakeClock(NOW + SNAPSHOT_TTL_MS)
+  assert.equal(byPid(await running(catalog, table, clock).query({ limit: 50 }))['10:s10'].status, 'stuck')
 })
 
 test('an open .jsonl file of a Claude Code process does not replace its process file, also when it was a log of its session', async t => {
@@ -633,7 +707,9 @@ test('with the consent off, agents_running reads no file and names the logs in i
   const path = await claudeLog(home, '/work/app', 'claude-one', [claude.title(), claude.prompt(), claude.call()], { mtime: Date.now() })
   await mkdir(join(home, '.claude', 'sessions'), { recursive: true })
   const startedAt = NOW - HOUR
-  await writeFile(join(home, '.claude', 'sessions', '10.json'), JSON.stringify({ pid: 10, sessionId: 'claude-one', cwd: '/work/app', procStart: lstart(startedAt) }))
+  // The process file says that the session waits for a permission. Without the consent, Megachat does not read it.
+  await writeFile(join(home, '.claude', 'sessions', '10.json'), JSON.stringify({ pid: 10, sessionId: 'claude-one', cwd: '/work/app', procStart: lstart(startedAt),
+    status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: Date.now() }))
   const fs = countingFs()
   const fake = fauxProvider()
   fake.setResponses(Array(20).fill(fauxAssistantMessage('Summary told.')))
@@ -661,7 +737,7 @@ test('with the consent off, agents_running reads no file and names the logs in i
   await main.sessionIndex.idle()
   const on = await tool('running', {})
   const row = on.sessions[0]
-  assert.deepEqual([row.sessionId, row.title, row.status, row.state], ['claude-one', 'Fix the build', 'working', 'active'])
+  assert.deepEqual([row.sessionId, row.title, row.status, row.state], ['claude-one', 'Fix the build', 'waiting_for_permission', 'active'])
   assert.equal(row.lastActivityAt, iso(Math.floor((await stat(path)).mtimeMs)))
   assert.deepEqual(on.incomplete, [])
   assert.deepEqual(Object.keys(row), ['agent', 'sessionId', 'title', 'cwd', 'state', 'status', 'startedAt', 'lastActivityAt', 'pid', 'parent'])

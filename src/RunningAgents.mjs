@@ -5,7 +5,7 @@ import { AGENTS, agentSessions } from './AgentProcesses.mjs'
 import { logFailure, message, requireCondition } from './messages.mjs'
 import { processTable } from './ProcessTable.mjs'
 import { linkLogs } from './SessionLinks.mjs'
-import { ACTIVE_MS, OPEN_STEPS, sessionStatus } from './SessionStatus.mjs'
+import { ACTIVE_MS, OPEN_STEPS, sessionStatus, waitsForPermission } from './SessionStatus.mjs'
 
 /** Some calls in one turn share one view, so they make one `ps` call. `scannedAt` gives the age of the view. */
 export const SNAPSHOT_TTL_MS = 5000
@@ -175,7 +175,8 @@ export class RunningAgents {
 
   /**
    * One row of the view. `active`: the CPU load of the process now or in the last 2 minutes, or a log write in the last
-   * 2 minutes. The CPU load of a process with several sessions counts only for its sessions with an open step.
+   * 2 minutes. The CPU load of a process with several sessions counts only for its sessions with an open step. The
+   * status is `waiting_for_permission` when the process file of the agent says so and the log and the CPU load agree.
    */
   #row(row, { record, sessionId }, now, { slot = 0, shared = false } = {}) {
     const known = record?.read ? record : undefined
@@ -186,7 +187,8 @@ export class RunningAgents {
     return {
       pid: row.pid, slot, agent: row.agent, startedAt: row.startedAt, parent: row.parent, cwd: row.cwd,
       sessionId: sessionId ?? '', title: row.run?.title || known?.title || '',
-      status: known ? sessionStatus(known, now) : null, lastActivityAt,
+      status: !known ? null : waitsForPermission(row.process, sessionId, known, row.cpu >= ACTIVE_CPU_PERCENT, now)
+        ? 'waiting_for_permission' : sessionStatus(known, now), lastActivityAt,
       state: row.ownership === 'owned' ? cpu || written ? 'active' : 'idle' : row.ownership,
     }
   }
