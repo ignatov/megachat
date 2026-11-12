@@ -29,7 +29,7 @@ context: |
 
 rules:
   proposal:
-    - State the behavior that the user sees, and where it shows: the chat, the task list of Air, a command, or the log.
+    - "State the behavior that the user sees, and where it shows: the chat, the task list of Air, a command, or the log."
     - Name each capability of `openspec/specs/` that the change adds or modifies.
     - Say whether the change modifies an ACP extension. If it does, say what Air must change.
     - List what is out of scope. Say when the change touches a non-goal.
