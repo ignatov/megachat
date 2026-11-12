@@ -36,7 +36,7 @@ Tests: `test/stop.test.mjs`
 - **THEN** the outcome is `none`, the result has no target, and no view shows a dialog
 
 ### Requirement: Result of a call
-The result MUST give the targets (the PID, the start time, the agent, the program, the project, the owner and the sessions of each process), the refused PIDs with a reason that the model can give to the user, and the outcome: `stopped`, `declined`, `expired`, `changed`, `replaced` or `none`.
+The result MUST give the targets (the PID, the start time, the agent, the program, the project, the owner and the sessions of each process), the refused PIDs with a reason that the model can give to the user, and the outcome: `stopped`, `declined`, `expired`, `changed`, `replaced`, `cancelled` or `none`. Only a stop of the daemon MUST give `cancelled`. A stop of the turn MUST fail the call with no outcome.
 
 Tests: `test/stop.test.mjs`
 
@@ -47,6 +47,14 @@ Tests: `test/stop.test.mjs`
 #### Scenario: The answer keep
 - **WHEN** the user selects `keep` in the dialog for the PID 70
 - **THEN** no signal goes out, and the outcome is `declined`
+
+#### Scenario: A stop of the daemon before the answer
+- **WHEN** a stop request for the PID 70 is open, and the daemon stops
+- **THEN** the outcome is `cancelled`, no signal goes out, and the timer of the expiry is cancelled
+
+#### Scenario: A stop of the turn before the answer
+- **WHEN** a stop request for the PID 70 is open, and the turn stops
+- **THEN** the call fails with the reason of the stop, the closed request has the status `cancelled`, and a later answer `stop` is refused
 
 ### Requirement: No signal through an argument
 No argument of a tool call MUST send a signal. The tool MUST take no confirmation. Only the answer `stop` of the user through `/stop/answer` MUST send it.
