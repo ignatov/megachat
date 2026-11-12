@@ -606,6 +606,28 @@ without the optional package `@openai/codex-darwin-arm64`, and the Codex agent o
 In a fresh clone, `npm test` skips the bundle test, because `out/bundle/` does not exist. After a build, `npm test`
 tests the last build, and that build can be older than the source. Only `npm run test:bundle` tests a new build.
 
+`node test/live/smoke.mjs [<scenario>...]` is the live smoke run. It starts the daemon of the checkout with the real
+main agent through Central and real Claude, Codex and pi children, and it drives the daemon with a scripted ACP client
+that sends what Air sends. It checks the reply stream, the prompt suggestion, the project rules of a Claude child, the
+permission mode and the model of a Claude child, the rows of the background tasks with their Stop and their transcript,
+the parallel children, the steering, a Codex and a pi child, the wait of a child result outside the working hours, and
+a restart of the daemon during a child. The scenarios are `chat`, `suggest`, `rules`, `permissions`, `tasks`, `steer`,
+`others`, `workday` and `restart`. Without a name, all of them run, in about 30 minutes.
+
+- The run uses the Central account of the machine and costs real money. One full run cost about 0.5 USD for the main
+  agent and the pi children in the count of the daemon. The Claude and Codex accounts paid for about 25 small children,
+  and the daemon does not count that cost.
+- Each scenario gets a new state home and new throwaway projects in one new temporary directory. The run refuses a
+  home outside the temporary directory. It sets `MEGACHAT_ACP_CONFIG` to a temporary file and turns off the keep-alive
+  requests. It does not turn on the index of past sessions.
+- The run reads the Central configuration into its memory, removes its key and its address from each text that it
+  prints or keeps, and lists each file of the run that holds one of them. The scenario `permissions` starts the Claude
+  adapter through `test/live/tap.mjs`, which records the mode and the model of each child. The run also reads the
+  session file of Claude Code of its own children for the model that they used.
+- The output gives one line for each item, and `report.json` in the temporary directory gives the evidence. A turn of
+  the main agent without an answer after 4 minutes is a stall: the run keeps the evidence, starts the daemon again, and
+  goes on. `npm test` does not run the live smoke run.
+
 `node test/bench/session-index.bench.mjs [entries]` measures the import, the longest block of the event loop and the
 search latency of the index of past sessions on a synthetic corpus. `npm test` does not run it.
 
