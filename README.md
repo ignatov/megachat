@@ -270,13 +270,15 @@ prompt of the child, at most 32 KB. A Codex child reads `AGENTS.md` by itself.
 
 The adapter of Claude Code takes the permission mode of a Claude child from `permissions.defaultMode` of each settings
 file, also of `~/.claude/settings.json`. With `children.permissionMode` `inherit`, Megachat keeps that: when your
-settings say `auto`, each Claude child starts in the mode `auto`, and a project can set the mode `plan`. Each other value
-wins over each settings file: `ask` is the mode `default` of Claude Code, so the child asks before each change and each
-command. `allowEdits` is the mode `acceptEdits`, so the child changes files without a question and asks before a
-command. `auto` lets the classifier of Claude Code decide. A question of the child goes to the main conversation.
-Megachat offers no `bypassPermissions` and no `plan`, and it removes each option of a permission request that switches a
-child to `bypassPermissions`. When your `~/.claude/settings.json` sets `permissions.defaultMode` to `bypassPermissions`,
-a Claude child of Megachat starts in the mode `default`, so it asks for each step that a permission rule does not allow. When Claude Code refuses the mode, for example because your settings turn off the mode
+settings say `auto`, each Claude child starts in the mode `auto`, and a project can set the mode `plan`. When no
+settings file sets a mode, the adapter starts the child in the mode `auto` if Claude Code offers it, else in the mode
+`default`. Each other value wins over each settings file: `ask` is the mode `default` of Claude Code, so the child asks
+before each change and each command. `allowEdits` is the mode `acceptEdits`, so the child changes files without a
+question and asks before a command. `auto` lets the classifier of Claude Code decide. A question of the child goes to
+the main conversation. Megachat offers no `bypassPermissions` and no `plan`, and it removes each option of a permission
+request that switches a child to `bypassPermissions`. When your `~/.claude/settings.json` sets `permissions.defaultMode`
+to `bypassPermissions`, a Claude child of Megachat starts in the mode `default`, so it asks for each step that a
+permission rule does not allow. When Claude Code refuses the mode, for example because your settings turn off the mode
 `auto`, the task fails before it starts. Claude Code applies an allow rule of the project settings only in a directory
 that you trusted in Claude Code: in another directory, the child asks all the same. A deny rule applies in each
 directory.

@@ -77,7 +77,7 @@ test('the daemon makes the workspace of Megachat with the mode 0700 and lists it
   assert.ok(status.isDirectory())
   if (process.platform !== 'win32') assert.equal(status.mode & 0o777, 0o700)
   const [list] = await turn(opened, 'list', ['agents_list', {}])
-  assert.deepEqual(list.workspaces, [{ cwd: workspace, origin: 'megachat', name: 'Megachat workspace' }])
+  assert.deepEqual(list.workspaces, [{ cwd: workspace, origin: 'megachat', name: 'Megachat workspace', defaultAgent: 'claude' }])
   assert.deepEqual((await opened.service.state.snapshot()).projects, [])
 })
 
@@ -198,6 +198,6 @@ test('the list of the directories gives each directory one time with its origin'
     { cwd: directories.repository, origin: 'ide' },
     { cwd: join(directories.home, 'second'), origin: 'known' },
   ]
-  assert.deepEqual(list.workspaces, expected)
+  assert.deepEqual(list.workspaces, expected.map(item => ({ ...item, defaultAgent: 'claude' })))
   assert.deepEqual(projects.workspaces, expected)
 })

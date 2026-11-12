@@ -180,6 +180,18 @@ test('a stored project value that this build does not accept gives the next valu
     'future.key': 1, 'children.agent': 'codex' }, [paths.lib]: 'invalid' })
 })
 
+test('agents_list names the agent of a new task in each directory, and the global default agent', { timeout: 20000 }, async t => {
+  const paths = await directories(t)
+  const { service, tool } = await open(t, paths)
+  await tool({ action: 'set', key: 'children.agent', value: 'codex' })
+  await tool({ action: 'set', key: 'children.agent', value: 'claude', project: paths.app })
+  const list = service.extension().tools.find(item => item.name === 'agents_list')
+  const answer = JSON.parse((await list.execute({})).output[0].text)
+  assert.equal(answer.defaultAgent, 'codex')
+  // The server directory is in the app project, so it gets the value of that project.
+  assert.deepEqual(answer.workspaces.map(item => [item.cwd, item.defaultAgent]), [[paths.app, 'claude'], [paths.server, 'claude'], [paths.lib, 'codex']])
+})
+
 test('a child in a project gets the agent, the rules, the mode, the model and the pi model of the project', { timeout: 30000 }, async t => {
   const paths = await directories(t)
   const { service, turn, launched, lines, tool } = await open(t, paths)

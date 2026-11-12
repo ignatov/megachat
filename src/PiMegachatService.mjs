@@ -458,7 +458,9 @@ export class PiMegachatService {
         const state = await this.state.snapshot()
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
           cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
-        return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces: directoriesOf(state), runs,
+        // Each directory names the agent of a new task in it: a project value of children.agent wins over the global value.
+        const workspaces = directoriesOf(state).map(item => ({ ...item, defaultAgent: this.settings.values(item.cwd)['children.agent'] }))
+        return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces, runs,
           ...(this.suggestions !== 'off' ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
