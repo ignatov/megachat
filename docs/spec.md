@@ -60,6 +60,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A continuation after a planned stop of the daemon must not count as one of the two.
 - An agent that cannot use an HTTP MCP server or cannot load a session must end its run with that reason, without a continuation.
 - The interrupted run must become resumed and name its continuation. The main conversation must receive one report.
+- A continuation must keep the title of the task. Its report must give the task of the user and the title, not the
+  prompt of the continuation.
 - Cancelling a resumed run must cancel its continuation.
 - A failed final continuation must remain interrupted and must be reported.
 - An answer from a previous process generation must fail.

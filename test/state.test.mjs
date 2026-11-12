@@ -819,6 +819,35 @@ test('a completed run with a steer message that it did not handle gets a follow-
   assert.deepEqual(next.steers.map(item => [item.text, item.repeat]), [['Too late', false]])
 })
 
+test('the one report of a steered task gives the task and the title of its first run', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const run = await state.admitChild('tool', { cwd: '/workspace', prompt: 'Implement it', title: 'Implement the parser' })
+  const send = async (id, generation) => {
+    await state.transition(id, ['admitted'], { status: 'ready', generation, providerSessionId: 'provider' })
+    await state.transition(id, ['ready'], { status: 'dispatched' })
+  }
+  await send(run.id, 'first')
+  // A stop for a message, then a follow-up for a message that came after the end of the turn.
+  await state.steer('redirect', { childSessionId: run.childSessionId, prompt: 'Use the other branch', mode: 'interrupt' })
+  await state.restartForSteer(run.id, 'first')
+  await state.transition(run.id, ['dispatched'], { status: 'interrupted', stopReason: 'cancelled' })
+  const restarted = (await state.snapshot()).runs[(await state.snapshot()).runs[run.id].resumedBy]
+  await send(restarted.id, 'second')
+  await state.steer('late', { childSessionId: run.childSessionId, prompt: 'One more file', mode: 'queue' })
+  await state.transition(restarted.id, ['dispatched'], { status: 'completed', stopReason: 'end_turn' })
+  const last = (await state.snapshot()).runs[(await state.snapshot()).runs[restarted.id].resumedBy]
+  assert.equal(last.title, 'Implement the parser')
+  await send(last.id, 'third')
+  await state.transition(last.id, ['dispatched'], { status: 'completed', stopReason: 'end_turn' })
+  await state.settleInput((await state.snapshot()).current.id, 'completed')
+  assert.deepEqual((await state.nextChildResults()).resultRunIds, [last.id])
+  const event = (await state.root.entries({ order: 'descending' }, 50, undefined, BACKGROUND_CONTEXT)).items
+    .find(entry => entry.kind === 'air.megachat.event')
+  assert.deepEqual(event.data.results.map(result => [result.runId, result.prompt, result.title]), [[last.id, 'Implement it', 'Implement the parser']])
+})
+
 test('the prune of a run removes its steer messages', { timeout: 10000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))

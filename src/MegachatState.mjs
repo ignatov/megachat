@@ -134,8 +134,8 @@ function followSteers(state, run) {
 }
 
 /**
- * Replaces [run] with a queued continuation. The continuation gets each message of the user that the provider session
- * may not have, and its dispatch quotes them. After a stop for a message, and after a follow-up for one ([steered]),
+ * Replaces [run] with a queued continuation. The continuation keeps the title of the task. It gets each message of the
+ * user that the provider session may not have, and its dispatch quotes them. After a stop for a message, and after a follow-up for one ([steered]),
  * the main agent gets one report: the report of the last run, with the output of the earlier run before its own.
  */
 function addContinuation(state, run, { prompt, task, steered, sent, resumeAttempt, notBefore }) {
@@ -148,6 +148,7 @@ function addContinuation(state, run, { prompt, task, steered, sent, resumeAttemp
     cancelRequested: false, createdAt: Date.now(), closed: false,
     resumeOf: run.id, resumeAttempt, notBefore,
     ...(task === undefined ? {} : { task }),
+    ...(run.title === undefined ? {} : { title: run.title }),
   }
   const steers = carrySteers(run, next.id, sent, steered ?? 'restarted')
   if (steers.length) next.steers = steers
@@ -484,8 +485,9 @@ export class MegachatState {
         && (run.reportAfter ?? 0) <= now)
       if (runs.length === 0) return null
       retain(state)
-      const results = runs.map(run => ({ runId: run.id, cwd: run.cwd, prompt: run.prompt,
-        status: run.status, output: run.output, truncated: run.truncated, error: run.error ?? null,
+      // A continuation reports the task of the user, not its own prompt: the report of a steered task is the only one.
+      const results = runs.map(run => ({ runId: run.id, cwd: run.cwd, prompt: run.task ?? run.prompt,
+        ...(run.title === undefined ? {} : { title: run.title }), status: run.status, output: run.output, truncated: run.truncated, error: run.error ?? null,
         ...(run.resumedBy ? { resumedBy: run.resumedBy } : {}), ...(run.resumeOf ? { resumeOf: run.resumeOf } : {}) }))
       const mainRunId = randomUUID()
       const requestId = `children:${mainRunId}`
