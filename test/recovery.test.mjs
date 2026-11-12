@@ -160,6 +160,35 @@ test('a result report that SIGKILL of the daemon cuts is sent once more after th
   assert.deepEqual(result, { reports: [['interrupted', 'interrupted'], ['completed', null]], reported: [true] })
 })
 
+test('steer messages that SIGKILL of the daemon cuts reach the child in the continuation, each repeat marked', { timeout: 30000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-steer-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const run = (mode, steering) => fork(new URL('./steer-daemon.mjs', import.meta.url), [mode, directory],
+    { stdio: ['ignore', 'ignore', 'inherit', 'ipc'], env: { ...globalThis.process.env, FAKE_ACP_STEERING: steering } })
+  const first = run('first', 'injected,hang')
+  t.after(() => first.kill('SIGKILL'))
+  await once(first, 'message')
+  const childPid = Number(await readFile(join(directory, 'agent.pid'), 'utf8'))
+  const exited = once(first, 'exit')
+  first.kill('SIGKILL')
+  await exited
+  await poll(() => {
+    try { globalThis.process.kill(childPid, 0); return false }
+    catch (error) { if (error.code === 'ESRCH') return true; throw error }
+  })
+  const second = run('second', 'injected')
+  t.after(() => second.kill('SIGKILL'))
+  const [result] = await once(second, 'message')
+  const added = [['First message', 'fallback', true], ['Second message', 'fallback', true], ['Third message', 'fallback', false]]
+  assert.deepEqual(result.runs.map(item => [item.status, item.steers.map(steer => [steer.text, steer.delivery, steer.repeat])]),
+    [['resumed', added.map(([text, delivery]) => [text, delivery, false])], ['completed', added]])
+  assert.equal(result.prompt, [continuationPrompt('child.steer.added'), `${continuationPrompt('child.steer.repeat', 1)}\nFirst message`,
+    `${continuationPrompt('child.steer.repeat', 2)}\nSecond message`, `${continuationPrompt('child.steer.message', 3)}\nThird message`].join('\n\n'))
+  assert.deepEqual(result.permissions, ['stale'])
+  // The first daemon sent two steering requests. The second daemon sent none: the continuation holds the messages.
+  assert.equal((await readFile(join(directory, 'steerings'), 'utf8')).trim().split('\n').length, 2)
+})
+
 test('the supervisor stops a child that writes after the daemon closed the output', { timeout: 10000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-supervisor-'))
   t.after(() => rm(directory, { force: true, recursive: true }))

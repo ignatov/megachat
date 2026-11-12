@@ -7,6 +7,8 @@ import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJ
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
 export const maxAutomaticResumes = 2
+/** The limit of the messages that the user adds to one task, for its first run and each continuation together. */
+export const maxSteers = 16
 const sentStates = new Set(['dispatched', 'running', 'approval'])
 /**
  * The reasons of Pi Durable for a turn without an answer that can go away: an error of the model, and a stop of the
@@ -101,29 +103,91 @@ const plain = value => JSON.parse(JSON.stringify(value))
  * prompt instead. The continuation keeps the first prompt as its `task`, and the dispatch quotes it, because the
  * provider can lose a prompt that it did not store.
  * A planned stop of the daemon is no failure of the run, so its continuation does not count as an attempt.
+ * A stop for a message of the user (`steerRestart`) is no failure either. Its continuation starts at once, also after
+ * the last attempt, because the message must reach the child. The limit of the messages limits these continuations.
  */
 function scheduleResume(state, run, previousStatus, delayMs) {
   const attempt = run.resumeAttempt ?? 0
   if (run.status !== 'interrupted' || run.cancelRequested || run.closed || run.autoResume === false || run.resumedBy
-    || attempt >= maxAutomaticResumes) return
+    || attempt >= maxAutomaticResumes && !run.steerRestart) return
   const sent = run.dispatched || sentStates.has(previousStatus)
   if (sent && !run.providerSessionId) return
-  const prompt = sent ? message('child.continue') : run.prompt
-  const task = run.task ?? (sent ? run.prompt : undefined)
+  const prompt = !sent ? run.prompt : message(run.steerRestart ? 'child.steer.restarted' : 'child.continue')
+  addContinuation(state, run, {
+    prompt, task: run.task ?? (sent ? run.prompt : undefined), steered: run.steerRestart ? 'restarted' : null, sent,
+    resumeAttempt: run.plannedStop || run.steerRestart ? attempt : attempt + 1,
+    notBefore: Date.now() + (run.steerRestart ? 0 : delayMs * 4 ** attempt),
+  })
+}
+
+/**
+ * Continues a completed run whose turn did not handle each message of the user: a message that came after the end of
+ * the turn, or a message that the agent took but did not answer (see `AcpRunService.execute`). The provider session
+ * stored the turn, so the continuation starts at once in the same session, and it does not count as an attempt.
+ */
+function followSteers(state, run) {
+  if (run.status !== 'completed' || run.cancelRequested || run.closed || run.resumedBy || !run.providerSessionId) return
+  if (!run.steers?.some(item => item.delivery === 'pending')) return
+  addContinuation(state, run, { prompt: message('child.steer.followUp'), task: run.task ?? run.prompt, steered: 'followUp',
+    sent: true, resumeAttempt: run.resumeAttempt ?? 0, notBefore: Date.now() })
+}
+
+/**
+ * Replaces [run] with a queued continuation. The continuation gets each message of the user that the provider session
+ * may not have, and its dispatch quotes them. After a stop for a message, and after a follow-up for one ([steered]),
+ * the main agent gets one report: the report of the last run, with the output of the earlier run before its own.
+ */
+function addContinuation(state, run, { prompt, task, steered, sent, resumeAttempt, notBefore }) {
   retain(state)
-  const now = Date.now()
   const next = {
     id: randomUUID(), childSessionId: run.childSessionId, mainRunId: run.mainRunId, agent: run.agent ?? 'claude',
     requestId: `resume:${run.id}`, digest: digest({ resumeOf: run.id, prompt }), prompt, cwd: run.cwd, status: 'admitted',
     providerSessionId: run.providerSessionId ?? null, serviceSession: run.serviceSession,
-    generation: null, pid: null, output: '', truncated: false,
-    cancelRequested: false, createdAt: now, closed: false,
-    resumeOf: run.id, resumeAttempt: run.plannedStop ? attempt : attempt + 1, notBefore: now + delayMs * 4 ** attempt,
+    generation: null, pid: null, output: steered ? run.output : '', truncated: steered ? run.truncated : false,
+    cancelRequested: false, createdAt: Date.now(), closed: false,
+    resumeOf: run.id, resumeAttempt, notBefore,
     ...(task === undefined ? {} : { task }),
   }
+  const steers = carrySteers(run, next.id, sent, steered ?? 'restarted')
+  if (steers.length) next.steers = steers
   state.runs[next.id] = next
   run.status = 'resumed'
   run.resumedBy = next.id
+  if (steered) run.reported = true
+}
+
+/**
+ * Moves the messages of the user that [run] did not handle to its continuation [nextId]. A completed run handled each
+ * message that is not `pending`. Another run handled none for certain. A copy is a possible repeat when the agent can
+ * have it already: the steering request went out, or the prompt that held the message went out.
+ */
+function carrySteers(run, nextId, sent, outcome) {
+  const carried = []
+  for (const item of run.steers ?? []) {
+    if (item.carriedBy || run.status === 'completed' && item.delivery !== 'pending') continue
+    const repeat = !!item.repeat || item.sentAt !== undefined || item.delivery === 'delivered' || item.delivery === 'fallback' && sent
+    carried.push({ ...item, delivery: 'fallback', outcome: item.outcome ?? outcome, repeat })
+    Object.assign(item, { delivery: 'fallback', outcome: item.outcome ?? outcome, carriedBy: nextId })
+  }
+  return carried
+}
+
+/** Counts the messages of the user in the task of [run]: in the run, and in each earlier run that it continues. */
+function steerCount(state, run) {
+  const ids = new Set()
+  for (let current = run; current; current = state.runs[current.resumeOf]) {
+    for (const item of current.steers ?? []) ids.add(item.id)
+  }
+  return ids.size
+}
+
+/** Finds a message of the user by its ID. The first match is the record of the run that the tool call steered. */
+export function findSteer(state, steerId) {
+  for (const run of Object.values(state.runs)) {
+    const item = run.steers?.find(value => value.id === steerId)
+    if (item) return { run, item }
+  }
+  return null
 }
 
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
@@ -501,7 +565,7 @@ export class MegachatState {
       requireCondition(!args.agent || args.agent === agent, 'conflict')
       if (args.childSessionId) {
         requireCondition(previous && previous.cwd === args.cwd && !previous.closed, 'missing')
-        requireCondition(terminalStates.has(previous.status), 'busy')
+        requireCondition(terminalStates.has(previous.status), 'childBusy')
       }
       const providerSessionId = previous?.providerSessionId ?? args.providerSessionId ?? null
       if (providerSessionId) {
@@ -524,6 +588,69 @@ export class MegachatState {
     })
   }
 
+  /**
+   * Records a message of the user for the unfinished run of a child session, before a process sends it. A repeated
+   * [requestId] gives the first record. Only a turn of the user can add a message. A run that did not send its prompt
+   * yet gets the message in its prompt (`queued`). A sent run gets it through the run service (`pending`).
+   * Each message has `delivery`: `pending` until the agent took it, `delivered` when the agent took it into its turn,
+   * and `fallback` when the message goes in the prompt of a run. `outcome` tells the main agent how it went.
+   */
+  async steer(requestId, args) {
+    requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
+    requireCondition(typeof args.childSessionId === 'string' && args.childSessionId.length > 0 && args.childSessionId.length <= 200)
+    requireCondition(typeof args.prompt === 'string' && args.prompt.trim().length > 0 && args.prompt.length <= 64000)
+    requireCondition(['queue', 'interrupt'].includes(args.mode))
+    const hash = digest(args)
+    return this.change(state => {
+      for (const run of Object.values(state.runs)) {
+        const old = run.steers?.find(item => item.requestId === requestId)
+        if (old) {
+          requireCondition(old.digest === hash, 'conflict')
+          return { ...plain(old), runId: run.id }
+        }
+      }
+      requireCondition(state.current && !state.current.cancelling, 'inactive')
+      requireCondition(!['event', 'report'].includes(state.current.kind), 'steerEvent')
+      const run = Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
+      requireCondition(run && !run.closed, 'missing')
+      requireCondition(!terminalStates.has(run.status), 'childIdle')
+      requireCondition(!run.cancelRequested, 'inactive')
+      requireCondition(steerCount(state, run) < maxSteers, 'steerLimit')
+      const queued = !sentStates.has(run.status)
+      const item = { id: randomUUID(), requestId, digest: hash, text: args.prompt, mode: args.mode, createdAt: Date.now(),
+        delivery: queued ? 'fallback' : 'pending', outcome: queued ? 'queued' : null }
+      // The document gives a draft of each stored value. So the push goes to the stored array, not to a new one.
+      run.steers ??= []
+      run.steers.push(item)
+      return { ...plain(item), runId: run.id }
+    })
+  }
+
+  /** Changes a message of the user in a run of [generation]. A run of another process or a finished run stays. */
+  async updateSteer(runId, generation, steerId, changes) {
+    return this.change(state => {
+      const run = state.runs[runId]
+      const item = run?.steers?.find(value => value.id === steerId)
+      if (!item || run.generation !== generation || terminalStates.has(run.status)) return false
+      Object.assign(item, changes)
+      return true
+    })
+  }
+
+  /**
+   * Marks a run of [generation] for a stop and a continuation that holds each message of the user that waits. The run
+   * service then cancels the turn. A cancel of the user wins: that run gets no continuation.
+   */
+  async restartForSteer(runId, generation) {
+    return this.change(state => {
+      const run = state.runs[runId]
+      if (!run || run.generation !== generation || run.cancelRequested || terminalStates.has(run.status)) return false
+      run.steerRestart = true
+      for (const item of run.steers ?? []) if (item.delivery === 'pending') item.outcome ??= 'restarted'
+      return true
+    })
+  }
+
   async transition(runId, expected, changes) {
     return this.change(state => {
       const run = state.runs[runId]
@@ -540,6 +667,7 @@ export class MegachatState {
       if (terminalStates.has(run.status)) {
         run.finishedAt = Date.now()
         scheduleResume(state, run, previousStatus, this.resumeDelayMs)
+        followSteers(state, run)
         for (const permission of Object.values(state.permissions)) {
           if (permission.runId === runId && permission.status === 'pending') permission.status = 'stale'
         }

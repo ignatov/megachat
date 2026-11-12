@@ -8,9 +8,32 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 let cancel
 let cancelled = false
 let servers = []
+// The prompt `steer` waits for a steering request or a cancel. FAKE_ACP_STEERING gives the answers to the steering
+// requests in their order, separated by commas, and the last answer repeats: injected (the default), promptRequired,
+// failed, error, drop (injected, and the turn ends with no work after it), or hang (no answer). off is an agent without
+// the steering extension.
+const answers = (process.env.FAKE_ACP_STEERING ?? 'injected').split(',')
+let steerings = 0
+let prompting = false
+let steered
 agent({ name: 'fake-claude' })
   .onRequest(methods.agent.initialize, () => ({ protocolVersion: 1,
-    agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [] }))
+    agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [],
+    ...(answers[0] === 'off' ? {} : { _meta: { steering: { supported: true } } }) }))
+  .onRequest('_session/steering', params => params, async ctx => {
+    if (answers[0] === 'off') throw RequestError.methodNotFound('_session/steering')
+    const answer = answers[Math.min(steerings++, answers.length - 1)]
+    await appendFile(join(process.cwd(), 'steerings'), `${JSON.stringify(ctx.params)}\n`)
+    if (answer === 'hang') return new Promise(() => {})
+    if (answer === 'error') throw RequestError.internalError()
+    if (answer === 'failed') return { outcome: 'failed' }
+    const text = ctx.params.prompt.map(block => block.text).join('\n')
+    // The turn ended before the request arrived.
+    if (answer === 'promptRequired') { steered?.({ text, work: false }); return { outcome: 'promptRequired', reason: 'noRunningTurn' } }
+    if (!prompting) return { outcome: 'promptRequired', reason: 'noRunningTurn' }
+    if (steered) setImmediate(steered, { text, work: answer !== 'drop' })
+    return { outcome: 'injected' }
+  })
   .onRequest(methods.agent.session.new, async ctx => {
     // An agent without a login refuses each new session, as Codex ACP and Claude ACP do.
     if (process.env.FAKE_ACP_LOGIN === 'missing') throw RequestError.authRequired()
@@ -33,45 +56,61 @@ agent({ name: 'fake-claude' })
   })
   .onNotification(methods.agent.session.cancel, () => { cancelled = true; cancel?.() })
   .onRequest(methods.agent.session.prompt, async ctx => {
-    const text = ctx.params.prompt.at(-1).text
-    await appendFile(join(process.cwd(), 'dispatches'), `${text}\n`)
-    // Each prompt with all of its blocks, so a test can read the blocks that the daemon adds before the task.
-    await appendFile(join(process.cwd(), 'prompts'), `${JSON.stringify(ctx.params.prompt.map(block => block.text))}\n`)
-    if (text === 'crash') process.exit(1)
-    if (text === 'wait') {
-      if (!cancelled) await new Promise(resolve => { cancel = resolve })
-      return { stopReason: 'cancelled' }
-    }
-    if (text === 'approval') {
-      const answer = await ctx.client.request(methods.client.session.requestPermission, {
-        sessionId: 'fake-session', toolCall: { toolCallId: 'write', title: 'Write a file' },
-        options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }, { optionId: 'no', kind: 'reject_once', name: 'Deny' }],
-      })
-      if (answer.outcome.outcome !== 'selected') return { stopReason: 'cancelled' }
-    }
-    if (text === 'approvals') {
-      const answers = await Promise.all(['first', 'second'].map(name => ctx.client.request(methods.client.session.requestPermission, {
-        sessionId: 'fake-session', toolCall: { toolCallId: name, title: `Write the ${name} file` },
-        options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }, { optionId: 'no', kind: 'reject_once', name: 'Deny' }],
-      })))
-      if (answers.some(answer => answer.outcome.outcome !== 'selected')) return { stopReason: 'cancelled' }
-    }
-    let previous = await readFile(join(process.cwd(), 'dispatches'), 'utf8')
-    if (text.startsWith('history:')) {
-      const server = servers.find(server => server.name === 'megachat')
-      const history = new Client({ name: 'fake-child', version: '1' })
-      try {
-        await history.connect(new StreamableHTTPClientTransport(new URL(server.url), {
-          requestInit: { headers: Object.fromEntries(server.headers.map(header => [header.name, header.value])) },
-        }))
-        const result = await history.callTool({ name: 'history', arguments: { query: text.slice('history:'.length) } })
-        previous = result.content[0].text
-      }
-      finally { await history.close() }
-    }
-    await ctx.client.notify(methods.client.session.update, {
-      sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: previous } },
-    })
-    return { stopReason: 'end_turn' }
+    prompting = true
+    try { return await answerPrompt(ctx) }
+    finally { prompting = false }
   })
   .connect(ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)))
+
+async function answerPrompt(ctx) {
+  const text = ctx.params.prompt.at(-1).text
+  await appendFile(join(process.cwd(), 'dispatches'), `${text}\n`)
+  // Each prompt with all of its blocks, so a test can read the blocks that the daemon adds before the task.
+  await appendFile(join(process.cwd(), 'prompts'), `${JSON.stringify(ctx.params.prompt.map(block => block.text))}\n`)
+  if (text === 'crash') process.exit(1)
+  if (text === 'wait') {
+    if (!cancelled) await new Promise(resolve => { cancel = resolve })
+    return { stopReason: 'cancelled' }
+  }
+  if (text === 'steer') {
+    const message = cancelled ? null : await new Promise(resolve => { steered = resolve; cancel = () => resolve(null) })
+    steered = undefined
+    if (!message) return { stopReason: cancelled ? 'cancelled' : 'end_turn' }
+    if (!message.work) return { stopReason: 'end_turn' }
+    await ctx.client.notify(methods.client.session.update, {
+      sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `steered: ${message.text}\n` } },
+    })
+    return { stopReason: 'end_turn' }
+  }
+  if (text === 'approval') {
+    const answer = await ctx.client.request(methods.client.session.requestPermission, {
+      sessionId: 'fake-session', toolCall: { toolCallId: 'write', title: 'Write a file' },
+      options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }, { optionId: 'no', kind: 'reject_once', name: 'Deny' }],
+    })
+    if (answer.outcome.outcome !== 'selected') return { stopReason: 'cancelled' }
+  }
+  if (text === 'approvals') {
+    const answers = await Promise.all(['first', 'second'].map(name => ctx.client.request(methods.client.session.requestPermission, {
+      sessionId: 'fake-session', toolCall: { toolCallId: name, title: `Write the ${name} file` },
+      options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }, { optionId: 'no', kind: 'reject_once', name: 'Deny' }],
+    })))
+    if (answers.some(answer => answer.outcome.outcome !== 'selected')) return { stopReason: 'cancelled' }
+  }
+  let previous = await readFile(join(process.cwd(), 'dispatches'), 'utf8')
+  if (text.startsWith('history:')) {
+    const server = servers.find(server => server.name === 'megachat')
+    const history = new Client({ name: 'fake-child', version: '1' })
+    try {
+      await history.connect(new StreamableHTTPClientTransport(new URL(server.url), {
+        requestInit: { headers: Object.fromEntries(server.headers.map(header => [header.name, header.value])) },
+      }))
+      const result = await history.callTool({ name: 'history', arguments: { query: text.slice('history:'.length) } })
+      previous = result.content[0].text
+    }
+    finally { await history.close() }
+  }
+  await ctx.client.notify(methods.client.session.update, {
+    sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: previous } },
+  })
+  return { stopReason: 'end_turn' }
+}

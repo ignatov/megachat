@@ -23,6 +23,7 @@ The later work on Megachat, in the order of the work. Each item gives its reason
    - `install` does not check that the IDE build has the Air support for Megachat.
 2. **A Stop action on each running job.** Send `canStop: true` and handle `_session/async_task/stop` for one child.
    Today the user can stop one child only through a message to the main agent.
+   `agents_steer` already sends a request to a child during its turn through the state, so the stop can use that path.
 3. **Child agents that run at the same time.** Today one child runs at a time, so a long task blocks each queued task.
 4. **One layer for Central.** Remove the `bin/pi` shim, the read of `~/.claude/settings.json`, and the `bin/codex` shim.
    Today three different paths get the Central configuration, and each path can fail in its own way.

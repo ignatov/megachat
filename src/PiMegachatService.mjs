@@ -5,7 +5,7 @@ import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtens
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
-import { MegachatState, terminalStates } from './MegachatState.mjs'
+import { findSteer, MegachatState, terminalStates } from './MegachatState.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { eventMatcher } from './ProjectEventFilter.mjs'
@@ -28,6 +28,8 @@ const SUMMARY_MAX_TOKENS = 16000
 const SUMMARY_TOOL_RESULT_LIMIT = 2000
 const SUMMARY_TASK_LIMIT = 30
 const STREAM_TIMEOUT_MS = 60000
+/** The steering request of the run service has a limit of 20 seconds, so the tool waits a little longer. */
+const STEER_WAIT_MS = 30000
 /** The lifetimes of the prompt cache of a model that states none: those of Anthropic. */
 const CACHE_LIFETIME_SECONDS = { short: 300, long: 3600 }
 const resource = name => readFile(new URL(`../resources/${name}`, import.meta.url), 'utf8')
@@ -305,6 +307,18 @@ export class PiMegachatService {
     return changed
   }
 
+  /**
+   * The tool `agents_steer`. The state records the message before a send, and the run service, which owns the connection
+   * to the agent, sends it. The result waits for the outcome at most [STEER_WAIT_MS]. After that time the message stays
+   * recorded, and the outcome is `pending`.
+   */
+  async steer(requestId, args) {
+    const recorded = await this.state.steer(requestId, args)
+    const outcome = recorded.outcome ?? await waitForState(this.state, state => findSteer(state, recorded.id)?.item.outcome ?? undefined,
+      { signal: this.lifetime.signal, timeoutMs: STEER_WAIT_MS })
+    return { childSessionId: args.childSessionId, runId: recorded.runId, steerId: recorded.id, mode: recorded.mode, outcome: outcome ?? 'pending' }
+  }
+
   extension() {
     const tool = (name, parameters, execute) => defineTool({
       name: `agents_${name}`, description: message(`tool.${name}`), parameters, replay: 'safe', execute,
@@ -376,6 +390,9 @@ export class PiMegachatService {
       }),
       tool('send', obj({ childSessionId: str(), cwd: str(), prompt: str(), title: opt(str({ maxLength: 60 })) }), async (args, api) =>
         result(await this.state.admitChild(`tool:${api.taskId}:send`, { ...args, cwd: await this.state.directory(args.cwd) }))),
+      // The children do not get this tool: their MCP server has the history tools only.
+      tool('steer', obj({ childSessionId: str({ maxLength: 200 }), prompt: str(), mode: opt(str({ maxLength: 20 })) }), async (args, api) =>
+        result(await this.steer(`tool:${api.taskId}:steer`, { childSessionId: args.childSessionId, prompt: args.prompt, mode: args.mode ?? 'queue' }))),
       tool('inspect', obj({ runId: str() }), inspect),
       tool('wait', obj({ runId: str() }), inspect),
       tool('cancel', obj({ runId: str() }), async args => {

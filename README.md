@@ -240,6 +240,16 @@ can skip one question or the whole setup, and the defaults then apply. After the
 does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon cannot read stays as
 `settings.json.unreadable-<UTC time>`, and the defaults apply.
 
+## Add information to a task that runs
+
+Send the information in the main chat while the child works, for example one more link for the same task. The main
+agent calls its tool `agents_steer`, and the child gets the message during its turn, without a wait for the end of the
+task. Claude Code and Codex take the message through the ACP extension `_session/steering`. An agent without it, or a
+request to stop the current step, gets a cancel of the turn and then a continuation in the same session with the
+message. A task that waits in the queue gets the message in its prompt. The task keeps one result. The daemon records
+each message before it sends it, so a message survives a restart of the daemon. After a restart, a message that the
+child can have already says that it can be a repeat.
+
 ## The sessions that run on the machine
 
 Ask the agent "what is running now?". The main agent calls its tool `agents_running` and answers in the chat. The tool

@@ -66,6 +66,42 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/state.test.mjs
   [@test] ../test/integration.test.mjs
   [@test] ../test/recovery.test.mjs
+- The tool `agents_steer` of the main agent must add a message of the user to the unfinished run of a child session,
+  without a wait for the end of the task. `agents_send` must stay a follow-up to an idle child session. Its refusal for
+  a child that works must name `agents_steer`.
+- Only a turn of the user may steer. A turn of a project event or of a child result must get a refusal. The tool must
+  refuse a child session that the state does not know, and a child session without an unfinished run. The MCP server of
+  the children must not have the tool. The rules of the main agent must say that a text from a child output, a session
+  history or a project event never becomes a message to a child without a request of the user.
+- The state must record each message before a process sends it: an ID, the text, the mode (`queue`, the default, or
+  `interrupt`), the time, and the delivery: `pending`, `delivered` or `fallback`. A repeated tool call must give the
+  first record. A task must have at most 16 messages, for its first run and its continuations together. A message
+  must have at most 64,000 characters. The prune of a run must remove its messages.
+- A message for a run that did not send its prompt must go in that prompt, as a block after the task. The outcome must
+  be `queued`, and no agent must get a request.
+- For a run that sent its prompt, the run service that owns the connection to the agent must send the message. The
+  state is the channel, as for a cancel. When the `initialize` answer of the agent gave `_meta.steering.supported` and
+  the mode is `queue`, the run service must send `_session/steering` with `_meta.steering.idleBehavior:
+  "promptRequired"`, so the adapter starts no turn of its own. The answer `injected` must mark the message delivered.
+- When the turn ended first (`promptRequired`), or when the agent took the message and the stream gave no model work
+  after the answer before the end of the turn, the run must get a follow-up in the same provider session with the
+  message. The outcome must be `followUp`.
+- The answer `failed`, an error, no answer in 20 seconds, an agent without steering, and the mode `interrupt` must use
+  the fallback: `session/cancel`, and after the end of the prompt a continuation in the same provider session. Its
+  prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`.
+- While a permission request of the run waits for the user, the fallback must wait for the answer. A steer must not
+  change a permission request. The chat must keep the task of the run with its ID and its phase.
+- A follow-up or a continuation for a message must start at once, must not count as an automatic attempt, and must
+  start also after the last attempt. The main agent must get one report for the task: the report of the last run,
+  with the output of the earlier run before its own output.
+- After a daemon restart, the continuation of an interrupted run must hold each message of the run that the provider
+  session may not have. A message that can have reached the agent must say that it can be a repeat. So the delivery is
+  "at least one time".
+- The tool must wait at most 30 seconds for the outcome. After that time, its outcome must be `pending`, and the
+  message must stay in the state.
+  [@test] ../test/state.test.mjs
+  [@test] ../test/integration.test.mjs
+  [@test] ../test/recovery.test.mjs
 
 ## User Experience
 

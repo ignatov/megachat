@@ -9,7 +9,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { MegachatState } from '../src/MegachatState.mjs'
+import { findSteer, maxSteers, MegachatState } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -36,7 +36,7 @@ test('a resumed provider session has one active run and keeps its provider on fo
   assert.equal(run.serviceSession, false)
   await assert.rejects(state.admitChild('duplicate-resume', args), { code: 'busy' })
   await assert.rejects(state.admitChild('wrong-project', { ...args, cwd: '/other' }), { code: 'workspace' })
-  await assert.rejects(state.admitChild('busy-follow-up', { cwd: args.cwd, childSessionId: run.childSessionId, prompt: 'Again' }), { code: 'busy' })
+  await assert.rejects(state.admitChild('busy-follow-up', { cwd: args.cwd, childSessionId: run.childSessionId, prompt: 'Again' }), { code: 'childBusy' })
   await state.transition(run.id, ['admitted'], { status: 'completed' })
   const next = await state.admitChild('follow-up', { cwd: args.cwd, childSessionId: run.childSessionId, prompt: 'Again' })
   assert.equal(next.agent, 'codex')
@@ -671,4 +671,167 @@ test('at 5,000 delegated session addresses, the oldest go until 4,000 stay', { t
   assert.equal(sessions.length, 4001)
   assert.equal(sessions[0].providerSessionId, 'old-1000')
   assert.deepEqual(sessions.at(-1), { agent: 'claude', cwd: '/workspace', providerSessionId: 'new', recordedAt: sessions.at(-1).recordedAt })
+})
+
+/** A run that sent its prompt to the provider session `provider`, as the run service leaves it. */
+async function sentRun(state, requestId, prompt = 'Implement it') {
+  const run = await state.admitChild(requestId, { cwd: '/workspace', prompt })
+  await state.transition(run.id, ['admitted'], { status: 'ready', generation: 'process', providerSessionId: 'provider' })
+  await state.transition(run.id, ['ready'], { status: 'dispatched' })
+  return run
+}
+
+test('a steer message is recorded before the send, once for a repeated call, and at most 16 times for a task', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const run = await sentRun(state, 'tool')
+  const args = { childSessionId: run.childSessionId, prompt: 'Use the link', mode: 'queue' }
+  const before = Date.now()
+  const steer = await state.steer('tool:1:steer', args)
+  assert.equal(steer.runId, run.id)
+  assert.deepEqual([steer.text, steer.mode, steer.delivery, steer.outcome], ['Use the link', 'queue', 'pending', null])
+  assert.ok(steer.createdAt >= before)
+  assert.equal((await state.steer('tool:1:steer', args)).id, steer.id)
+  await assert.rejects(state.steer('tool:1:steer', { ...args, prompt: 'Another link' }), { code: 'conflict' })
+  assert.equal((await state.snapshot()).runs[run.id].steers.length, 1)
+  for (const invalid of [{ ...args, mode: 'later' }, { ...args, prompt: ' ' }, { ...args, prompt: 'x'.repeat(64001) }])
+    await assert.rejects(state.steer('invalid', invalid), { code: 'invalid' })
+  await assert.rejects(state.steer('unknown', { ...args, childSessionId: 'unknown' }), { code: 'missing' })
+  // A continuation counts the messages of the run that it continues.
+  await state.transition(run.id, ['dispatched'], { status: 'interrupted', error: message('error.interrupted') })
+  const next = (await state.snapshot()).runs[(await state.snapshot()).runs[run.id].resumedBy]
+  assert.equal(next.steers.length, 1)
+  for (let index = 1; index < maxSteers; index++) await state.steer(`tool:${index + 1}:steer`, args)
+  await assert.rejects(state.steer('one-too-many', args), { code: 'steerLimit' })
+  await state.transition(next.id, ['admitted'], { status: 'cancelled' })
+  await assert.rejects(state.steer('ended', args), { code: 'childIdle' })
+  // Only a turn of the user can steer.
+  const other = await sentRun(state, 'other')
+  for (const kind of ['event', 'report']) {
+    await state.change(value => { value.current.kind = kind })
+    await assert.rejects(state.steer(`automatic-${kind}`, { ...args, childSessionId: other.childSessionId }), { code: 'steerEvent' })
+  }
+  await state.change(value => { value.current.kind = 'user'; value.current.cancelling = true })
+  await assert.rejects(state.steer('cancelling', { ...args, childSessionId: other.childSessionId }), { code: 'inactive' })
+})
+
+test('a steer of a queued run goes into its prompt, also after a restart', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const queued = await state.admitChild('queued', { cwd: '/workspace', prompt: 'Queued task' })
+  const steer = await state.steer('queued-steer', { childSessionId: queued.childSessionId, prompt: 'Name it B', mode: 'interrupt' })
+  assert.deepEqual([steer.delivery, steer.outcome], ['fallback', 'queued'])
+  const run = (await state.snapshot()).runs[queued.id]
+  assert.equal(run.status, 'admitted')
+  assert.equal(run.prompt, 'Queued task')
+  // A run that never sent its prompt sends it again after a restart, with the message.
+  await state.transition(queued.id, ['admitted'], { status: 'launching', generation: 'process' })
+  await state.recover()
+  const snapshot = await state.snapshot()
+  const next = snapshot.runs[snapshot.runs[queued.id].resumedBy]
+  assert.equal(next.prompt, 'Queued task')
+  assert.deepEqual(next.steers.map(item => [item.text, item.delivery, item.repeat]), [['Name it B', 'fallback', false]])
+})
+
+test('a restart carries each steer message that the provider session may not have into the continuation', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const run = await sentRun(state, 'tool')
+  const args = { childSessionId: run.childSessionId, mode: 'queue' }
+  const delivered = await state.steer('delivered', { ...args, prompt: 'Delivered' })
+  const unsure = await state.steer('unsure', { ...args, prompt: 'Sent without an answer' })
+  const waiting = await state.steer('waiting', { ...args, prompt: 'Not sent' })
+  await state.updateSteer(run.id, 'process', delivered.id, { sentAt: Date.now(), delivery: 'delivered', outcome: 'injected' })
+  await state.updateSteer(run.id, 'process', unsure.id, { sentAt: Date.now() })
+  assert.equal(await state.updateSteer(run.id, 'other-process', waiting.id, { sentAt: Date.now() }), false)
+  await state.recover()
+  const snapshot = await state.snapshot()
+  const old = snapshot.runs[run.id]
+  const next = snapshot.runs[old.resumedBy]
+  assert.equal(old.status, 'resumed')
+  assert.equal(next.prompt, message('child.continue'))
+  assert.equal(next.resumeAttempt, 1)
+  assert.deepEqual(next.steers.map(item => [item.id, item.delivery, item.repeat]),
+    [[delivered.id, 'fallback', true], [unsure.id, 'fallback', true], [waiting.id, 'fallback', false]])
+  assert.deepEqual(old.steers.map(item => [item.carriedBy, item.outcome]), [[next.id, 'injected'], [next.id, 'restarted'], [next.id, 'restarted']])
+  // The record of the steered run gives the outcome to the tool call.
+  assert.equal(findSteer(snapshot, waiting.id).run.id, run.id)
+})
+
+test('a stop for a steer message continues the session at once, without an attempt, and with one report', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  let run = await sentRun(state, 'tool')
+  // Two failures use the automatic continuations.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await state.transition(run.id, ['dispatched'], { status: 'interrupted', error: message('error.interrupted') })
+    run = (await state.snapshot()).runs[(await state.snapshot()).runs[run.id].resumedBy]
+    await state.transition(run.id, ['admitted'], { status: 'ready', generation: 'process' })
+    await state.transition(run.id, ['ready'], { status: 'dispatched' })
+  }
+  await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Partial work. ' } })
+  const steer = await state.steer('redirect', { childSessionId: run.childSessionId, prompt: 'Use the other branch', mode: 'interrupt' })
+  assert.equal(await state.restartForSteer(run.id, 'other-process'), false)
+  assert.equal(await state.restartForSteer(run.id, 'process'), true)
+  assert.equal(findSteer(await state.snapshot(), steer.id).item.outcome, 'restarted')
+  const before = Date.now()
+  await state.transition(run.id, ['dispatched'], { status: 'interrupted', stopReason: 'cancelled' })
+  const snapshot = await state.snapshot()
+  const old = snapshot.runs[run.id]
+  const next = snapshot.runs[old.resumedBy]
+  assert.equal(old.reported, true)
+  assert.equal(next.prompt, message('child.steer.restarted'))
+  assert.equal(next.task, 'Implement it')
+  assert.equal(next.resumeAttempt, 2)
+  assert.ok(next.notBefore <= before + 1000)
+  assert.equal(next.output, 'Partial work. ')
+  assert.deepEqual(next.steers.map(item => item.text), ['Use the other branch'])
+  // The two failures each give a report. The stop for the message gives none: the continuation reports the task.
+  await state.settleInput(snapshot.current.id, 'completed')
+  assert.ok(!(await state.nextChildResults()).resultRunIds.includes(old.id))
+})
+
+test('a completed run with a steer message that it did not handle gets a follow-up in the same session', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const handled = await sentRun(state, 'handled')
+  const injected = await state.steer('injected', { childSessionId: handled.childSessionId, prompt: 'Handled', mode: 'queue' })
+  await state.updateSteer(handled.id, 'process', injected.id, { sentAt: Date.now(), delivery: 'delivered', outcome: 'injected' })
+  await state.transition(handled.id, ['dispatched'], { status: 'completed', stopReason: 'end_turn' })
+  assert.equal((await state.snapshot()).runs[handled.id].status, 'completed')
+  const late = await sentRun(state, 'late')
+  await state.appendUpdate(late.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Result. ' } })
+  const after = await state.steer('after', { childSessionId: late.childSessionId, prompt: 'Too late', mode: 'queue' })
+  await state.transition(late.id, ['dispatched'], { status: 'completed', stopReason: 'end_turn' })
+  const snapshot = await state.snapshot()
+  const next = snapshot.runs[snapshot.runs[late.id].resumedBy]
+  assert.equal(snapshot.runs[late.id].status, 'resumed')
+  assert.equal(snapshot.runs[late.id].reported, true)
+  assert.equal(next.prompt, message('child.steer.followUp'))
+  assert.equal(next.providerSessionId, 'provider')
+  assert.equal(next.output, 'Result. ')
+  assert.equal(findSteer(snapshot, after.id).item.outcome, 'followUp')
+  assert.deepEqual(next.steers.map(item => [item.text, item.repeat]), [['Too late', false]])
+})
+
+test('the prune of a run removes its steer messages', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('first-turn', 'Work')
+  const steered = await state.admitChild('steered', { cwd: '/workspace', prompt: 'Steer me' })
+  await state.transition(steered.id, ['admitted'], { status: 'running', generation: 'process' })
+  const steer = await state.steer('steer', { childSessionId: steered.childSessionId, prompt: 'Added', mode: 'queue' })
+  await state.transition(steered.id, ['running'], { status: 'completed' })
+  await state.readRun(steered.id)
+  await reportedRuns(state, 63)
+  await nextTurn(state, 'last-turn')
+  await state.admitChild('run-64', { cwd: '/workspace', prompt: 'Task 64' })
+  const snapshot = await state.snapshot()
+  assert.equal(snapshot.runs[steered.id], undefined)
+  assert.equal(findSteer(snapshot, steer.id), null)
 })

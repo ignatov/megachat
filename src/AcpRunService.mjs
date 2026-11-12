@@ -7,20 +7,49 @@ import { waitForState } from './waitForState.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
+import { terminalStates } from './MegachatState.mjs'
+
+/** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
+const STEER_METHOD = '_session/steering'
+/** The updates that show work of the model. One of them after a message of the user shows that the turn went on. */
+const workUpdates = new Set(['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
+
+/**
+ * Counts the updates of model work in the order of the stream, and keeps the count at the answer to a steering
+ * request. A handler sees a message later, and the next message can already be in its count.
+ */
+function countWork(stream, work) {
+  return { writable: stream.writable, readable: stream.readable.pipeThrough(new TransformStream({ transform(item, controller) {
+    if (item.method === 'session/update' && workUpdates.has(item.params?.update?.sessionUpdate)) work.updates++
+    else if (item.method === undefined && typeof item.result?.outcome === 'string') work.answered = work.updates
+    controller.enqueue(item)
+  } })) }
+}
+
+/**
+ * The prompt block of the messages that the user added to the task of a run. The block is the last one, after the task.
+ */
+function steerBlock(items) {
+  return [message('child.steer.added'), ...items.map((item, index) =>
+    `${message(item.repeat ? 'child.steer.repeat' : 'child.steer.message', index + 1)}\n${item.text}`)].join('\n\n')
+}
 
 /**
  * Executes admitted runs. A recorded dispatch is never sent again after a process restart.
  * An automatic continuation waits until its `notBefore` time; later queued runs may start first.
  * [childRules] gives the rules paragraph of the user at the time of each dispatch. The prompt gets it as a block of its
  * own before the task, and the state keeps only the task, so a report quotes the task alone.
+ * Only this process has the connection to the agent. So the tool `agents_steer` records a message in the state, and
+ * this service sends it, as it does for a cancel. [steerTimeoutMs] limits the wait for the answer of the agent.
  */
 export class AcpRunService {
   constructor(state, configuration, {
-    command, args, model, deadlineMs = 1800000, historyServer, childRules,
+    command, args, model, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000,
   } = {}) {
     this.state = state
     this.configuration = configuration
     this.launch = { command, args, model, deadlineMs }
+    this.steerTimeoutMs = steerTimeoutMs
     this.historyServer = historyServer
     this.childRules = childRules
     this.active = new Map()
@@ -42,7 +71,8 @@ export class AcpRunService {
         continue
       }
       if (run.status === 'admitted' && this.active.size === 0 && !this.stopping) {
-        const work = { cancel: null, cancellationSent: false, promise: null, lifetime: new AbortController() }
+        const work = { cancel: null, cancellationSent: false, promise: null, lifetime: new AbortController(),
+          updates: 0, steered: new Map(), deliver: null, delivering: null, ended: false }
         this.active.set(run.id, work)
         work.promise = this.execute(run, work).finally(() => {
           this.active.delete(run.id)
@@ -59,6 +89,8 @@ export class AcpRunService {
         work.cancellationSent = true
         work.cancel()
       }
+      if (work?.deliver && (run.steers?.some(item => item.delivery === 'pending' && !work.steered.has(item.id))
+        || work.restartWaiting && run.status !== 'approval')) work.deliver()
     }
   }
 
@@ -130,13 +162,15 @@ export class AcpRunService {
             if (--waitingPermissions === 0 && !work.lifetime.signal.aborted) timer = setTimeout(limit, this.launch.deadlineMs)
           }
         })
-        .connect(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)))
+        .connect(countWork(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), work))
       const ctx = connection.agent
       const initialized = await ctx.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: VERSION }, clientCapabilities: {},
       })
       // These two faults do not go away on a new start of the agent. So they are errors that no continuation repeats.
       requireCondition(!this.historyServer || initialized.agentCapabilities?.mcpCapabilities?.http, 'agentHttp')
+      // The steering extension is not in the standard ACP. The adapters give it in the top-level `_meta`.
+      const steering = initialized._meta?.steering?.supported === true
       const params = {
         cwd: run.cwd, mcpServers: this.historyServer ? [this.historyServer] : [],
         ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: launch.model, settingSources: [],
@@ -164,26 +198,45 @@ export class AcpRunService {
       }
       if (!await this.state.transition(run.id, ['ready'], { status: 'dispatched' })) return
       dispatched = true
+      // A message of the user from before the dispatch goes in the prompt. A later one goes through the steering request.
+      const added = ((await this.state.snapshot()).runs[run.id].steers ?? []).filter(item => item.delivery === 'fallback')
       const rules = this.childRules?.()
-      const result = await ctx.request(methods.agent.session.prompt, {
+      const prompting = ctx.request(methods.agent.session.prompt, {
         sessionId, prompt: [
           ...(this.historyServer ? [{ type: 'text', text: message('history.instructions') }] : []),
           ...(rules ? [{ type: 'text', text: rules }] : []),
           // A continuation quotes its task in the same block as its prompt. The first prompt can be lost.
           { type: 'text', text: run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}` },
+          ...(added.length ? [{ type: 'text', text: steerBlock(added) }] : []),
         ],
       })
+      // The prompt goes out first, so a steering request finds the turn.
+      work.deliver = () => this.deliverSteers(run.id, generation, work, { ctx, sessionId, steering })
+      work.deliver()
+      const result = await prompting
+      work.ended = true
+      await work.delivering
       await updates
-      const cancelled = (await this.state.snapshot()).runs[run.id].cancelRequested
+      // A Codex turn can end after the agent took a message and before the model read it. The adapter then drops the
+      // message. So a message without work of the model after it waits again, and the end of the run sends it again.
+      for (const [id, entry] of work.steered) {
+        if (entry.updates === work.updates) await this.state.updateSteer(run.id, generation, id, { delivery: 'pending' })
+      }
+      const ended = (await this.state.snapshot()).runs[run.id]
       await this.state.transition(run.id, ['dispatched', 'running', 'approval'], {
-        status: cancelled || result.stopReason === 'cancelled' ? 'cancelled'
-          : result.stopReason === 'end_turn' ? 'completed' : 'failed', stopReason: result.stopReason,
+        status: ended.cancelRequested ? 'cancelled'
+          // A stop for a message of the user is an interruption. Its continuation holds the message.
+          : ended.steerRestart && result.stopReason !== 'end_turn' ? 'interrupted'
+            : result.stopReason === 'cancelled' ? 'cancelled' : result.stopReason === 'end_turn' ? 'completed' : 'failed',
+        stopReason: result.stopReason,
       })
     }
     catch (error) {
+      work.ended = true
+      await work.delivering
       const current = (await this.state.snapshot()).runs[run.id]
       // The state keeps a fixed text for the user. The log keeps where the run failed.
-      if (!this.closing && !limited && !current.cancelRequested) logFailure('log.child', error, run.id)
+      if (!this.closing && !limited && !current.cancelRequested && !current.steerRestart) logFailure('log.child', error, run.id)
       await this.state.transition(run.id, ['launching', 'ready', 'dispatched', 'running', 'approval'], {
         status: current.cancelRequested ? 'cancelled' : 'interrupted',
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message
@@ -199,6 +252,71 @@ export class AcpRunService {
       connection?.close()
       this.kill(child)
     }
+  }
+
+  /** Sends the waiting messages of the user, one at a time. A call during a send makes the send look again at its end. */
+  deliverSteers(runId, generation, work, agent) {
+    if (work.delivering) {
+      work.again = true
+      return work.delivering
+    }
+    work.delivering = (async () => {
+      do {
+        work.again = false
+        await this.sendSteers(runId, generation, work, agent)
+      } while (work.again && !work.ended)
+    })().catch(error => {
+      if (!this.closing) logFailure('log.child', error, runId)
+    }).finally(() => { work.delivering = null })
+    return work.delivering
+  }
+
+  /**
+   * Gives each waiting message of the user to the turn that runs. With the steering extension and the mode `queue`, the
+   * message goes into the turn, and `idleBehavior: promptRequired` keeps each turn in the hands of Megachat: an adapter
+   * then starts no turn of its own. When the turn ended first, the message waits for the end of the prompt, and the run
+   * gets a follow-up. A fallback after the end of the prompt is a follow-up too. Each other case is the fallback: a cancel of the turn, then a continuation with the message.
+   * A cancel also ends a permission request that waits for the user, so the fallback waits for the answer.
+   */
+  async sendSteers(runId, generation, work, { ctx, sessionId, steering }) {
+    for (;;) {
+      const run = (await this.state.snapshot()).runs[runId]
+      if (work.ended || run.generation !== generation || run.steerRestart || run.cancelRequested || terminalStates.has(run.status)) return
+      const item = run.steers?.find(value => value.delivery === 'pending' && !work.steered.has(value.id))
+      if (item && steering && item.mode === 'queue') {
+        work.steered.set(item.id, { state: 'sent' })
+        await this.state.updateSteer(runId, generation, item.id, { sentAt: Date.now() })
+        const outcome = await this.requestSteer(ctx, sessionId, item.text)
+        // The answer can come at the end of the turn. The count of the stream then tells whether the turn did its work.
+        if (outcome === 'injected') {
+          work.steered.set(item.id, { state: 'delivered', updates: work.answered ?? work.updates })
+          await this.state.updateSteer(runId, generation, item.id, { delivery: 'delivered', outcome: 'injected' })
+        }
+        else work.steered.set(item.id, { state: outcome === 'promptRequired' || outcome === 'startedNewTurn' ? 'ended' : 'fallback' })
+        continue
+      }
+      if (item) work.steered.set(item.id, { state: 'fallback' })
+      if (![...work.steered.values()].some(entry => entry.state === 'fallback')) return
+      work.restartWaiting = run.status === 'approval'
+      if (work.restartWaiting) return
+      if (await this.state.restartForSteer(runId, generation)) work.cancel()
+      return
+    }
+  }
+
+  /** Gives the outcome of one steering request: `injected`, `promptRequired`, or `failed` for an error or no answer in time. */
+  async requestSteer(ctx, sessionId, text) {
+    let timer
+    try {
+      const answer = await Promise.race([
+        ctx.request(STEER_METHOD, { sessionId, prompt: [{ type: 'text', text: `${message('child.steer')}\n\n${text}` }],
+          _meta: { steering: { idleBehavior: 'promptRequired' } } }),
+        new Promise(resolve => { timer = setTimeout(resolve, this.steerTimeoutMs, { outcome: 'failed' }) }),
+      ])
+      return typeof answer?.outcome === 'string' ? answer.outcome : 'failed'
+    }
+    catch { return 'failed' }
+    finally { clearTimeout(timer) }
   }
 
   kill(child) {

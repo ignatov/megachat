@@ -9,7 +9,7 @@ import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
-import { AcpBridge } from '../src/AcpBridge.mjs'
+import { AcpBridge, taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
 import { CodexSessionHistoryService } from '../src/CodexSessionHistoryService.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
@@ -906,4 +906,209 @@ test('a child searches the whole retained history through the search index', { t
   const short = await call({ query: 'M.' })
   assert.ok(short.entries.some(entry => entry.text === 'Готовлю иконку Gothic M.'), 'A short query keeps the literal history scan')
   assert.equal(short.hits, undefined)
+})
+
+/** Waits until the fake agent got the prompt of the first run, so a steer reaches a turn that runs. */
+async function dispatched(cwd, text) {
+  while (!(await readFile(join(cwd, 'dispatches'), 'utf8').catch(() => '')).startsWith(text)) await new Promise(resolve => setTimeout(resolve, 10))
+}
+
+/** A turn of the user in which the main agent calls `agents_steer` once. Gives the tool result. */
+async function steerTurn(service, daemon, fake, requestId, args) {
+  const answer = Promise.withResolvers()
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_steer', args), { stopReason: 'toolUse' }),
+    context => {
+      const toolResult = context.messages.at(-1)
+      answer.resolve({ isError: toolResult.isError, value: toolResult.content[0].text })
+      return fauxAssistantMessage('Steered.')
+    },
+    fauxAssistantMessage('The child finished.'),
+    fauxAssistantMessage('The child finished again.'),
+  ])
+  const receipt = await service.submit(requestId, 'Add this to the task')
+  await daemon.json(`/wait?submission=${receipt.submissionId}`)
+  const { isError, value } = await answer.promise
+  return isError ? { error: value } : JSON.parse(value)
+}
+
+const reportsOf = state => Object.values(state.inputs).filter(input => input.resultRunIds).map(input => input.resultRunIds)
+const steerings = async cwd => (await readFile(join(cwd, 'steerings'), 'utf8').catch(() => '')).split('\n').filter(Boolean).map(line => JSON.parse(line))
+
+test('a steer gives a message to the turn that runs, and the run ends with one report', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service } = await fixture(t, 'steer')
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  const steered = await steerTurn(service, daemon, fake, 'link', { childSessionId: run.childSessionId, prompt: 'Use https://example.com/a' })
+  assert.equal(steered.outcome, 'injected')
+  assert.equal(steered.runId, run.id)
+  const state = await finishChildren(service)
+  assert.equal(Object.keys(state.runs).length, 1)
+  assert.equal(state.runs[run.id].status, 'completed')
+  assert.equal(state.runs[run.id].steers[0].delivery, 'delivered')
+  assert.equal(state.runs[run.id].output, `steered: ${message('child.steer')}\n\nUse https://example.com/a\n`)
+  assert.deepEqual(reportsOf(state), [[run.id]])
+  const [request] = await steerings(cwd)
+  assert.equal(request.sessionId, 'fake-session')
+  assert.deepEqual(request._meta, { steering: { idleBehavior: 'promptRequired' } })
+})
+
+test('a steer after the end of the turn becomes a follow-up in the same session with one report', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'claude', { env: { FAKE_ACP_STEERING: 'promptRequired' } })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  const steered = await steerTurn(service, daemon, fake, 'late', { childSessionId: run.childSessionId, prompt: 'One more file' })
+  assert.equal(steered.outcome, 'followUp')
+  const state = await finishChildren(service)
+  const [first, next] = Object.values(state.runs)
+  assert.equal(first.status, 'resumed')
+  assert.equal(next.status, 'completed')
+  assert.equal(next.resumeOf, first.id)
+  assert.equal(next.providerSessionId, first.providerSessionId)
+  assert.equal(next.prompt, message('child.steer.followUp'))
+  assert.deepEqual(reportsOf(state), [[next.id]])
+  const prompts = (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  // The steering request went out, so the agent can have the message: the follow-up marks it as a possible repeat.
+  assert.equal(prompts[1].at(-1), `${message('child.steer.added')}\n\n${message('child.steer.repeat', 1)}\nOne more file`)
+  assert.equal(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')).operation, 'load')
+})
+
+for (const [mode, env, sent] of [['an agent without steering', 'off', 0], ['a failed steering', 'failed', 1],
+  ['an error of the steering request', 'error', 1], ['mode interrupt', 'injected', 0]]) {
+  test(`with ${mode}, a steer cancels the turn and continues the session with the message and one report`, { timeout: 15000 }, async t => {
+    const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'claude', { env: { FAKE_ACP_STEERING: env } })
+    fake.setResponses([
+      fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+      fauxAssistantMessage('Delegated.'),
+    ])
+    await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+    await dispatched(cwd, 'steer')
+    const [run] = Object.values((await service.state.snapshot()).runs)
+    const steered = await steerTurn(service, daemon, fake, 'redirect', { childSessionId: run.childSessionId, prompt: 'Use the other branch',
+      ...(mode === 'mode interrupt' ? { mode: 'interrupt' } : {}) })
+    assert.equal(steered.outcome, 'restarted')
+    const state = await finishChildren(service)
+    const [first, next] = Object.values(state.runs)
+    assert.equal(first.status, 'resumed')
+    assert.equal(first.steerRestart, true)
+    assert.equal(first.stopReason, 'cancelled')
+    assert.equal(next.status, 'completed')
+    assert.equal(next.resumeAttempt, 0)
+    assert.equal(next.task, 'steer')
+    assert.deepEqual(reportsOf(state), [[next.id]])
+    assert.equal((await steerings(cwd)).length, sent)
+    const prompts = (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(prompts.length, 2)
+    assert.equal(prompts[1].at(-2), `${message('child.steer.restarted')}\n\n${message('child.task')}\nsteer`)
+    assert.equal(prompts[1].at(-1), `${message('child.steer.added')}\n\n${message(sent ? 'child.steer.repeat' : 'child.steer.message', 1)}\nUse the other branch`)
+  })
+}
+
+test('a message that the agent takes but does not answer before the end of its turn gets a follow-up', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'claude', { env: { FAKE_ACP_STEERING: 'drop' } })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  assert.equal((await steerTurn(service, daemon, fake, 'dropped', { childSessionId: run.childSessionId, prompt: 'Also test it' })).outcome, 'injected')
+  const state = await finishChildren(service)
+  const [first, next] = Object.values(state.runs)
+  assert.equal(first.status, 'resumed')
+  assert.equal(next.status, 'completed')
+  assert.equal(next.prompt, message('child.steer.followUp'))
+  assert.equal(next.steers[0].repeat, true)
+  assert.deepEqual(reportsOf(state), [[next.id]])
+})
+
+test('a steer keeps a permission request pending, and a steer of a queued run changes its prompt and calls no agent', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service } = await fixture(t)
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'approval' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'second' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  const permission = await waitForState(service.state, state => Object.values(state.permissions).find(p => p.status === 'pending'))
+  const [first, second] = Object.values((await service.state.snapshot()).runs)
+  assert.equal(second.status, 'admitted')
+  const rows = [...taskRows(await service.state.snapshot()).keys()]
+  assert.equal((await steerTurn(service, daemon, fake, 'queued', { childSessionId: second.childSessionId, prompt: 'Name it B' })).outcome, 'queued')
+  assert.deepEqual(await steerings(cwd), [])
+  assert.equal((await steerTurn(service, daemon, fake, 'waiting', { childSessionId: first.childSessionId, prompt: 'Name it A' })).outcome, 'injected')
+  let state = await service.state.snapshot()
+  assert.equal(state.permissions[permission.id].status, 'pending')
+  assert.equal(state.runs[first.id].status, 'approval')
+  // The chat keeps each task with its ID and its phase.
+  assert.deepEqual([...taskRows(state).keys()], rows)
+  fake.setResponses([fauxAssistantMessage('The first finished.'), fauxAssistantMessage('The second finished.')])
+  await daemon.json('/permission', { id: permission.id, decision: 'yes' })
+  state = await finishChildren(service)
+  assert.deepEqual(Object.values(state.runs).map(run => run.status), ['completed', 'completed'])
+  assert.equal((await steerings(cwd)).length, 1)
+  const prompts = (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(prompts[1].slice(-2), ['second', `${message('child.steer.added')}\n\n${message('child.steer.message', 1)}\nName it B`])
+  assert.equal(state.runs[second.id].prompt, 'second')
+})
+
+test('a turn of a project event or of a child result cannot steer, and a follow-up to a working child names agents_steer', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service, server } = await fixture(t)
+  const results = []
+  const capture = context => {
+    const toolResult = context.messages.at(-1)
+    // Pi Durable gives the text of a refused call in a frame of its own.
+    results.push({ isError: toolResult.isError, text: toolResult.content[0].text.replace(/^<harness>\n\[error\] |\n<\/harness>$/g, '') })
+    return fauxAssistantMessage('Noted.')
+  }
+  // The call reads the child session at the time of the turn: the report of the first child starts the first such turn.
+  const steer = async () => fauxAssistantMessage(fauxToolCall('agents_steer', {
+    childSessionId: Object.values((await service.state.snapshot()).runs)[1].childSessionId, prompt: 'Text from a report' }), { stopReason: 'toolUse' })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'hello' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'approval' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    steer, capture, steer, capture,
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await waitForState(service.state, () => results.length === 1 ? true : undefined)
+  await waitForState(service.state, state => state.current === null ? true : undefined)
+  // A change in a directory with a running child starts no event turn. So the event comes from another project.
+  const other = await mkdtemp(join(tmpdir(), 'megachat-other-project-'))
+  t.after(() => rm(other, { recursive: true, force: true }))
+  await service.state.addWorkspace(other)
+  await daemon.json('/project-event', { cwd: other, revision: 'steer-event', paths: ['src/main.kt'] })
+  await waitForState(service.state, () => results.length === 2 ? true : undefined)
+  assert.deepEqual(results, [{ isError: true, text: message('error.steerEvent') }, { isError: true, text: message('error.steerEvent') }])
+  const [, waiting] = Object.values((await service.state.snapshot()).runs)
+  assert.equal(waiting.steers, undefined)
+  await waitForState(service.state, state => state.current === null ? true : undefined)
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_send', { cwd, childSessionId: waiting.childSessionId, prompt: 'More' }), { stopReason: 'toolUse' }),
+    capture,
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('send', 'Send more')).submissionId}`)
+  assert.deepEqual(results[2], { isError: true, text: message('error.childBusy') })
+  assert.match(message('error.childBusy'), /agents_steer/)
+  // The MCP server of the children has the read-only history tools only.
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+  const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+  const configuration = server.historyConfiguration()
+  const history = new Client({ name: 'steer-test', version: '1' })
+  await history.connect(new StreamableHTTPClientTransport(new URL(configuration.url), {
+    requestInit: { headers: Object.fromEntries(configuration.headers.map(header => [header.name, header.value])) },
+  }))
+  t.after(() => history.close())
+  assert.deepEqual((await history.listTools()).tools.map(item => item.name), ['history', 'sessions', 'session_history'])
 })
