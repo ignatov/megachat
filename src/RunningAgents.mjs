@@ -5,7 +5,7 @@ import { AGENTS, agentSessions } from './AgentProcesses.mjs'
 import { logFailure, message, requireCondition } from './messages.mjs'
 import { processTable } from './ProcessTable.mjs'
 import { linkLogs } from './SessionLinks.mjs'
-import { ACTIVE_MS, OPEN_STEPS, sessionStatus, waitsForPermission } from './SessionStatus.mjs'
+import { ACTIVE_MS, OPEN_STEPS, processWaitStatus, sessionStatus } from './SessionStatus.mjs'
 
 /** Some calls in one turn share one view, so they make one `ps` call. `scannedAt` gives the age of the view. */
 export const SNAPSHOT_TTL_MS = 5000
@@ -87,7 +87,15 @@ export class RunningAgents {
       logFailure('log.running', error)
       incomplete.push(message('running.incomplete.processes'))
     }
-    const sessions = agentSessions(processes, { daemonPid: this.daemonPid, runs: Object.values((await this.state.snapshot()).runs) })
+    const snapshot = await this.state.snapshot()
+    const sessions = agentSessions(processes, { daemonPid: this.daemonPid, runs: Object.values(snapshot.runs) })
+    // The state of Megachat is the authority for its children: a pending permission request of the current generation
+    // of a run waits for the user. The status comes only with the consent, as each other status.
+    if (catalog) {
+      const waiting = new Set(Object.values(snapshot.permissions ?? {}).filter(permission => permission.status === 'pending'
+        && snapshot.runs[permission.runId]?.generation === permission.generation).map(permission => permission.runId))
+      for (const row of sessions) if (row.run && waiting.has(row.run.id)) row.run.permission = true
+    }
     const live = new Map(processes.map(item => [item.pid, item.startedAt]))
     for (const [pid, known] of this.directories) if (live.get(pid) !== known.startedAt) this.directories.delete(pid)
     for (const [pid, known] of this.busy) if (live.get(pid) !== known.startedAt) this.busy.delete(pid)
@@ -175,8 +183,10 @@ export class RunningAgents {
 
   /**
    * One row of the view. `active`: the CPU load of the process now or in the last 2 minutes, or a log write in the last
-   * 2 minutes. The CPU load of a process with several sessions counts only for its sessions with an open step. The
-   * status is `waiting_for_permission` when the process file of the agent says so and the log and the CPU load agree.
+   * 2 minutes. The CPU load of a process with several sessions counts only for its sessions with an open step. A child
+   * of Megachat with a pending permission request has the status `waiting_for_permission`, also without a read log.
+   * Else the process file of the agent can give `waiting_for_permission` or `waiting_for_user` when the log and the CPU
+   * load agree, and else the log gives the status.
    */
   #row(row, { record, sessionId }, now, { slot = 0, shared = false } = {}) {
     const known = record?.read ? record : undefined
@@ -187,8 +197,9 @@ export class RunningAgents {
     return {
       pid: row.pid, slot, agent: row.agent, startedAt: row.startedAt, parent: row.parent, cwd: row.cwd,
       sessionId: sessionId ?? '', title: row.run?.title || known?.title || '',
-      status: !known ? null : waitsForPermission(row.process, sessionId, known, row.cpu >= ACTIVE_CPU_PERCENT, now)
-        ? 'waiting_for_permission' : sessionStatus(known, now), lastActivityAt,
+      status: row.run?.permission ? 'waiting_for_permission'
+        : known ? processWaitStatus(row.process, sessionId, known, row.cpu >= ACTIVE_CPU_PERCENT, now) ?? sessionStatus(known, now) : null,
+      lastActivityAt,
       state: row.ownership === 'owned' ? cpu || written ? 'active' : 'idle' : row.ownership,
     }
   }

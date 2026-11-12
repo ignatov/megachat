@@ -204,7 +204,7 @@ export function agentSessions(processes, { daemonPid = process.pid, runs = [] } 
     }
     rows.push({ pid: item.pid, agent, startedAt: item.startedAt, cpu: 0, parent, ownership, uid: item.uid,
       program: described.get(item.pid).program, identity: identityOf(item),
-      ...(run ? { run: { sessionId: run.providerSessionId ?? '', title: run.title ?? '', cwd: run.cwd } } : {}) })
+      ...(run ? { run: { id: run.id, sessionId: run.providerSessionId ?? '', title: run.title ?? '', cwd: run.cwd } } : {}) })
   }
   const rowByPid = new Map(rows.map(row => [row.pid, row]))
   const nearest = new Map()

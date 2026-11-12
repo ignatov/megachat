@@ -534,7 +534,7 @@ test('a process file of Claude Code maps a process to its log, and a file of a r
   assert.deepEqual(answer.incomplete, [message('running.incomplete.unlinked', 2)])
 })
 
-test('the process file of Claude Code gives waiting_for_permission only for its own process, and a stale, broken, large or linked file gives the status of the log', async t => {
+test('the process file of Claude Code gives waiting_for_permission or waiting_for_user only for its own process, and a stale, broken, large or linked file gives the status of the log', async t => {
   const home = await temporary(t)
   const processes = join(home, '.claude', 'sessions')
   await mkdir(processes, { recursive: true })
@@ -556,9 +556,21 @@ test('the process file of Claude Code gives waiting_for_permission only for its 
   await processFile(12, NOW - MINUTE + 5000, { waitingFor: 'worker request' })
   await log(13, 30000)
   await processFile(13, NOW - 30000)
-  // 20 and 21: a question and a busy session are no permission request.
+  // 20: a question for 20 minutes gives waiting_for_user; 21: a busy session; 22: an open dialog.
   await log(20, QUIET)
   await processFile(20, NOW - QUIET, { waitingFor: 'input needed' })
+  await log(22, QUIET)
+  await processFile(22, NOW - QUIET, { waitingFor: 'dialog open' })
+  // 23 to 26: a question with the guards of a permission wait: another start time, a later log write, a CPU load
+  // after 2 minutes, a time in the future.
+  await log(23, QUIET)
+  await processFile(23, NOW - QUIET, { waitingFor: 'input needed', procStart: lstart(started(23) - HOUR) })
+  await log(24, MINUTE)
+  await processFile(24, NOW - 3 * MINUTE, { waitingFor: 'input needed' })
+  await log(25, 5 * MINUTE)
+  await processFile(25, NOW - 5 * MINUTE, { waitingFor: 'input needed' })
+  await log(26, MINUTE)
+  await processFile(26, NOW + HOUR, { waitingFor: 'input needed' })
   await log(21, MINUTE)
   await processFile(21, NOW - MINUTE, { status: 'busy', waitingFor: undefined })
   // 30: the file names another PID; 31: the process with this PID started at another time.
@@ -587,20 +599,56 @@ test('the process file of Claude Code gives waiting_for_permission only for its 
   // 50: no process file.
   await log(50, QUIET)
   const { catalog } = await catalogOf(t, home)
-  const pids = [10, 11, 12, 13, 20, 21, 30, 31, 32, 33, 34, 40, 41, 42, 43, 50]
-  const busy = new Set([13, 33])
+  const pids = [10, 11, 12, 13, 20, 21, 22, 23, 24, 25, 26, 30, 31, 32, 33, 34, 40, 41, 42, 43, 50]
+  const busy = new Set([13, 25, 33])
   const table = fakeTable(pids.map(pid => proc(pid, 2, 'claude', { cpu: busy.has(pid) ? 40 : 0 })), Object.fromEntries(pids.map(pid => [pid, { cwd: `/work/${pid}` }])))
   const answer = await running(catalog, table).query({ limit: 50 })
   const rows = Object.fromEntries(answer.sessions.map(row => [row.pid, row.status]))
   assert.deepEqual(rows, {
     10: 'waiting_for_permission', 11: 'waiting_for_permission', 12: 'waiting_for_permission', 13: 'waiting_for_permission',
-    20: 'stuck', 21: 'working', 30: 'stuck', 31: 'stuck', 32: 'working', 33: 'working', 34: 'working',
+    20: 'waiting_for_user', 21: 'working', 22: 'stuck', 23: 'stuck', 24: 'working', 25: 'working', 26: 'working', 30: 'stuck', 31: 'stuck', 32: 'working', 33: 'working', 34: 'working',
     40: 'stuck', 41: 'stuck', 42: 'stuck', 43: 'stuck', 50: 'stuck',
   })
   // The wait ends: Claude Code writes the status busy, and the log gets the result of the tool.
   await processFile(10, NOW, { status: 'busy', waitingFor: undefined })
   const clock = fakeClock(NOW + SNAPSHOT_TTL_MS)
   assert.equal(byPid(await running(catalog, table, clock).query({ limit: 50 }))['10:s10'].status, 'stuck')
+})
+
+test('a child of Megachat with a pending permission request of its run gets waiting_for_permission, whatever its log says', async t => {
+  const home = await temporary(t)
+  const DAEMON = 900
+  const started = pid => NOW - 2 * HOUR + pid * 1000
+  // 902: a Claude child with a finished turn in its log; 912: a Codex child with a call 20 minutes ago; 922: a pi child
+  // without a log; 932: a Claude child whose run has an answered request; 942: a request of an older generation of the run.
+  await claudeLog(home, '/work/claude', 'child-claude', [claude.prompt(), claude.reply(), claude.end()], { mtime: NOW - MINUTE })
+  const codexPath = await codexLog(home, '/work/codex', 'child-codex', [codex.started(), codex.prompt(), codex.call()], { mtime: NOW - 20 * MINUTE })
+  await claudeLog(home, '/work/answered', 'child-answered', [claude.prompt(), claude.call()], { mtime: NOW - MINUTE })
+  await claudeLog(home, '/work/old', 'child-old', [claude.prompt(), claude.call()], { mtime: NOW - 20 * MINUTE })
+  // 950: a Claude Code session in a terminal, no child of Megachat, with the same project as a waiting child.
+  await claudeLog(home, '/work/claude', 'terminal', [claude.prompt(), claude.call()], { start: started(950) + 1000, mtime: NOW - MINUTE })
+  const run = (id, pid, agent, cwd, extra = {}) => ({ id, pid, agent, status: 'running', generation: 1, providerSessionId: `child-${id}`, title: `Task ${id}`, cwd, ...extra })
+  const runs = [run('claude', 901, 'claude', '/work/claude'), run('codex', 911, 'codex', '/work/codex'), run('pi', 921, 'pi', '/work/pi'),
+    run('answered', 931, 'claude', '/work/answered'), run('old', 941, 'claude', '/work/old', { generation: 2 })]
+  const permission = (id, runId, extra = {}) => ({ id, runId, generation: 1, status: 'pending', request: {}, decision: null, createdAt: NOW - MINUTE, ...extra })
+  const permissions = [permission('p1', 'claude'), permission('p2', 'codex'), permission('p3', 'pi'), permission('p4', 'answered', { status: 'answered' }),
+    permission('p5', 'old')]
+  const state = { snapshot: async () => ({ runs: Object.fromEntries(runs.map(item => [item.id, item])), permissions: Object.fromEntries(permissions.map(item => [item.id, item])) }) }
+  const supervisor = pid => proc(pid, DAEMON, 'node /opt/megachat/src/child-supervisor.mjs node', { name: 'node' })
+  const table = fakeTable([proc(DAEMON, 2, 'node /opt/megachat/src/main.mjs', { name: 'node' }),
+    supervisor(901), proc(902, 901, 'claude'), supervisor(911), proc(912, 911, '/opt/homebrew/bin/codex', { name: 'codex' }),
+    supervisor(921), proc(922, 921, 'node /opt/homebrew/bin/pi', { name: 'node' }), supervisor(931), proc(932, 931, 'claude'),
+    supervisor(941), proc(942, 941, 'claude'), proc(950, 2, 'claude')],
+  { 912: { cwd: '/work/codex', files: [codexPath] }, 950: { cwd: '/work/claude' } })
+  const { catalog } = await catalogOf(t, home)
+  const rows = async logs => Object.fromEntries((await new RunningAgents(state, { table, clock: fakeClock(), daemonPid: DAEMON, logs: () => logs }).query())
+    .sessions.map(row => [row.pid, [row.sessionId, row.status]]))
+  assert.deepEqual(await rows(catalog), {
+    902: ['child-claude', 'waiting_for_permission'], 912: ['child-codex', 'waiting_for_permission'], 922: ['child-pi', 'waiting_for_permission'],
+    932: ['child-answered', 'working'], 942: ['child-old', 'stuck'], 950: ['terminal', 'working'],
+  })
+  // Without the consent, each status is null, as for each other session.
+  assert.deepEqual(Object.values(await rows(undefined)).map(([, status]) => status), [null, null, null, null, null, null])
 })
 
 test('an open .jsonl file of a Claude Code process does not replace its process file, also when it was a log of its session', async t => {

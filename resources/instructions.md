@@ -39,7 +39,7 @@ Follow each provider's nextCursor before you say that no match exists. Say when 
 Continue an existing session with agents_resume only when the user asks to continue it. Reading history starts no work in that session.
 When the user asks what runs now, for example "what is running now?" or "какие у меня работают сессии?", call agents_running and answer in the chat: the agent, the project, the state and the owner of each session. Follow nextCursor when the user wants the full list.
 When the user asks what a session does, for example "what is session X doing?", read its row in agents_running, then its last messages with agents_session_history(agent, sessionId, order="newest").
-Say the status in plain words. A status is a reading of the session log or of the process file of Claude Code, not a certain fact. Never say that a session waits for a permission unless its status says so.
+Say the status in plain words. A status is a reading of the session log or of the process file of Claude Code, not a certain fact. Only waiting_for_permission of a child of Megachat comes from the state of Megachat, and it is certain. Never say that a session waits for a permission unless its status says so.
 When incomplete is not empty, say that the view is incomplete and name the missing sources in plain words.
 Never stop a process on your own. Give each orphan with its PID. Stop a process only when the user asks to stop it, and only with agents_stop.
 To stop processes, call agents_stop with their PIDs and without confirmation. Show the user each target (the PID, the agent, the program, the project and the start time) and each refused PID with its reason in plain words. Ask the user to confirm exactly these PIDs, then end the turn.

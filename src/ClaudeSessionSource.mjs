@@ -33,13 +33,16 @@ const START_SLACK_MS = 10000
  */
 export const PROCESS_FILE_LIMIT = 16 * 1024
 /**
- * The values of the field `waitingFor` of a process file with the status `waiting` that mean a permission request to
- * the user. Claude Code 2.1.311 to 2.1.322 put these four values in the group `permission` of its own status line:
- * a prompt for a tool call or for a plan, a network request of the sandbox, a request of a teammate, and a proposal of
- * a session goal. The other values, `input needed` (a question) and `dialog open` (a dialog of the user), are no
- * permission request.
+ * The status of a running session for each value of the field `waitingFor` of a process file with the status
+ * `waiting`. Claude Code 2.1.311 to 2.1.322 put four values in the group `permission` of its own status line: a prompt
+ * for a tool call or for a plan, a network request of the sandbox, a request of a teammate, and a proposal of a session
+ * goal. It puts `input needed`, a question to the user, in the group `question`. `dialog open`, a dialog of the user,
+ * is in no group, so it gives no status.
  */
-export const PERMISSION_WAITS = new Set(['permission prompt', 'sandbox request', 'worker request', 'goal proposal'])
+export const PROCESS_WAITS = new Map([
+  ...['permission prompt', 'sandbox request', 'worker request', 'goal proposal'].map(value => [value, 'waiting_for_permission']),
+  ['input needed', 'waiting_for_user'],
+])
 
 /** The time of the text that `ps -o lstart` gives in UTC, such as `Wed Nov 11 18:22:25 2026`, or undefined. */
 function utcStart(text) {
@@ -105,12 +108,12 @@ export class ClaudeSessionSource {
   pathOf(cwd, sessionId) { return join(this.root, encode(cwd).full, `${sessionId}.jsonl`) }
 
   /**
-   * The session of a running process from its process file, as `{ sessionId, cwd, permissionSince }`, or undefined.
+   * The session of a running process from its process file, as `{ sessionId, cwd, wait }`, or undefined.
    * The file must name the PID, and its start time must be the start time of the process: else the PID is of another
    * process. The field `procStart` has the form of `ps -o lstart` in UTC, so it gives the start time to the second.
    * The file must be a regular file of at most 16 KB in the directory: a symbolic link, a larger file and a file that
-   * is not valid JSON give undefined. `permissionSince` is the time of the field `statusUpdatedAt` when the process
-   * says that it waits for a permission of the user.
+   * is not valid JSON give undefined. `wait` is `{ status, since }` when the process says that it waits for the user:
+   * the status of the session from [PROCESS_WAITS], and the time of the field `statusUpdatedAt`.
    */
   async processSession(pid, startedAt, fs) {
     let value
@@ -121,9 +124,9 @@ export class ClaudeSessionSource {
     const same = start !== undefined ? Math.abs(start - startedAt) < 1000
       : typeof value.startedAt === 'number' && Math.abs(value.startedAt - startedAt) <= START_SLACK_MS
     if (!same) return undefined
-    const permission = value.status === 'waiting' && PERMISSION_WAITS.has(value.waitingFor) && Number.isFinite(value.statusUpdatedAt)
+    const status = value.status === 'waiting' && Number.isFinite(value.statusUpdatedAt) ? PROCESS_WAITS.get(value.waitingFor) : undefined
     return { sessionId: value.sessionId, ...(typeof value.cwd === 'string' ? { cwd: value.cwd } : {}),
-      ...(permission ? { permissionSince: value.statusUpdatedAt } : {}) }
+      ...(status ? { wait: { status, since: value.statusUpdatedAt } } : {}) }
   }
 
   async files(directories, fs) {

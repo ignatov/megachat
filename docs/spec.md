@@ -376,9 +376,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   state must be `idle`.
 - The server of a multiplexer must own its sessions, also without a client. Thus a session in a detached `tmux` or
   `screen` is not an orphan, and its `parent.kind` is `multiplexer`.
-- Without the consent `sessions.index`, `status` and `lastActivityAt` must be null, a session outside Megachat must have
-  an empty `sessionId` and `title`, and `incomplete` must say that the session logs are off. Megachat must then read no
-  session file and no process file of an agent.
+- Without the consent `sessions.index`, `status` and `lastActivityAt` must be null, also for a child of Megachat. A
+  session outside Megachat must have an empty `sessionId` and `title`, and `incomplete` must say that the session logs
+  are off. Megachat must then read no session file and no process file of an agent.
 - The order must be: orphan, unknown, active, idle, and the newest activity first in each group: the time of the last log write,
   or the start time for a row without a log. `limit` must be 1 to 200, and the
   default must be 50. `nextCursor` must continue after the last row of the page, and `truncated` must be true when more
@@ -400,6 +400,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The output must hold no command-line argument, no message text and no environment. The MCP server of the children must
   not have the tool.
   [@test] ../test/running.test.mjs
+  [@test] ../test/session-logs.test.mjs
 - The tool `agents_stop` of the main agent must stop an orphan session of `agents_running` with a signal, in two steps.
   The MCP server of the children must not have the tool. A restart of the daemon must not run a cut-off call again.
 - The first step, a call with `pids` and without `confirmation`, must send no signal. It must give the targets (the PID,
@@ -456,7 +457,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   `status` and `lastActivityAt`, and one entry in `incomplete` must give the count of such rows.
 - The log must give `sessionId`, `title` (a title of the user or of the agent, never a message text), `lastActivityAt`
   (the time of the last write) and `status`. The status is a reading of the log tail, not a fact from the agent, except
-  `waiting_for_permission`:
+  a status from the state of Megachat or from the process file of Claude Code:
   - `working`: the tail ends with a tool call, a tool result or a message without a reply, and the last write is less
     than 10 minutes old. Without a write and a CPU load for 2 to 10 minutes, the status stays `working`.
   - `stuck`: such an open step and no write for 10 minutes or more.
@@ -464,15 +465,22 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
     command of Claude Code (such as `/model`), a shell line of its bash mode (`!`), a note of its memory mode (`#`)
     and the output of each one start no turn.
   - `idle`: a finished turn and no write for 30 minutes or more.
-  - `waiting_for_permission`: the process file `~/.claude/sessions/<PID>.json` of a Claude Code session says that the
-    session waits for a permission: the field `status` is `waiting`, and the field `waitingFor` is `permission prompt`,
-    `sandbox request`, `worker request` or `goal proposal`. Claude Code puts these four values in the group
-    `permission` of its own status line. `input needed` (a question) and `dialog open` are no permission request and
-    must give the status of the log. This status must replace `working`, `stuck`, `waiting_for_user` and `idle`, so a
-    session that waits for a permission does not become `stuck` because its log is silent.
-  - The process file is a hint of another program. Its status must count only when the file gives the link of the row,
-    so a file with another PID, another start time, a symbolic link, a file above 16 KB and a file that is not valid
-    JSON give no status. Its field `statusUpdatedAt` must be a number and must not be more than 1 minute in the
+  - `waiting_for_permission` for a child of Megachat: the run of the row has a pending permission request of its
+    current generation in the state of Megachat. This must hold for a Claude, a Codex and a pi child, whatever the log
+    or a process file says, also without a read log. A child whose run has no pending request must get its status from
+    its log. A pending request of a run must not change the status of a session that is no child of Megachat.
+  - `waiting_for_permission` for another Claude Code session: the process file `~/.claude/sessions/<PID>.json` says
+    that the session waits for a permission: the field `status` is `waiting`, and the field `waitingFor` is
+    `permission prompt`, `sandbox request`, `worker request` or `goal proposal`. Claude Code puts these four values in
+    the group `permission` of its own status line.
+  - `waiting_for_user` from the process file: the field `status` is `waiting`, and the field `waitingFor` is
+    `input needed`, a question to the user. Claude Code puts this value in the group `question`. `dialog open` must give
+    the status of the log.
+  - A status from the process file must replace `working`, `stuck`, `waiting_for_user` and `idle`, so a session that
+    waits for the user does not become `stuck` because its log is silent.
+  - The process file is a hint of another program. Each of its statuses must count only when the file gives the link of
+    the row, so a file with another PID, another start time, a symbolic link, a file above 16 KB and a file that is not
+    valid JSON give no status. Its field `statusUpdatedAt` must be a number and must not be more than 1 minute in the
     future. The log must have no write more than 10 seconds after `statusUpdatedAt`. A CPU load of the process at the
     scan must cancel a wait that started 2 minutes ago or more, because a process that waits uses no CPU. Else the row
     must get the status of its log, and a file that Megachat cannot read must give no error.

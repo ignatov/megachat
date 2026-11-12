@@ -2,7 +2,8 @@
  * The status of a running session from the tail of its log. The status is a reading of the log, not a fact from the
  * agent: the log tells the last step of the session and the time of the last write, and nothing more. Claude Code,
  * Codex and pi write no record of a permission request to the log. Only the process file of Claude Code tells that a
- * session waits for a permission, so only a Claude Code session can get the status `waiting_for_permission`.
+ * session waits for a permission or for the answer to a question, and only the state of Megachat tells it for a child
+ * of Megachat. So only these sessions can get the status `waiting_for_permission`.
  */
 
 /**
@@ -28,25 +29,27 @@ export const IDLE_MS = 30 * 60 * 1000
 export const OPEN_STEPS = new Set(['call', 'result', 'prompt', 'open'])
 
 /**
- * The time after the start of a permission wait in which a log write still belongs to the step before the wait. The
- * log and the process file are two writes, so the write of the tool call can come some seconds after the status.
+ * The time after the start of a wait in a process file in which a log write still belongs to the step before the
+ * wait. The log and the process file are two writes, so the write of the tool call can come some seconds after the
+ * status.
  */
-export const PERMISSION_WRITE_SLACK_MS = 10000
+export const WAIT_WRITE_SLACK_MS = 10000
 /** A time of a process file at most this much after the scan is valid. A later time is no real status. */
 const FUTURE_SLACK_MS = 60000
 
 /**
- * True when the process file of a session says that the session waits for a permission, and the other facts agree.
- * [wait] is `{ sessionId, permissionSince }` from the process file, [sessionId] is the session of the row, [record] is
- * its log, [busy] tells a CPU load of the process at this scan. The process file is a hint of another program, so it
- * counts only for the session of the row, at a time that is not in the future, without a log write after the start of
- * the wait, and not at a CPU load when the wait started 2 minutes ago or more: a process that waits uses no CPU.
+ * The status that the process file of a session gives, `waiting_for_permission` or `waiting_for_user`, or undefined.
+ * [process] is `{ sessionId, wait: { status, since } }` from the process file, [sessionId] is the session of the row,
+ * [record] is its log, [busy] tells a CPU load of the process at this scan. The process file is a hint of another
+ * program, so it counts only for the session of the row, at a time that is not in the future, without a log write
+ * after the start of the wait, and not at a CPU load when the wait started 2 minutes ago or more: a process that waits
+ * uses no CPU.
  */
-export function waitsForPermission(wait, sessionId, record, busy, now) {
-  const since = wait?.permissionSince
-  if (!Number.isFinite(since) || !sessionId || wait.sessionId !== sessionId || since > now + FUTURE_SLACK_MS) return false
-  if (!Number.isFinite(record?.mtimeMs) || record.mtimeMs > since + PERMISSION_WRITE_SLACK_MS) return false
-  return !(busy && now - since >= ACTIVE_MS)
+export function processWaitStatus(process, sessionId, record, busy, now) {
+  const since = process?.wait?.since
+  if (!Number.isFinite(since) || !sessionId || process.sessionId !== sessionId || since > now + FUTURE_SLACK_MS) return undefined
+  if (!Number.isFinite(record?.mtimeMs) || record.mtimeMs > since + WAIT_WRITE_SLACK_MS) return undefined
+  return busy && now - since >= ACTIVE_MS ? undefined : process.wait.status
 }
 
 /**
