@@ -89,6 +89,11 @@ const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
 const cents = usd => Math.round(usd * 100) / 100
 const titleOf = run => (run.title ?? run.prompt ?? '').replace(/\s+/g, ' ').trim().slice(0, TITLE_LIMIT)
 const child = run => ({ title: titleOf(run), project: run.cwd, agent: run.agent ?? 'claude', status: run.status })
+/**
+ * A finished run without a report gets its own result turn before the turn of the morning report, because the event pump
+ * starts the result turns first. So the data marks it, and the report does not tell the same result again.
+ */
+const finishedChild = run => ({ ...child(run), ...(run.reported ? {} : { separateResult: true }) })
 
 /** The commits of [cwd] in the time from [from] to [to], from `git log` with a time limit. Gives `undefined` on a failure. */
 function commitsOf(cwd, from, to, environment, signal) {
@@ -155,8 +160,8 @@ export async function collectReportData({ state, date, workday, spend, sessionSt
     date, period: { from: period.from, to: period.to, timezone },
     userTurns,
     children: {
-      done: finished.filter(run => run.status === 'completed').slice(-LIST_LIMIT).map(child),
-      failed: finished.filter(run => ['failed', 'cancelled', 'interrupted'].includes(run.status)).slice(-LIST_LIMIT).map(child),
+      done: finished.filter(run => run.status === 'completed').slice(-LIST_LIMIT).map(finishedChild),
+      failed: finished.filter(run => ['failed', 'cancelled', 'interrupted'].includes(run.status)).slice(-LIST_LIMIT).map(finishedChild),
       running: runs.filter(run => !terminalStates.has(run.status)).slice(-LIST_LIMIT).map(child),
     },
     permissionsWaiting: Object.values(state.permissions).filter(permission => permission.status === 'pending').slice(-LIST_LIMIT)

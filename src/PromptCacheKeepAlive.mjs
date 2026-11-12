@@ -1,13 +1,12 @@
 import { logEvent, logFailure } from './messages.mjs'
 import { CACHE_RETENTION, environmentSetting } from './Settings.mjs'
-import { isWorkingTime } from './Workday.mjs'
+import { idleEnd, isSleeping, isWorkingTime } from './Workday.mjs'
 
 export { CACHE_TTL_VARIABLE, DEFAULT_KEEPALIVE_HOURS, KEEPALIVE_HOURS_VARIABLE, KEEPALIVE_VARIABLE } from './Settings.mjs'
 /** Below this size of the model context, a cold cache costs too little for a keep-alive request. */
 export const KEEPALIVE_MIN_TOKENS = 20000
 /** The part of the cache lifetime after which the idle daemon acts. `tokprof bench` measured this part. */
 const LIFETIME_PART = 5 / 6
-const MINUTE_MS = 60000
 
 /** The keep-alive settings from the environment alone, without the stored settings. */
 export function keepAliveSettings(environment = process.env) {
@@ -93,11 +92,11 @@ export class PromptCacheKeepAlive {
     // read it. In the working hours the user is then likely back, and a summary now would make the next turn wait, so
     // the idle daemon does nothing. Outside the working hours, no keep-alive request goes out at all.
     if (!resting && now - this.lastRequestAt >= this.ttlMs) return
-    if (resting) {
-      // The user can still work after the end of the working hours. So the conversation goes to sleep only after the
-      // idle time, and until then no request goes out.
-      const sleepAt = this.idleSince + this.workday.idleMinutes * MINUTE_MS
-      if (now < sleepAt) { this.wake(sleepAt); return }
+    // The user can still work after the end of the working hours. So the conversation goes to sleep only after the idle
+    // time, and until then no request goes out.
+    if (resting && !isSleeping(this.workday, now, this.idleSince)) {
+      this.wake(idleEnd(this.workday, this.idleSince))
+      return
     }
     const size = await this.tokens()
     if (this.busy || this.closed) return

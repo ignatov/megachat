@@ -155,12 +155,20 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Outside the working hours, the summary must come at the end of the idle time also when the cache lifetime is over, for example with `cache.ttl=5m` or with an idle time above 50 minutes. The summary request sends the conversation as a transcript with its own system prompt and no cache retention, so it reads no prompt cache, and a cold cache does not change its cost. In the working hours, a timer that comes after the cache lifetime must still do nothing, because the user is then likely back, and a summary would make the next turn wait.
 - A turn outside the working hours must work as usual. After it, the idle rule must apply, and `keepAlive.hours` must not apply. A daemon restart outside the working hours must send no keep-alive request.
 - The first turn after the sleep must start from the context that the summary left.
-- The sleep must not stop a child task. A child result must start its turn at once, and the idle rule must apply after that turn.
-- With `keepAlive.enabled` off, the working day must have no effect.
+- The sleep must not stop a child task.
+- With `keepAlive.enabled` off, the working day must have no effect on the keep-alive requests and on the summary. The wait of the child results below stays.
 - A time must be `HH:MM` or `H:MM` of a 24-hour clock, and the value must become `HH:MM`. The days must be a list or a text such as `mon-fri` or `mon,wed`, with short or full English names, and at least one day. A timezone must be `auto` or a name that `Intl` knows. The idle time must be a whole number of minutes from 0 to 1440.
 - A `settings.json` without the `workday.*` keys must open with the defaults.
   [@test] ../test/workday.test.mjs
   [@test] ../test/settings.test.mjs
+- With `workday.enabled` on, a child result must start no turn while the conversation sleeps: outside the working hours, and idle for `workday.idleMinutes` since the end of the last turn. The keep-alive and the wait of the results must use one shared pure function for this decision, `isSleeping` of `src/Workday.mjs`. The turn of the morning report does not end the idle time.
+- The waiting results must go out at the first of these: right after the next turn of the user, or at `workday.start` of the next working day. A Friday night result goes out on Monday.
+- While the user is active outside the working hours, with a turn in the last `workday.idleMinutes`, a child result must start its turn at once.
+- A permission request of a child must show at once. Only the turn of the result waits.
+- The wait must survive a restart of the daemon: its end must come from the settings and the clock. The timer must look at the clock again at least every 15 minutes.
+- With `report.morning` on, the turn of the waiting results must come before the turn of the morning report, because the event pump starts the result turns first. The data of the report must mark each finished child run without a reported result with `separateResult: true`, and the rules of the report must ask the main agent to name it in a few words and not to tell its result again.
+- With `workday.enabled` off, a child result must start its turn at once, at each time of the day.
+  [@test] ../test/waiting-results.test.mjs
 - The setting `report.morning` must be off by default. Off must start no report, no timer and no run of tokprof. A `settings.json` without the key must open with the default.
 - With it on, the daemon must start one automatic turn of the kind `morning` on each working day at `workday.start`, on the days of `workday.days`, in the timezone of `workday.timezone`, also when `workday.enabled` is off. A change of the daylight saving time must move the time with the local clock.
 - The timer is the first scheduler of the daemon. Its next time must come from the settings and the clock through the pure function `nextWorkdayStart` of `src/Workday.mjs`. It must look at the clock again at least every 15 minutes, so a missed timer gives the report at the first chance on that working day, one time.

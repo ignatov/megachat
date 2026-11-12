@@ -170,9 +170,12 @@ behavior above stays. When it is on, the daemon sends no keep-alive request outs
 `workday.end` on the days of `workday.days`, in the timezone of `workday.timezone`. When you still work after the end,
 the summary waits until the conversation is idle for `workday.idleMinutes`. Then the conversation goes to sleep: above
 the limit of a summary it gets the summary, also after the cache expired, and no request goes out until your next message.
-A message at night works as usual, and the same idle rule applies after it. A child task does not stop, and its result
-starts a turn at once. Your first message of the morning starts from the summary, so its cache write is small. The
-working day acts through the keep-alive, so `keepAlive.enabled` off also stops it.
+A message at night works as usual, and the same idle rule applies after it. A child task does not stop, and a
+permission request of a child shows at once. But a child result that arrives while the conversation sleeps waits: it
+comes right after your next message, or at `workday.start` of the next working day. With the morning report on, the
+results come first, and the report does not tell them again. Your first message of the morning starts from the
+summary, so its cache write is small. `keepAlive.enabled` off stops the effect of the working day on the keep-alive
+requests and on the summary, and the results still wait.
 
 | Variable of the daemon | Effect |
 |------------------------|--------|

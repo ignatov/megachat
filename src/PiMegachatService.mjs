@@ -6,7 +6,7 @@ import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-sc
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { automaticKinds, findSteer, MegachatState, terminalStates } from './MegachatState.mjs'
-import { collectReportData, logReport, MorningReport, reportWorkday } from './MorningReport.mjs'
+import { collectReportData, logReport, MorningReport, REPORT_RECHECK_MS, reportWorkday } from './MorningReport.mjs'
 import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
 import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
@@ -16,7 +16,7 @@ import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore, suggestionMode } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
-import { isWorkingDate, localDate, workdaySettings, zonedTime } from './Workday.mjs'
+import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { SessionIndexService } from './SessionIndexService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -36,6 +36,12 @@ const STEER_WAIT_MS = 30000
 /** The lifetimes of the prompt cache of a model that states none: those of Anthropic. */
 const CACHE_LIFETIME_SECONDS = { short: 300, long: 3600 }
 const resource = name => readFile(new URL(`../resources/${name}`, import.meta.url), 'utf8')
+/** The clock of the working day without a test. A timer does not keep the process alive. */
+const workdayClock = {
+  now: () => Date.now(),
+  setTimeout: (callback, delayMs) => { const timer = setTimeout(callback, delayMs); timer.unref(); return timer },
+  clearTimeout: timer => clearTimeout(timer),
+}
 /**
  * The extension of the main agent. A conversation without its own choice selects only this extension, so the main
  * conversation does not get the tool `read` of a pi child, and a pi child, which selects its own extension, gets nothing
@@ -136,7 +142,8 @@ export class PiMegachatService {
    * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`. [processTable] replaces the
    * process table of the platform for the tool `agents_running`, and [clock] also gives the age of its view, for a test.
    * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test. [morningReport] gives the
-   * clock of the timer of the morning report and the time limit of tokprof, for a test.
+   * clock of the working day and the time limit of tokprof, for a test. The clock gives the time of the timer of the
+   * morning report, of the idle time of the conversation, and of the wait of a child result.
    */
   static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, promptSuggestionLifetimeMs, morningReport: reportOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
@@ -179,7 +186,8 @@ export class PiMegachatService {
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
     service.adopt(values)
-    service.morningReport = new MorningReport({ clock: reportOptions.clock, values: () => service.settings.values(),
+    service.workdayClock = reportOptions.clock ?? workdayClock
+    service.morningReport = new MorningReport({ clock: service.workdayClock, values: () => service.settings.values(),
       lastDate: async () => (await state.snapshot()).morningReport.lastDate, prepare: date => service.prepareMorningReport(date) })
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
@@ -353,7 +361,7 @@ export class PiMegachatService {
    */
   async skipReportOfToday() {
     const workday = reportWorkday(this.settings.values())
-    const now = (this.reportOptions.clock ?? Date).now()
+    const now = this.workdayClock.now()
     const today = localDate(now, workday.timezone)
     if (isWorkingDate(workday, today) && now >= zonedTime(today, workday.start, workday.timezone)) await this.state.morningReportDone(today)
   }
@@ -368,7 +376,7 @@ export class PiMegachatService {
     const workday = reportWorkday(this.settings.values())
     const data = await collectReportData({ state, date, workday, spend: this.spend, sessionStore: this.sessionIndex?.store,
       home: this.home, stateDirectory: this.stateDirectory, environment: this.environment,
-      now: (this.reportOptions.clock ?? Date).now(), tokprofTimeoutMs: this.reportOptions.tokprofTimeoutMs, signal: this.lifetime.signal })
+      now: this.workdayClock.now(), tokprofTimeoutMs: this.reportOptions.tokprofTimeoutMs, signal: this.lifetime.signal })
     if (this.lifetime.signal.aborted) return
     const stored = data ? await this.state.morningReportReady(date, data) : await this.state.morningReportDone(date)
     if (stored) logReport(date, data)
@@ -572,6 +580,8 @@ export class PiMegachatService {
     if (snapshot.current) this.keepAlive?.turnStarted()
     else {
       const last = await this.lastMessageTime()
+      // After a restart, the last message stands for the end of the last turn, as for the keep-alive.
+      this.idleSince = last
       if (last !== undefined) this.keepAlive?.turnEnded(last)
     }
     let running = Boolean(snapshot.current)
@@ -581,8 +591,13 @@ export class PiMegachatService {
       if (running !== Boolean(snapshot.current)) {
         running = Boolean(snapshot.current)
         if (running) this.keepAlive?.turnStarted()
-        // The morning report comes while the user can be away, so it starts no window of keep-alive requests.
-        else this.keepAlive?.turnEnded(undefined, { automatic: kind === 'morning' })
+        else {
+          // The morning report comes while the user can be away, so it starts no window of keep-alive requests, and it
+          // does not wake the conversation for the child results.
+          const automatic = kind === 'morning'
+          if (!automatic) this.idleSince = this.workdayClock.now()
+          this.keepAlive?.turnEnded(undefined, { automatic })
+        }
       }
       kind = snapshot.current?.kind ?? kind
       if (snapshot.current) { this.watchPromptSuggestion(snapshot); return }
@@ -599,12 +614,15 @@ export class PiMegachatService {
         this.reportTimer.unref()
       }
       this.watchPromptSuggestion(snapshot)
+      const resultsWait = resultsPending && this.resultsWait()
+      if (resultsWait) this.watchWaitingResults(observe)
       const sessionsPending = Boolean(snapshot.sessionIndex?.summary)
       const reportPending = Boolean(snapshot.morningReport?.pending)
-      if (!resultsPending && !sessionsPending && !reportPending) return
+      if ((!resultsPending || resultsWait) && !sessionsPending && !reportPending) return
       this.eventPump = this.eventPump.then(async () => {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
-        const receipt = await this.state.nextChildResults() ?? await this.state.nextSessionsEvent() ?? await this.state.nextMorningReport()
+        const receipt = (this.resultsWait() ? null : await this.state.nextChildResults()) ?? await this.state.nextSessionsEvent()
+          ?? await this.state.nextMorningReport()
         if (receipt) this.follow(receipt)
       }).catch(error => {
         if (this.lifetime.signal.aborted) return
@@ -619,6 +637,31 @@ export class PiMegachatService {
     this.morningReport.check()
     // An index that cannot open must not stop the chat. The log names the failure, and a change of the setting tries again.
     await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
+  }
+
+  /**
+   * True when a child result waits: with `workday.enabled` on, while the conversation sleeps outside the working hours,
+   * as the keep-alive decides it. A turn of the user, or the start of the working hours, ends the wait. A permission
+   * request of a child does not wait, because it is no turn.
+   */
+  resultsWait() {
+    const workday = workdaySettings(this.values)
+    return workday !== undefined && isSleeping(workday, this.workdayClock.now(), this.idleSince)
+  }
+
+  /**
+   * Looks at the waiting results again at the next start of a working day. The timer waits at most 15 minutes, so a
+   * computer that slept looks at the clock again soon. The time comes from the settings and the clock, so a restart
+   * keeps the wait.
+   */
+  watchWaitingResults(observe) {
+    if (this.waitTimer !== undefined || this.lifetime.signal.aborted) return
+    const now = this.workdayClock.now()
+    const next = nextWorkdayStart(workdaySettings(this.values), now) ?? Infinity
+    this.waitTimer = this.workdayClock.setTimeout(() => {
+      this.waitTimer = undefined
+      this.waitCheck = this.state.snapshot().then(observe).catch(() => {})
+    }, Math.min(REPORT_RECHECK_MS, next - now))
   }
 
   /** Withdraws the prompt suggestion at its `expiresAt`. One timer watches the live suggestion. */
@@ -760,6 +803,7 @@ export class PiMegachatService {
   async close() {
     this.lifetime.abort()
     await this.morningReport?.close()
+    if (this.waitTimer !== undefined) this.workdayClock.clearTimeout(this.waitTimer)
     clearTimeout(this.reportTimer)
     clearTimeout(this.expiry?.timer)
     await this.keepAlive?.close()

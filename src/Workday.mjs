@@ -102,6 +102,20 @@ export function isWorkingTime(workday, at) {
   return (minute >= start && workday.days.includes(day)) || (minute < end && workday.days.includes(previous))
 }
 
+/** The end of the idle time of [workday] after the last turn at [idleSince]. Without a last turn, no idle time is left. */
+export function idleEnd(workday, idleSince) {
+  return (idleSince ?? -Infinity) + workday.idleMinutes * 60000
+}
+
+/**
+ * True when the conversation sleeps at the time [at]: outside the working hours of [workday], and idle for
+ * `idleMinutes` since the end of the last turn at [idleSince]. The keep-alive stops its requests and the waiting child
+ * results stay back on the same decision.
+ */
+export function isSleeping(workday, at, idleSince) {
+  return !isWorkingTime(workday, at) && at >= idleEnd(workday, idleSince)
+}
+
 /** True when [date] is a working day of [workday]. */
 export function isWorkingDate(workday, date) {
   return workday.days.includes(weekdayOf(date))
