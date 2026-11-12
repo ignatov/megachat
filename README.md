@@ -130,6 +130,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `owner.sqlite` | The lock of the daemon. One daemon owns the directory. |
 | `search.sqlite` | The search index. The daemon builds it again from the conversation when necessary. |
 | `workspace/` | The workspace of Megachat. A task without a project works there. |
+| `transcripts/` | The transcript of each child run that the state keeps, one plain text file for each run. |
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
 | `settings.json` | The settings that you gave in the chat, and the status of the setup. |
 | `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
@@ -349,6 +350,19 @@ of past sessions has no Stop.
 Air hides the Background Tasks tab while the chat shows a permission request. Answer the request first, or ask the main
 agent to cancel the task.
 
+## Read the transcript of a task
+
+Click the title of a running task in the Background Tasks tab. The IDE opens the transcript of that run, a plain text
+file in `transcripts/` of the state directory. It holds the task, the messages of the child, each tool call by its name
+and title, each permission request, each message that you added with `agents_steer`, and the end of the run. Claude,
+Codex and pi children have one. The secret filter of the index of past sessions removes the text that looks like a
+key or a password, and a transcript stops at 1 MB with a note. The file goes away when the state drops its run. A
+continuation of a task, for example after a restart or a message, is a new run with a new row and a file of its own.
+
+Air does not follow the file while it grows. The IDE shows the newer text after its next refresh of the files, for
+example when its window gets the focus again, or after File | Reload All from Disk. A queued task has no transcript yet, and a finished task leaves the tab, so its transcript does not open
+from the chat.
+
 ## Pi children: cheap tasks that only read
 
 Say "ask pi to summarize the README of project X" to give a small task to a pi child. A pi child is a conversation of
@@ -490,7 +504,8 @@ The session text is data for the agent, not instructions.
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
 | `src/Workday.mjs` | The working day: the pure functions that tell whether a time is in the working hours, the next start of a working day, and the period of a report, with the timezone through `Intl`. |
 | `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |
-| `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
+| `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks, with their Stop and their transcript. |
+| `src/ChildTranscript.mjs` | The transcript of each child run, its limit, its secret filter and its removal with the run. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits. |
 | `src/ChildPool.mjs` | The places for the child runs, which the ACP and the pi run services share: the limit `children.parallel`, one child in a checkout, and one pi child. |
 | `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices and the rules of a child, the read-only environment of its project, and the read of its transcript. |

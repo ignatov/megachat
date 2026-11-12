@@ -4,6 +4,7 @@ import { agent, methods } from '@agentclientprotocol/sdk/unstable'
 import { VERSION } from './MegachatBuild.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
 import { serviceSessionsOf, terminalStates } from './MegachatState.mjs'
+import { transcriptPath } from './ChildTranscript.mjs'
 import { replyText } from './ReplyStream.mjs'
 import { livePromptSuggestion, promptSuggestionUpdate } from './Suggestions.mjs'
 
@@ -63,9 +64,12 @@ function promptText(prompt) {
   return prompt.map(block => block.type === 'text' ? block.text : `[${block.name}](${block.uri})`).join('\n')
 }
 
-/** Routes ACP views to one daemon conversation. Each view owns its transcript projection. */
+/**
+ * Routes ACP views to one daemon conversation. Each view owns its transcript projection. [transcripts] is the directory
+ * of the transcripts of the child runs in the state directory of the daemon. Without it, a row names no file.
+ */
 export class AcpBridge {
-  constructor(daemon) { this.daemon = daemon; this.views = new Map() }
+  constructor(daemon, { transcripts } = {}) { this.daemon = daemon; this.transcripts = transcripts; this.views = new Map() }
 
   app() {
     return agent({ name: 'air-megachat' })
@@ -134,6 +138,7 @@ class AcpBridgeSession {
     this.nativeTurns = capabilities.nativeTurns
     this.serviceSessions = capabilities.serviceSessions
     this.workspaces = capabilities.workspaces
+    this.transcripts = capabilities.transcripts
     // The prompt suggestion that this view sent last, and the last state of the daemon. The view sends a suggestion
     // only after its attach, so a suggestion never is a part of the replay.
     this.shownSuggestion = null
@@ -431,7 +436,11 @@ class AcpBridgeSession {
     for (const [id, row] of rows) {
       if (this.childTasks.has(id)) continue
       this.childTasks.set(id, id.slice(0, id.lastIndexOf(':')))
-      await this.notify({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, ...row,
+      // Air opens the file of `outputFilePath` from the row. The daemon writes the transcript from the start of the run,
+      // so a queued row names no file.
+      const runId = rowRunId(id)
+      const output = this.transcripts && runId && !/:(queued|resuming)$/.test(id) ? { outputFilePath: transcriptPath(this.transcripts, runId) } : {}
+      await this.notify({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, ...row, ...output,
         taskType: 'agent', showInTranscript: false })
     }
   }

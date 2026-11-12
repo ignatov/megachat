@@ -115,6 +115,18 @@ async function answerPrompt(ctx) {
     })
     return { stopReason: 'end_turn' }
   }
+  // Two tool calls, the second one fails, and a reply in three parts with a secret across two of them.
+  if (text === 'tools') {
+    const update = update => ctx.client.notify(methods.client.session.update, { sessionId: 'fake-session', update })
+    await update({ sessionUpdate: 'tool_call', toolCallId: 'read-1', title: 'Read', kind: 'read', status: 'pending', _meta: { claudeCode: { toolName: 'Read' } } })
+    await update({ sessionUpdate: 'tool_call_update', toolCallId: 'read-1', title: 'Read README.md', status: 'completed' })
+    await update({ sessionUpdate: 'tool_call', toolCallId: 'run-1', title: 'npm test', kind: 'execute', status: 'pending' })
+    await update({ sessionUpdate: 'tool_call_update', toolCallId: 'run-1', status: 'failed' })
+    for (const text of ['The README ', 'says hello.\n\nThe key is sk-', 'abcdefghijklmnopqrstuvwxyz in the file.\n']) {
+      await update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+    }
+    return { stopReason: 'end_turn' }
+  }
   if (text === 'approval') {
     const answer = await ctx.client.request(methods.client.session.requestPermission, {
       sessionId: 'fake-session', toolCall: { toolCallId: 'write', title: 'Write a file' },

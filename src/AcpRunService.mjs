@@ -102,7 +102,7 @@ export function steerBlock(items) {
 export class AcpRunService {
   constructor(state, configuration, {
     command, args, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, pool = new ChildPool(),
-    settings = () => ({}), resolveSettings = resolveClaudeSettings,
+    settings = () => ({}), resolveSettings = resolveClaudeSettings, transcripts,
   } = {}) {
     this.state = state
     this.configuration = configuration
@@ -113,6 +113,8 @@ export class AcpRunService {
     this.pool = pool
     this.settings = settings
     this.resolveSettings = resolveSettings
+    // The transcripts of the runs (`ChildTranscripts`). A test without it writes none.
+    this.transcripts = transcripts
     this.active = new Map()
     this.stopping = false
     this.closing = false
@@ -182,6 +184,7 @@ export class AcpRunService {
     try {
       // The time of the start shows which children ran at the same time.
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, startedAt: Date.now() })) return
+      work.transcript = this.transcripts?.begin(run)
       const agent = run.agent ?? 'claude'
       if (agent === 'claude') await refuseProjectBaseUrl(run.cwd, this.resolveSettings)
       // The settings of the dispatch. A change during the run applies to the next child.
@@ -210,6 +213,7 @@ export class AcpRunService {
       connection = client({ name: 'air-megachat' })
         .onNotification(methods.client.session.update, ({ params }) => {
           if (!dispatched && params.update.sessionUpdate !== 'config_option_update') return
+          if (dispatched) work.transcript?.update(params.update)
           updates = updates.then(() => this.state.appendUpdate(run.id, generation, params.update))
           updates.catch(() => this.kill(child))
           return updates
@@ -217,6 +221,7 @@ export class AcpRunService {
         .onRequest(methods.client.session.requestPermission, async ({ params }) => {
           waitingPermissions++
           clearTimeout(timer)
+          work.transcript?.permission(params.toolCall?.title ?? '')
           try {
             const id = await this.state.requestPermission(run.id, generation, withoutBypass(params))
             const permission = await waitForState(this.state, snapshot => {
@@ -296,13 +301,15 @@ export class AcpRunService {
       const rules = this.childRules?.()
       // Claude Code never reads `AGENTS.md`. Without a `CLAUDE.md`, the prompt holds it, as the instructions of a pi child do.
       const repository = agent === 'claude' ? await claudeChildRules(run.cwd).catch(() => undefined) : undefined
+      const task = run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}`
+      work.transcript?.prompt(task, added)
       const prompting = ctx.request(methods.agent.session.prompt, {
         sessionId, prompt: [
           ...(this.historyServer ? [{ type: 'text', text: message('history.instructions') }] : []),
           ...(rules ? [{ type: 'text', text: rules }] : []),
           ...(repository ? [{ type: 'text', text: repository }] : []),
           // A continuation quotes its task in the same block as its prompt. The first prompt can be lost.
-          { type: 'text', text: run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}` },
+          { type: 'text', text: task },
           ...(added.length ? [{ type: 'text', text: steerBlock(added) }] : []),
         ],
       })
@@ -397,6 +404,7 @@ export class AcpRunService {
         // The answer can come at the end of the turn. The count of the stream then tells whether the turn did its work.
         if (outcome === 'injected') {
           work.steered.set(item.id, { state: 'delivered', updates: work.answered ?? work.updates })
+          work.transcript?.steer(item.text)
           await this.state.updateSteer(runId, generation, item.id, { delivery: 'delivered', outcome: 'injected' })
         }
         else work.steered.set(item.id, { state: outcome === 'promptRequired' || outcome === 'startedNewTurn' ? 'ended' : 'fallback' })

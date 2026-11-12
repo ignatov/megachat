@@ -96,7 +96,7 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 
 | Update | Fields | What Air does |
 |---|---|---|
-| `async_task_spawned` | `asyncTaskId`, `name`, `taskType`, `showInTranscript`, `description`, `canStop` | Air lists the task in the Background Tasks tab of the chat. The session row shows work until the last task ends. |
+| `async_task_spawned` | `asyncTaskId`, `name`, `taskType`, `showInTranscript`, `description`, `canStop`, `outputFilePath` | Air lists the task in the Background Tasks tab of the chat. The session row shows work until the last task ends. |
 | `async_task_state_update` | `asyncTaskId`, `state` | Air ends the task. `state` is `completed`, `failed` or `stopped`. |
 
 - `asyncTaskId`, `name`, `taskType` and `showInTranscript` are required.
@@ -115,6 +115,29 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 - Air treats a task type other than `turn` as ordinary background work. Air accepts a task while no prompt runs.
 - Air drops a second `async_task_spawned` with the ID of an open task. Air fails each open task when a new agent
   process connects. So Megachat forgets its sent tasks on each attach and sends them again.
+
+## The transcript of a child run
+
+This is a field that Air of today reads. It is not an extension of Megachat, and it needs no change in Air.
+
+- Air reads `outputFilePath` in `async_task_spawned`, `async_task_progress` and `async_task_state_update`, and the
+  first value of a task stays (`AcpSessionRuntimeFacts.kt`, `SessionAsyncTaskReducer.kt`). A task with the field has
+  a title that is a link (`AsyncTaskOutputEditorSync.kt`, `hasInspectableOutput`).
+- A click on the title opens the file in an editor of the IDE, through the file open service of Air, when the path
+  resolves to a local file (`AsyncTaskOutputEditorSync.kt`, `findAttachedAsyncTaskOutputFile`). Air does not limit the
+  path to the project. When the file does not resolve, Air opens its own transient editor with the name, the state and
+  the description of the task.
+- The editor of the file depends on the extension. Air opens a `.md` file in the rendered Markdown preview by default.
+  So Megachat writes plain text with the extension `.txt`: a preview could load an image from an address in the text
+  of a child. The transient editor of Air is plain text too.
+- Air refreshes the file one time when it opens it. Air does not follow the file while it grows. The IDE reloads an
+  open file at its own refresh of the file system, for example when its window gets the focus again.
+- Megachat sends `outputFilePath` in the row of a run in the phase `running` or `approval`. The path is
+  `transcripts/<run ID>.txt` in the state directory. A queued row has no file yet, so it sends none. A row ends when
+  its run ends, and Air keeps no ended task in the Background Tasks tab. So the transcript opens from the chat only
+  while the run is unfinished.
+- Megachat sends no `async_task_progress`. With an attached file, Air shows the file and not the progress. The row
+  shows the `description` of the spawn, and Air keeps each progress update in its session log.
 
 ## The Stop of a row
 

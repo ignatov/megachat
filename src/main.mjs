@@ -12,6 +12,7 @@ import { AcpBridge } from './AcpBridge.mjs'
 import { checkAccounts } from './AgentAccountCheck.mjs'
 import { CentralConfigurationService } from './CentralConfigurationService.mjs'
 import { AcpRunService } from './AcpRunService.mjs'
+import { ChildTranscripts } from './ChildTranscript.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { DaemonClient } from './DaemonClient.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
@@ -52,6 +53,7 @@ async function daemon() {
   let service
   let children
   let piChildren
+  let transcripts
   let server
   let stopping
   let starting
@@ -61,7 +63,7 @@ async function daemon() {
     await starting?.catch(() => {})
     try { await server?.close() }
     finally {
-      try { await children?.close(); await piChildren?.close() }
+      try { await children?.close(); await piChildren?.close(); await transcripts?.close() }
       finally {
         try { await service?.close() }
         finally { await owner.close() }
@@ -98,11 +100,15 @@ async function daemon() {
     // The daemon runs at most `children.parallel` children at a time, ACP and pi together, and one child in a checkout.
     // A pi run that was dispatched before a restart takes its place first, because Pi Durable continues it.
     const pool = new ChildPool({ limit: () => service.settings.entry('children.parallel').value })
-    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), pool })
+    // The transcripts of the child runs, which Air opens from the rows of the chat.
+    transcripts = new ChildTranscripts(join(directory, 'transcripts'))
+    await transcripts.start(service.state)
+    proceed()
+    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), pool, transcripts })
     await piChildren.start()
     proceed()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),
-      childRules: () => service.childRules(), settings: () => service.settings.values(), pool })
+      childRules: () => service.childRules(), settings: () => service.settings.values(), pool, transcripts })
     await children.start()
     proceed()
     await service.resume()
@@ -242,7 +248,7 @@ try {
     }
     case 'install': process.exitCode = await install(); break
     case 'acp': {
-      const bridge = new AcpBridge(await start())
+      const bridge = new AcpBridge(await start(), { transcripts: join(directory, 'transcripts') })
       const connection = bridge.app().connect(ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)))
       try { await connection.closed }
       finally { bridge.close() }

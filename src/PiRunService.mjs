@@ -17,6 +17,18 @@ function assistantText(entry) {
     .flatMap(model => model.content.filter(block => block.type === 'text').map(block => block.text)).join('\n').trim()
 }
 
+/** Gives the texts and the tool calls of the child in one entry of its conversation to [transcript], in their order. */
+function transcribe(transcript, entry) {
+  for (const model of entry.model ?? []) {
+    if (model.role !== 'assistant') continue
+    for (const block of model.content) {
+      if (block.type === 'text' && block.text.trim()) transcript.text(block.text)
+      // The tool `read` has one argument, the path. Another tool shows its arguments as JSON.
+      if (block.type === 'toolCall') transcript.tool(block.name, block.arguments?.path ?? JSON.stringify(block.arguments ?? {}))
+    }
+  }
+}
+
 /**
  * Executes the admitted pi runs in the daemon process, as `AcpRunService` executes the Claude and Codex runs. A pi run
  * goes through the same states, so the reports, the limits and the prune rules stay the same. Each child session is an
@@ -32,8 +44,10 @@ function assistantText(entry) {
  * in the same storage, so a message arrives one time, also after a restart.
  */
 export class PiRunService {
-  constructor(state, harness, { agent, pool = new ChildPool(), deadlineMs = 1800000 } = {}) {
+  constructor(state, harness, { agent, pool = new ChildPool(), deadlineMs = 1800000, transcripts } = {}) {
     this.state = state
+    // The transcripts of the runs (`ChildTranscripts`). A test without it writes none.
+    this.transcripts = transcripts
     this.harness = harness
     this.agent = agent
     this.pool = pool
@@ -125,12 +139,14 @@ export class PiRunService {
         // continuation for a message of the user starts with the output of the run before it.
         if (!await this.state.transition(run.id, ['dispatched'], { generation, output: run.carriedOutput ?? '',
           truncated: run.carriedTruncated ?? false })) return
+        work.transcript = this.transcripts?.begin(run, { again: true })
         conversation = await this.harness.conversation(Number(run.providerSessionId), context)
         requireCondition(conversation, 'missing')
       }
       else {
         const deadlineAt = Date.now() + this.deadlineMs
         if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, deadlineAt, startedAt: Date.now() })) return
+        work.transcript = this.transcripts?.begin(run)
         run = { ...run, deadlineAt }
         // A step before the dispatch can wait on the file system. A cancel, the deadline and a daemon stop end the wait,
         // and the run ends as for an error. The dispatch is one commit, so it gets no such end.
@@ -163,7 +179,7 @@ export class PiRunService {
         }
         baseline = (await step(conversation.entries({ order: 'descending' }, 1, undefined, context))).items[0]?.id ?? 0
         clearTimeout(timer)
-        submissionId = await this.dispatch(run, generation, conversation, baseline)
+        submissionId = await this.dispatch(run, generation, conversation, baseline, work)
         if (submissionId === null) {
           await this.state.transition(run.id, ['ready'], { status: 'cancelled' })
           return
@@ -220,19 +236,24 @@ export class PiRunService {
    * Submits the prompt of [run] to its conversation in the commit that makes the run dispatched. So a restart finds
    * either both or neither, and the request ID of the run stops a second submission. Gives `null` for a cancelled run.
    */
-  dispatch(run, generation, conversation, baseline) {
+  dispatch(run, generation, conversation, baseline, work) {
     return this.state.change(async (state, tx) => {
       const current = state.runs[run.id]
       requireCondition(current.status === 'ready' && current.generation === generation, 'stale')
       if (current.cancelRequested) return null
       // A message of the user from before the dispatch goes in the prompt, as a block after the task.
       const added = (current.steers ?? []).filter(item => item.delivery === 'fallback')
-      const content = [run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}`,
-        ...(added.length ? [steerBlock(added)] : [])].join('\n\n')
+      const task = run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}`
+      const content = [task, ...(added.length ? [steerBlock(added)] : [])].join('\n\n')
+      // The commit can run this function again, so the transcript gets the prompt after the commit.
+      work.prompt = { task, added }
       const submissionId = await conversation.submit(tx, { type: 'input', content, requestId: `run:${run.id}` })
       Object.assign(current, { status: 'dispatched', dispatched: true, submissionId, entryBaseline: baseline,
         // A continuation for a message of the user starts with the output of the run before it. A restart needs it again.
         ...(current.output ? { carriedOutput: current.output, carriedTruncated: current.truncated } : {}) })
+      return submissionId
+    }).then(submissionId => {
+      if (submissionId !== null) work.transcript?.prompt(work.prompt.task, work.prompt.added)
       return submissionId
     })
   }
@@ -252,6 +273,7 @@ export class PiRunService {
           page = await conversation.entries({ order: 'ascending', minEntryId: seen + 1 }, 50, cursor, context)
           for (const entry of page.items) {
             seen = Math.max(seen, entry.id)
+            if (work.transcript) transcribe(work.transcript, entry)
             const text = assistantText(entry)
             if (!text) continue
             await this.state.appendUpdate(run.id, generation, { sessionUpdate: 'agent_message_chunk',
@@ -348,6 +370,7 @@ export class PiRunService {
           Object.assign(stored, { delivery: 'delivered', outcome: 'injected', sentAt: Date.now(), submissionId })
           return 'injected'
         })
+        if (given === 'injected') work.transcript?.steer(item.text)
         // The turn ended first: the message waits for the end of the run, which gives a follow-up.
         if (given === 'idle' || given === 'gone' || given === 'injected') continue
       }

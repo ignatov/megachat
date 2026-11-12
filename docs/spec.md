@@ -219,6 +219,24 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   nothing.
   [@test] ../test/integration.test.mjs
   [@test] ../test/pi-child.test.mjs
+- The daemon must write a transcript of each child run, from the start of its execution, to `transcripts/<run ID>.txt`
+  in the state directory. The file must be plain text with the mode 0600, in a directory with the mode 0700. The row
+  of a run in the phase running or waiting for permission must name the file in `outputFilePath`, so Air opens it
+  from the row. A queued row must name no file. A client without `asyncTasks` must get no row.
+- A transcript must hold the title, the agent, the project, the prompt of the task with each message of the user that
+  the prompt holds, the messages of the child, each tool call by its name and title, a changed title and a failure of
+  a tool call, each permission request, each message of the user that a steer added to the turn, and the end of the
+  run with its status. This must be so for a Claude, a Codex and a pi child. A pi run that the daemon continues after
+  a restart must continue its transcript with a note.
+- The secret filter of the session index must apply to each text. A part of a message must wait for the end of its
+  paragraph, at most 16,000 characters, so the filter sees a secret that comes in two parts.
+- A transcript must have at most 1,000,000 bytes. At the limit, it must end with a note and get no more text.
+- A failure to write a transcript must go to the log one time for the run, without content. The run must go on
+  without its transcript. No transcript text may go to the log.
+- The file must go away when the state drops its run. The start of the daemon must remove each file of a run that the
+  state does not have.
+- Megachat must send no `async_task_progress`: with a file, Air shows the file and not the progress.
+  [@test] ../test/transcript.test.mjs
 - A completed main reply must arrive before the prompt response.
 - History replay must include the earlier user messages.
 - A prompt may hold the blocks `text` and `resource_link`, as ACP requires of each agent. The main agent must get each
