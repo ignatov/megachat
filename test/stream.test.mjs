@@ -16,6 +16,7 @@ import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { ReplyStream, streamEnabled } from '../src/ReplyStream.mjs'
+import { fakeClock } from './fake-clock.mjs'
 
 const LONG = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ')
 
@@ -252,26 +253,35 @@ test('the daemon sends at most 20 stream events in a second, and no conversation
 })
 
 test('a stream joins the text that arrives faster than its interval, and keeps a character of two units whole', async () => {
+  // The time moves only in `advance`. So a slow computer cannot change the number of events.
+  const clock = fakeClock()
+  const start = clock.now()
   const events = []
   const first = []
-  const stream = new ReplyStream(async (type, value) => { events.push({ type, ...value }) }, { intervalMs: 40, onFirstText: (event, ms) => first.push(ms) })
+  const stream = new ReplyStream(async (type, value) => { events.push({ type, ...value, at: clock.now() - start }) },
+    { intervalMs: 40, onFirstText: (event, ms) => first.push(ms), clock })
   const view = text => ({ docs: { 'pi.live': { run: { taskId: 7 }, generation: { attempt: 1, ...(text === undefined ? {} : { message: { content: [{ type: 'text', text }] } }) } } } })
+  const joined = () => events.map(event => event.text).join('')
   await stream.observe(view())
+  await clock.advance(5)
+  // A part of the text each 2 ms, for 80 ms: the first part goes out at once, and the other parts wait for the interval.
   let text = ''
-  for (let index = 0; index < 40; index++) { text += `${index} `; await stream.observe(view(text)); await sleep(2) }
+  for (let index = 0; index < 40; index++) { text += `${index} `; await stream.observe(view(text)); await clock.advance(2) }
+  assert.deepEqual(events.map(event => event.at), [5, 45, 85])
+  assert.equal(joined(), text)
+  // One half of a character of two units does not go out, also after the interval.
   await stream.observe(view(`${text}\ud83d`))
-  await sleep(60)
-  assert.ok(events.length >= 2 && events.length <= 5, `${events.length} events`)
-  assert.equal(events.map(event => event.text).join(''), text)
+  await clock.advance(60)
+  assert.equal(joined(), text)
   await stream.observe(view(`${text}😀`))
-  await sleep(60)
-  assert.equal(events.map(event => event.text).join(''), `${text}😀`)
+  assert.equal(joined(), `${text}😀`)
   assert.ok(events.every(event => event.type === 'stream' && event.taskId === 7 && event.attempt === 1))
-  assert.equal(first.length, 1)
+  assert.deepEqual(first, [5])
   // The end of the reply stops a text that waits: the entry gives it to the client.
+  await clock.advance(60)
   await stream.observe(view(`${text}😀 one`))
   await stream.observe(view(`${text}😀 one two`))
   await stream.observe({ docs: { 'pi.live': {} } })
-  await sleep(60)
-  assert.equal(events.map(event => event.text).join(''), `${text}😀 one`)
+  await clock.advance(60)
+  assert.equal(joined(), `${text}😀 one`)
 })
