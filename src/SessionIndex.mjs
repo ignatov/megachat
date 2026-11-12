@@ -42,7 +42,8 @@ const LOGS_TABLE = `CREATE TABLE IF NOT EXISTS logs (path TEXT PRIMARY KEY, agen
 
 const TABLES = [
   'CREATE TABLE meta (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), version INTEGER NOT NULL, first_pass_at INTEGER, announce INTEGER NOT NULL)',
-  // The import state of each session file. `state` is `indexed`, or `outside` for a session in no listed directory.
+  // The import state of each session file. `state` is `indexed`, `outside` for a session in no listed directory, or
+  // `unreadable` for a file that the import could not read. An `unreadable` file keeps its session when it had one.
   // `tail` is a hash of the last bytes before `offset`, so the import finds a file that a writer rewrote in place.
   `CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, agent TEXT NOT NULL, session INTEGER, cwd TEXT,
     size INTEGER NOT NULL, mtime_ms INTEGER NOT NULL, ino TEXT NOT NULL, offset INTEGER NOT NULL, state TEXT NOT NULL, tail TEXT)`,
@@ -142,6 +143,16 @@ export class SessionIndex {
       VALUES (?, ?, NULL, ?, ?, ?, ?, 0, 'outside') ON CONFLICT (path) DO UPDATE SET session = NULL, cwd = excluded.cwd,
       size = excluded.size, mtime_ms = excluded.mtime_ms, ino = excluded.ino, offset = 0, state = 'outside', tail = NULL`,
     file.path, file.agent, cwd ?? null, file.size, Math.floor(file.mtimeMs), file.ino))
+  }
+
+  /**
+   * Records a file that the import could not read: the state `unreadable`, with the size and the time of the file. A
+   * file in the index keeps its session, its entries, its inode and its offset, so a rotation stays visible.
+   */
+  unreadable(file) {
+    return this.#guard(() => this.db.run(`INSERT INTO files (path, agent, session, cwd, size, mtime_ms, ino, offset, state)
+      VALUES (?, ?, NULL, NULL, ?, ?, ?, 0, 'unreadable') ON CONFLICT (path) DO UPDATE SET size = excluded.size,
+      mtime_ms = excluded.mtime_ms, state = 'unreadable'`, file.path, file.agent, file.size, Math.floor(file.mtimeMs), file.ino))
   }
 
   /** Stores the size and the time of a file that changed without a change of its import. */
@@ -260,8 +271,8 @@ export class SessionIndex {
       if (await tx.get('SELECT 1 FROM files WHERE session = ?', file.session)) {
         const count = await tx.get('SELECT count(*) AS count FROM entries WHERE session = ? AND role != ?', file.session, 'title')
         await tx.run('UPDATE sessions SET entry_count = ? WHERE id = ?', count.count, file.session)
-        const others = await tx.all("SELECT path FROM files WHERE session = ? AND state = 'indexed'", file.session)
-        await tx.run("UPDATE files SET size = -1, offset = 0, tail = NULL WHERE session = ? AND state = 'indexed'", file.session)
+        const others = await tx.all('SELECT path FROM files WHERE session = ?', file.session)
+        await tx.run('UPDATE files SET size = -1, offset = 0, tail = NULL WHERE session = ?', file.session)
         return others.map(row => row.path)
       }
       // The entries of other files with the same session, such as the title, go with the session.

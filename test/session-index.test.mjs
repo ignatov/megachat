@@ -479,6 +479,49 @@ test('a file that the import cannot read does not stop the pass, and the import 
   assert.equal((await hits(index, 'claude', project, 'newer')).length, 1, 'The import reads the lines that it could not read before')
 })
 
+test('a file that becomes readable again without a change enters the index at the next pass or at a watch event of it', async t => {
+  const directories = await fixture(t)
+  const { home, project, other } = directories
+  const fresh = await claudeSession(home, project, 'fresh', [claudeLine('u1', 'user', 'juniper fresh', project)], NOW - DAY)
+  const known = await claudeSession(home, project, 'known', [claudeLine('u2', 'user', 'juniper known', project)], NOW - 2 * DAY)
+  const fs = blockingFs(new Set([fresh]))
+  const state = fakeState({ workspaces: [project] })
+  const first = await service(t, directories, state, { fs })
+  await first.index.apply(ON)
+  await first.index.idle()
+  assert.deepEqual((await hits(first.index, 'claude', project, 'juniper')).map(hit => hit.session.sessionId), ['known'])
+  // A file in the index becomes unreadable, and a writer adds a line.
+  fs.blocked.add(known)
+  await appendFile(known, claudeLine('u3', 'user', 'juniper later', project))
+  const root = join(home, '.claude', 'projects')
+  const name = file => `${project.replace(/[^a-zA-Z0-9]/g, '-')}/${file}.jsonl`
+  first.watch.change(root, name('known'))
+  await first.index.idle()
+  // A chmod gives the read permission back: no size, inode or modification time changes.
+  fs.blocked.clear()
+  fs.opened.length = 0
+  assert.equal(await first.index.catchUp(project), true)
+  assert.deepEqual(fs.opened, [], 'A search does not try an unreadable file again')
+  // The next pass, here for a new listed directory, reads both files.
+  state.set({ projects: [other] })
+  await first.index.idle()
+  assert.deepEqual((await hits(first.index, 'claude', project, 'juniper')).map(hit => hit.session.sessionId).sort(), ['fresh', 'known'])
+  assert.equal((await hits(first.index, 'claude', project, 'later')).length, 1, 'The file in the index keeps its offset')
+  assert.equal((await first.index.store.counts()).entries, 3)
+  assert.deepEqual((await first.index.store.files()).map(row => row.state), ['indexed', 'indexed'])
+
+  // A watch event of the file, as macOS gives for a chmod, also reads it.
+  const third = await claudeSession(home, project, 'third', [claudeLine('u4', 'user', 'juniper third', project)], NOW - DAY)
+  fs.blocked.add(third)
+  first.watch.change(root, name('third'))
+  await first.index.idle()
+  assert.equal((await hits(first.index, 'claude', project, 'third')).length, 0)
+  fs.blocked.clear()
+  first.watch.change(root, name('third'))
+  await first.index.idle()
+  assert.equal((await hits(first.index, 'claude', project, 'third')).length, 1)
+})
+
 test('a pass that failed runs again on the next change of a session file', async t => {
   const directories = await fixture(t)
   const { home, project } = directories

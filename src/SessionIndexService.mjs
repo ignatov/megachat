@@ -260,9 +260,14 @@ export class SessionIndexService {
     return candidates
   }
 
-  /** The work of a file: none, a read of its new lines, or a new import. */
-  #needsWork(row, file, directories) {
+  /**
+   * The work of a file: none, a read of its new lines, or a new import. A file that the import could not read gets a
+   * new try at a [retry]: a pass or a watch event of the file. A chmod changes no size and no modification time, so
+   * only such a try finds a file that became readable again. A search does not try it again.
+   */
+  #needsWork(row, file, directories, retry = false) {
     if (!row) return true
+    if (row.state === 'unreadable') return retry || row.ino !== file.ino || row.size !== file.size || Math.floor(file.mtimeMs) !== row.mtime_ms
     if (row.state === 'outside') return row.ino !== file.ino || row.cwd === null && row.size !== file.size || Boolean(row.cwd && directoryOf(row.cwd, directories))
     return row.ino !== file.ino || row.size !== file.size || Math.floor(file.mtimeMs) !== row.mtime_ms
   }
@@ -283,14 +288,15 @@ export class SessionIndexService {
     const present = new Set(candidates.map(file => file.path))
     for (const row of await this.index.files()) {
       if (signal.aborted) return
-      const gone = !present.has(row.path) || row.state === 'indexed' && !directoryOf(row.cwd, directories)
+      const gone = !present.has(row.path) || row.session != null && !directoryOf(row.cwd, directories)
       if (gone) { await this.#drop(row.path); await pause() }
     }
     const rows = new Map((await this.index.files()).map(row => [row.path, row]))
     const work = []
     for (const file of candidates) {
       const row = rows.get(file.path)
-      if (this.#needsWork(row, file, directories)) work.push({ ...file, row })
+      // A file that the import could not read before it knew the session is a new file for the order of the pass.
+      if (this.#needsWork(row, file, directories, true)) work.push({ ...file, row: row?.state === 'unreadable' && row.session == null ? undefined : row })
     }
     const first = this.firstPassAt === undefined
     const visible = first || work.length >= VISIBLE_PASS
@@ -331,7 +337,7 @@ export class SessionIndexService {
       ordered.sort((left, right) => rank(left) - rank(right) || right.mtimeMs - left.mtimeMs)
       for (const file of ordered) {
         if (signal.aborted) return
-        try { await this.#import(file, directories, { signal }) }
+        try { await this.#import(file, directories, { signal, retry: true }) }
         catch (error) { await this.#failed(file, error) }
         done++
         await report()
@@ -366,22 +372,21 @@ export class SessionIndexService {
         continue
       }
       const file = { source, path, ...identity(stat) }
-      try { await this.#import(file, directories, { signal: this.lifetime.signal }) }
+      try { await this.#import(file, directories, { signal: this.lifetime.signal, retry: true }) }
       catch (error) { await this.#failed(file, error) }
     }
   }
 
   /**
    * Records a file that the import could not read, for example a file without the read permission, so the import
-   * reads it again only after a change of the file. The log names only the agent. A stop or a damaged index file ends
-   * the pass.
+   * reads it again after a change of the file, at the next pass and at a watch event of the file, and not before each
+   * search. The log names only the agent. A stop or a damaged index file ends the pass.
    */
   async #failed(file, error) {
     if (this.lifetime.signal.aborted || this.index.damaged) throw error
     logFailure('log.sessions.file', error, file.source.agent)
-    const row = await this.index.file(file.path).catch(() => undefined)
-    // A file in the index keeps its entries and its offset, so its next change reads only the lines after the offset.
-    await (row?.state === 'indexed' ? this.index.touch(file) : this.index.outside({ ...file, agent: file.source.agent }, null)).catch(() => {})
+    // A file in the index keeps its entries and its offset, so its next import reads only the lines after the offset.
+    await this.index.unreadable({ ...file, agent: file.source.agent }).catch(() => {})
   }
 
   /**
@@ -442,7 +447,7 @@ export class SessionIndexService {
    * file, the import takes the form that the agent reads first, and the other form leaves the index. Gives false when
    * [deadline] or a stop ended the import before the end.
    */
-  async #importFile(file, directories, { signal, deadline }) {
+  async #importFile(file, directories, { signal, deadline, retry = false }) {
     const { source, path } = file
     const agent = source.agent
     const stat = await this.fs.stat(path).catch(() => undefined)
@@ -458,7 +463,9 @@ export class SessionIndexService {
     }
     const compressed = isCompressed(path)
     let row = await this.index.file(path)
-    if (row && !this.#needsWork(row, file, directories)) return true
+    if (row && !this.#needsWork(row, file, directories, retry)) return true
+    // A file that the import could not read before it knew the session is a new file.
+    if (row?.state === 'unreadable' && row.session == null) row = undefined
     if (row?.state === 'outside') {
       if (row.ino === file.ino && row.cwd && !directoryOf(row.cwd, directories)) { await this.index.touch({ ...file, agent }); return true }
       row = undefined
