@@ -340,7 +340,7 @@ test('cancellation wins the dispatch boundary and retained output stays bounded'
   const run = await state.admitChild('tool', { cwd: '/workspace', prompt: 'Work' })
   await state.transition(run.id, ['admitted'], { status: 'ready', generation: 'process' })
   for (let index = 0; index < 8; index++) {
-    await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: String(index).repeat(16000) } })
+    await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `${String(index).repeat(15999)}\n` } })
   }
   // An update without text of the agent, such as a tool call, changes no state.
   const before = await state.snapshot()
@@ -348,14 +348,14 @@ test('cancellation wins the dispatch boundary and retained output stays bounded'
   const snapshot = await state.snapshot()
   assert.deepEqual(snapshot, before)
   // The end of the output stays: the result of a long run is at its end.
-  assert.equal(snapshot.runs[run.id].output, ['4', '5', '6', '7'].map(digit => digit.repeat(16000)).join(''))
+  assert.equal(snapshot.runs[run.id].output, ['4', '5', '6', '7'].map(digit => `${digit.repeat(15999)}\n`).join(''))
   assert.equal(snapshot.runs[run.id].truncated, true)
   assert.equal('updates' in snapshot.runs[run.id], false)
   assert.equal('updates' in await state.readRun(run.id), false)
-  await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '😀'.repeat(32001) } })
+  await state.appendUpdate(run.id, 'process', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `${'😀'.repeat(32001)}\n` } })
   const emoji = (await state.snapshot()).runs[run.id].output
   assert.ok(emoji.length <= 64000)
-  assert.equal(emoji.replaceAll('😀', ''), '')
+  assert.equal(emoji.replaceAll('😀', ''), '\n')
   await state.cancel(main.mainRunId)
   assert.equal(await state.transition(run.id, ['ready'], { status: 'dispatched' }), false)
   assert.equal((await state.snapshot()).runs[run.id].status, 'cancelled')

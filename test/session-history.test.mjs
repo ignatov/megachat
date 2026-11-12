@@ -10,6 +10,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { SessionHistoryService } from '../src/SessionHistoryService.mjs'
 import { CodexSessionHistoryService } from '../src/CodexSessionHistoryService.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
+import { message } from '../src/messages.mjs'
+import { KnownSecrets } from '../src/SessionText.mjs'
 
 class HistoryFixture {
   constructor(cwd, sessionId, entries) { this.session = { cwd, sessionId, title: 'A project conversation' }; this.entries = entries }
@@ -147,4 +149,27 @@ test('Codex history pages retain messages within a long turn and include archive
     await assert.rejects(service.list(cwd, cursor), { code: 'invalid' })
   for (const cursor of ['{not json', '{"cursor":null,"offset":-1}', '{"cursor":5,"offset":0}'])
     await assert.rejects(service.read(cwd, 'active', cursor), { code: 'invalid' })
+})
+
+test('a search and a read of a live provider remove the exact values that the daemon knows and the key after /wire/', { timeout: 10000 }, async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'megachat-sessions-secrets-')))
+  t.after(() => rm(cwd, { force: true, recursive: true }))
+  // Invented values: a key without a known prefix, the base URL that holds it, and a key after /wire/ that the daemon
+  // does not know.
+  const key = 'Qm7Tz2Lw9Xc4Vb8Nk1Rj6Hs3Fd5Gp0Ya2Ue'
+  const address = `http://127.0.0.1:41234/proxy/${key}`
+  const secrets = new KnownSecrets()
+  secrets.add(key, address)
+  const source = new HistoryFixture(cwd, 'printed', [{ id: '1', role: 'assistant',
+    text: `Juniper: the key is ${key}, the base is ${address}, and http://127.0.0.1:9/wire/Pk3Wq8Zr1Xn6Cm9Vt4Bs7Lh2Jd5Fg0Ka8Ty/v1 works.` }])
+  source.session.title = `Check ${key}`
+  // The index is off, so the live provider answers. Its secrets are the values of the daemon.
+  const service = new SessionHistoryService({ snapshot: async () => ({ workspaces: [cwd] }) }, { claude: source }, { enabled: false, secrets })
+  t.after(() => service.close())
+  const marker = message('sessions.secret')
+  const text = `Juniper: the key is ${marker}, the base is ${marker}, and http://127.0.0.1:9/wire/${marker}/v1 works.`
+  const read = await service.read({ cwd, agent: 'claude', sessionId: 'printed' })
+  assert.deepEqual([read.session.title, read.entries[0].text], [`Check ${marker}`, text])
+  const [page] = (await service.search({ cwd, agent: 'claude', query: 'Juniper' })).pages
+  assert.deepEqual([page.matches[0].title, page.matches[0].text], [`Check ${marker}`, text])
 })

@@ -80,7 +80,7 @@ async function daemon() {
     const configuration = new CentralConfigurationService()
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
       undefined, undefined, { searchPath: join(directory, 'search.sqlite'), sessionsPath: join(directory, 'sessions.sqlite'),
-        sessionIndex: { secrets: configuration.secrets }, userInstructionsPath: join(directory, 'instructions.md'),
+        secrets: configuration.secrets, userInstructionsPath: join(directory, 'instructions.md'),
         settingsPath: join(directory, 'settings.json'), workspacePath: join(directory, 'workspace'), stateDirectory: directory,
         spendPath: join(directory, 'spend.json'),
         accountCheck: () => checkAccounts(configuration, { cwd: join(directory, 'workspace') }) })

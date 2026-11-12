@@ -257,6 +257,23 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   must add its values, and the newest 32 values must stay, so a key that changes while the daemon runs keeps its
   earlier value. The import of the session index must use the same values for each text and title. An import before
   the first read of a configuration has only the patterns. A value shorter than 8 characters must be ignored.
+- Before the state keeps a text of a child, Megachat must remove the own secret of Megachat from it: each exact value
+  that the daemon knows, and the path segment after `/wire/` of a URL. This applies to each text chunk of a Claude or
+  Codex child, to each answer of a pi child, to each text of the tool call of a permission request (its title and its
+  raw input, not its ID and not the options, so the dialog and the answer work), and to the error text of a run. So
+  the output of a run, `agents_inspect`, `agents_wait`, the result report, the conversation storage and its search
+  index get the filtered text. One function, `redactOwnSecrets` of `src/SessionText.mjs`, must make this choice. The
+  other patterns of the secret filter must not apply to this text: they can change data that the main agent needs,
+  and the child sent the text to its provider already.
+- A secret can come in two chunks. A filter of each chunk alone, or of the kept output again after each chunk, keeps
+  the second part of the secret. So the state must hold back in the memory the end of the text that the next chunk can
+  still make a secret: the text after the last white space, and the longest end that is the start of a known value, at
+  most 16,000 characters. The text that the state keeps must be the text that a filter of the whole text gives. The
+  end of the run must add the text that waits. While the run works, the output lacks only this end. A kill of the
+  daemon loses it. An answer of a pi child is a complete message, so nothing of it waits.
+- A text that an earlier build stored stays as it is.
+  [@test] ../test/child-secrets.test.mjs
+  [@test] ../test/state.test.mjs
 - A transcript must have at most 1,000,000 bytes. At the limit, it must end with a note and get no more text.
 - A failure to write a transcript must go to the log one time for the run, without content. The run must go on
   without its transcript. No transcript text may go to the log.
@@ -532,6 +549,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   A query of `agents_running` must read the memory, not the session files.
 - The first pass must read the head and the last 64 KB of each file: the files with a change in the last 24 hours first,
   the newest first, then the other files. A tail without a step can read more lines backwards, at most 1 MB.
+- Each title of the table must go through the filter of the titles of the index, with the exact values that the daemon
+  knows, and the table must keep at most 200 characters of it.
 - The table must read a file on an event of the watch of the provider roots, the same watch as the index. Each file with
   a write in the last hour must also get a poll of its size every 2 seconds, because macOS reports a write only when a
   file closes, and Codex keeps its file open. The log of each Codex row must also get a stat at each scan
@@ -649,11 +668,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   must come in exactly one page, also an entry whose line crosses the limit of 8 MB of a page. A cursor past the end
   of a log that became shorter must fail with the error of an invalid cursor, and a page that reads no line must give
   no cursor, so a caller that follows the cursor does not loop. Each text
-  must pass the secret filter and be cut to about 2 KB. Without the consent, the tool must fail with a text that says
+  must pass the secret filter of the import, with the exact values that the daemon knows, and be cut to about 2 KB. Without the consent, the tool must fail with a text that says
   that the session logs are off. The tool `session_history` of the children must keep its limit to the listed
   directories and must not have `order`. Its description must not offer `order` or a read outside the listed
   directories.
   [@test] ../test/session-logs.test.mjs
+  [@test] ../test/session-index.test.mjs
   [@test] ../test/session-history.test.mjs
 - With the setting `sessions.index` on, Megachat must keep an index of the past Claude Code, Codex and pi sessions in `sessions.sqlite` in the state directory. The default is off.
 - The setup must ask for the consent with "Index past Claude, Codex and pi sessions in your projects, and read the logs of the agent sessions that run on this machine to show their status? Megachat reads the content of a session only when you ask. Everything stays local." The main agent must set `sessions.index` to on only when the user agrees.
@@ -687,6 +707,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - They must use the live provider when the index is off, when the index has no session of the agent in the directory, and for a query without a word of 3 or more characters.
 - pi must be an agent of these tools. Without the index, a request for pi must fail with a text that says that the index is off.
   [@test] ../test/session-index.test.mjs
+- Each text and each title that these tools give from a live provider or from the transcript of a pi child must go
+  through `redactOwnSecrets`, with the exact values that the daemon knows, as a text of a child does. No other pattern
+  of the filter applies there.
+  [@test] ../test/session-history.test.mjs
 - Megachat must not watch the files of a project, and a change of a file in a project must start no turn. The only file watch of the daemon is the watch of the provider roots of the session index. The daemon must have no route `/project-event`.
   [@test] ../test/integration.test.mjs
 - Megachat up to v0.3.0 watched the files of each project and reported a change in an event turn, with the settings `events.enabled` and `events.ignore`. A stored value of these two settings must cause no error, and `agents_settings` must not give them. The next write of `settings.json` must drop them. Another key that this build does not know must stay in the file.

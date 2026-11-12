@@ -21,16 +21,20 @@ function basicCredentials(value) {
 }
 
 /**
+ * The key of a gateway in the path of its base URL, as JetBrains Central gives it: `scheme://host/.../wire/<key>/...`.
+ * The segment after `/wire/` goes, whatever its shape, and the rest of the URL stays. The path has at most 32 segments
+ * before `/wire/`, so a long URL takes a linear time. A text that the filter changed already stays. A match holds no
+ * white space.
+ */
+const WIRE_KEY = { pattern: /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^\s/?#"'`<>\\]+(?:\/[^\s/?#"'`<>\\]*){0,32}?\/wire\/)([^\s/?#"'`<>\\]+)/gi, keep: true,
+  accept: (secret, marker) => !marker.startsWith(secret) }
+/**
  * The patterns of the text that looks like a secret. A pattern without `keep` replaces the whole match. A pattern with
  * `keep` has two groups: the text before the secret, which stays, and the secret. `accept` can refuse a match. The
  * list is a best effort: a secret of another shape stays in the text.
  */
 const SECRET_PATTERNS = [
-  // The key of a gateway in the path of its base URL, as JetBrains Central gives it: `scheme://host/.../wire/<key>/...`.
-  // The segment after `/wire/` goes, whatever its shape, and the rest of the URL stays. The path has at most 32
-  // segments before `/wire/`, so a long URL takes a linear time. A text that the filter changed already stays.
-  { pattern: /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^\s/?#"'`<>\\]+(?:\/[^\s/?#"'`<>\\]*){0,32}?\/wire\/)([^\s/?#"'`<>\\]+)/gi, keep: true,
-    accept: (secret, marker) => !marker.startsWith(secret) },
+  WIRE_KEY,
   { pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g },
   { pattern: /\bsk-[A-Za-z0-9_-]{16,}/g },
   { pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g },
@@ -99,6 +103,76 @@ export class KnownSecrets {
     for (const value of this.#longestFirst) if (result.includes(value)) result = result.replaceAll(value, marker)
     return result
   }
+
+  /**
+   * The length of the longest end of [text] that is the start of a known value, and not the whole value. A text that
+   * comes in parts must hold back this end, because the next part can complete the value. The length tells nothing of
+   * a value that the text does not hold already.
+   */
+  partialEnd(text) {
+    let longest = 0
+    const last = text.charCodeAt(text.length - 1)
+    for (const value of this.#values) {
+      for (let length = Math.min(value.length - 1, text.length); length > longest; length--) {
+        // A quick check of the last character first, so a long value costs little.
+        if (value.charCodeAt(length - 1) === last && text.endsWith(value.slice(0, length))) { longest = length; break }
+      }
+    }
+    return longest
+  }
+}
+
+/**
+ * Removes the own secret of Megachat from a text of a child that the state keeps: each exact value of [known], an
+ * optional [KnownSecrets], and the path segment after `/wire/` of a URL. The output of a run, `agents_inspect`, the
+ * result report and the conversation storage get this text. The other patterns of [redactSecrets] do not apply here:
+ * they are a best effort for an index, they can change data that the main agent needs, and the child sent the text to
+ * its provider already.
+ */
+export function redactOwnSecrets(text, known) {
+  const marker = message('sessions.secret')
+  const { pattern, accept } = WIRE_KEY
+  return (known ? known.redact(text, marker) : text)
+    .replace(pattern, (match, kept, secret) => accept(secret, marker) ? `${kept}${marker}` : match)
+}
+
+/** The characters that a [ChildTextFilter] holds back at most, as a transcript holds back a paragraph. */
+export const HELD_TEXT_LIMIT = 16000
+
+/**
+ * The filter of [redactOwnSecrets] for a text that comes in parts, such as the reply of a child in chunks. A secret can
+ * come in two parts, and a filter of each part alone, or of the kept text again after each part, then keeps the second
+ * part of the secret. So the filter holds back the end of the text that the next part can still make a secret: the
+ * text after the last white space, because a match of the `/wire/` pattern holds no white space, and the longest end
+ * that is the start of a known value. Each other text is final, and the filter gives it at once. At most
+ * [HELD_TEXT_LIMIT] characters wait: a longer word goes out in parts, so a secret across such a cut can stay.
+ */
+export class ChildTextFilter {
+  #held = ''
+  /** The length of the last word of the text that waits, so a part reads only its own characters. */
+  #word = 0
+
+  /** [known] is an optional [KnownSecrets]. */
+  constructor(known) { this.known = known }
+
+  /** Takes the next part of the text, and gives the filtered text that no later part can change. */
+  push(text) {
+    const whole = this.#held + text
+    // The last word: the text after the last white space, as the pattern reads white space.
+    let start = text.length
+    while (start > 0 && !/\s/.test(text[start - 1])) start--
+    const word = start > 0 ? text.length - start : this.#word + text.length
+    const held = Math.min(Math.max(word, this.known?.partialEnd(whole) ?? 0), HELD_TEXT_LIMIT)
+    let cut = whole.length - held
+    // The cut must not separate the two halves of a character.
+    if (cut > 0 && cut < whole.length && /[\uD800-\uDBFF]/.test(whole[cut - 1])) cut--
+    this.#held = whole.slice(cut)
+    this.#word = Math.min(word, this.#held.length)
+    return cut ? redactOwnSecrets(whole.slice(0, cut), this.known) : ''
+  }
+
+  /** The filtered text that waits, for the end of the text. The text that waits stays, so a second call gives it again. */
+  end() { return this.#held ? redactOwnSecrets(this.#held, this.known) : '' }
 }
 
 /**

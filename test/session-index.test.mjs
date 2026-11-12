@@ -833,24 +833,34 @@ test('the secret filter removes each exact value that the daemon knows, also whe
   assert.equal(redactSecrets(values[8], many), marker)
 })
 
-test('the import of the session index removes the exact values that the daemon knows from each text and title', async t => {
+test('the import of the session index, the live table and the read from the end of a log remove the exact values that the daemon knows', async t => {
   const directories = await fixture(t)
   const { home, project } = directories
   const address = `http://127.0.0.1:41234/proxy/${WIRE_KEY}`
-  await claudeSession(home, project, 'printed', [
+  const path = await claudeSession(home, project, 'printed', [
     `${JSON.stringify({ type: 'custom-title', customTitle: `Check ${WIRE_KEY}`, sessionId: 'printed' })}\n`,
     claudeLine('u1', 'user', `juniper the base is ${address} now`, project),
   ])
   const secrets = new KnownSecrets()
   secrets.add(WIRE_KEY, address)
-  const { index } = await service(t, directories, fakeState({ workspaces: [project] }), { secrets })
+  const state = fakeState({ workspaces: [project] })
+  const { index } = await service(t, directories, state, { secrets })
   await index.apply(ON)
   await index.idle()
   const session = await index.store.session('claude', project, 'printed')
   const [entry] = (await index.store.entries(session.id)).entries
-  assert.equal(entry.text, `juniper the base is ${message('sessions.secret')} now`)
+  const marker = message('sessions.secret')
+  assert.equal(entry.text, `juniper the base is ${marker} now`)
   const [hit] = await hits(index, 'claude', project, 'juniper')
-  assert.equal(hit.session.title, `Check ${message('sessions.secret')}`)
+  assert.equal(hit.session.title, `Check ${marker}`)
+  // The live table of agents_running keeps the title in the memory and in the table logs of sessions.sqlite.
+  await index.logs.idle()
+  assert.equal(index.logs.get(path).title, `Check ${marker}`)
+  assert.equal((await index.index.logs()).find(row => row.path === path).title, `Check ${marker}`)
+  // agents_session_history with the order newest reads the log itself.
+  const newest = await new SessionHistoryService(state, { claude: liveSource(project) }, index).readNewest({ agent: 'claude', sessionId: 'printed' })
+  assert.equal(newest.session.title, `Check ${marker}`)
+  assert.equal(newest.entries.at(-1).text, `juniper the base is ${marker} now`)
 })
 
 test('an index file of the version before the filter of /wire/ is made again', async t => {

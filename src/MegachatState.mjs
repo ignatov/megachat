@@ -5,6 +5,7 @@ import { message, requireCondition } from './messages.mjs'
 import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
 import { rmdir } from 'node:fs/promises'
 import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
+import { ChildTextFilter, redactOwnSecrets } from './SessionText.mjs'
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
@@ -140,6 +141,27 @@ function digest(value) {
 
 const plain = value => JSON.parse(JSON.stringify(value))
 
+/** Keeps at most the last 64,000 characters of the output of [run]: the result of a long run is at its end. */
+function appendOutput(run, text) {
+  if (!text) return
+  let output = run.output + text
+  if (output.length > 64000) {
+    run.truncated = true
+    output = output.slice(-64000)
+    // The cut must not leave the second half of a character at the start.
+    if (/^[\uDC00-\uDFFF]/.test(output)) output = output.slice(1)
+  }
+  run.output = output
+}
+
+/** Gives [value] with [change] applied to each text in it, also in the arrays and the objects in it. */
+function eachText(value, change) {
+  if (typeof value === 'string') return change(value)
+  if (Array.isArray(value)) return value.map(item => eachText(item, change))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, eachText(item, change)]))
+  return value
+}
+
 /**
  * Removes the copy of the output of the run before a pi continuation. Only a restart of the dispatched run reads it,
  * and the output of the run holds the same text.
@@ -253,7 +275,12 @@ export function findSteer(state, steerId) {
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
   constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots, suggestions = 'off',
-    promptSuggestionLifetimeMs = PROMPT_SUGGESTION_LIFETIME_MS } = {}) {
+    promptSuggestionLifetimeMs = PROMPT_SUGGESTION_LIFETIME_MS, secrets } = {}) {
+    // The exact values of the own secret of Megachat (a `KnownSecrets`), such as the key of Central. Each text of a
+    // child goes through `redactOwnSecrets` before the state keeps it.
+    this.secrets = secrets
+    // The filter of the text of each child run of this process, by run ID, with the generation of the run.
+    this.childTexts = new Map()
     // The mode of the suggestions: `off`, `reply` or `ghost`. The service changes it when the setting changes.
     this.suggestionMode = suggestions
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
@@ -840,12 +867,22 @@ export class MegachatState {
   }
 
   async transition(runId, expected, changes) {
-    return this.change(state => {
+    // The error text of a run can hold a text of the child.
+    if (typeof changes.error === 'string') changes = { ...changes, error: redactOwnSecrets(changes.error, this.secrets) }
+    const filter = this.childTexts.get(runId)
+    // The end of the text of the child that the filter held back goes to the output at the end of the run, so a
+    // continuation and the report get the whole output.
+    const settle = run => { if (filter?.generation === run.generation) appendOutput(run, filter.text.end()) }
+    let finished
+    const changed = await this.change(state => {
+      finished = false
       const run = state.runs[runId]
       requireCondition(run, 'missing')
       if (!expected.includes(run.status)) return false
       if (changes.status === 'dispatched' && run.cancelRequested) {
+        settle(run)
         run.status = 'cancelled'
+        finished = true
         return false
       }
       const previousStatus = run.status
@@ -853,6 +890,8 @@ export class MegachatState {
       if (changes.providerSessionId) recordServiceSession(state, run)
       if (run.status === 'dispatched') run.dispatched = true
       if (terminalStates.has(run.status)) {
+        settle(run)
+        finished = true
         run.finishedAt = Date.now()
         dropCarriedOutput(run)
         scheduleResume(state, run, previousStatus, this.resumeDelayMs)
@@ -863,25 +902,30 @@ export class MegachatState {
       }
       return true
     })
+    if (finished && this.childTexts.get(runId) === filter) this.childTexts.delete(runId)
+    return changed
   }
 
   /**
    * Keeps the text that the agent wrote, at most the last 64,000 characters: the result of a long run is at its end.
-   * Each other update changes no state, so it costs no commit of the document.
+   * The text goes through `redactOwnSecrets`. A secret can come in two chunks, so the filter holds back the last word
+   * of the text, and the end of the run adds it (see `ChildTextFilter`). A [whole] text, such as an answer of a pi
+   * child, is a complete message, so nothing of it waits. Each other update changes no state, so it costs no commit of
+   * the document.
    */
-  async appendUpdate(runId, generation, update) {
+  async appendUpdate(runId, generation, update, { whole = false } = {}) {
     if (update.sessionUpdate !== 'agent_message_chunk' || update.content?.type !== 'text') return
+    let filter = this.childTexts.get(runId)
+    if (!whole && filter?.generation !== generation) {
+      filter = { generation, text: new ChildTextFilter(this.secrets) }
+      this.childTexts.set(runId, filter)
+    }
+    const text = whole ? redactOwnSecrets(update.content.text, this.secrets) : filter.text.push(update.content.text)
+    if (!text) return
     await this.change(state => {
       const run = state.runs[runId]
       if (!run || run.generation !== generation || terminalStates.has(run.status)) return
-      let output = run.output + update.content.text
-      if (output.length > 64000) {
-        run.truncated = true
-        output = output.slice(-64000)
-        // The cut must not leave the second half of a character at the start.
-        if (/^[\uDC00-\uDFFF]/.test(output)) output = output.slice(1)
-      }
-      run.output = output
+      appendOutput(run, text)
     })
   }
 
@@ -893,7 +937,12 @@ export class MegachatState {
       requireCondition(Object.values(state.permissions).filter(value => value.runId === runId).length < 32, 'limit')
       retain(state)
       const id = randomUUID()
-      state.permissions[id] = { id, runId, generation, request, status: 'pending', decision: null, createdAt: Date.now() }
+      // Each text of the tool call can hold a text of the child. The ID of the tool call and the options stay, so the
+      // dialog and the answer work as before.
+      const toolCall = request.toolCall && typeof request.toolCall === 'object' ? request.toolCall : undefined
+      const kept = toolCall ? { ...request, toolCall: { ...eachText(toolCall, text => redactOwnSecrets(text, this.secrets)),
+        ...(toolCall.toolCallId === undefined ? {} : { toolCallId: toolCall.toolCallId }) } } : request
+      state.permissions[id] = { id, runId, generation, request: kept, status: 'pending', decision: null, createdAt: Date.now() }
       run.status = 'approval'
       return id
     })

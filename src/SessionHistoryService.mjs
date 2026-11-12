@@ -5,6 +5,7 @@ import { CodexSessionHistoryService } from './CodexSessionHistoryService.mjs'
 import { message, requireCondition } from './messages.mjs'
 import { listedDirectory } from './ProjectDirectories.mjs'
 import { newestPage } from './SessionTail.mjs'
+import { redactOwnSecrets } from './SessionText.mjs'
 import { queryTerms, snippet } from './SqliteSidecar.mjs'
 
 const cursorKey = randomBytes(32)
@@ -162,7 +163,7 @@ export class SessionHistoryService {
           position.historyCursor = null
         }
       }
-      if (match) matches.push({ ...session, ...this.excerpt(match, query) })
+      if (match) matches.push({ ...this.filteredSession(session), ...this.excerpt(match, query) })
       if (match || !position.historyCursor) {
         position.sessions.shift()
         position.historyCursor = null
@@ -192,7 +193,7 @@ export class SessionHistoryService {
     }
     requireCondition(child || agent !== INDEX_ONLY, 'missing')
     const page = await (child ? this.children : this.providers[agent]).read(cwd, sessionId, position?.historyCursor ?? null)
-    return { agent, session: page.session,
+    return { agent, session: this.filteredSession(page.session),
       entries: page.entries.filter(entry => entry.text.toLowerCase().includes(query.toLowerCase())).map(entry => this.excerpt(entry, query)),
       nextCursor: page.nextCursor === null ? null : encode({ ...identity, historyCursor: page.nextCursor }),
       // As a search does, a read gives the state and the progress of the index while the consent is on.
@@ -230,7 +231,8 @@ export class SessionHistoryService {
       requireCondition(position.before <= size)
     }
     let page
-    try { page = await newestPage(logs.fs, logs.source(agent), record.path, { before: position?.before, limit, query }) }
+    // The filter of the import, with the exact values of the own secret of Megachat.
+    try { page = await newestPage(logs.fs, logs.source(agent), record.path, { before: position?.before, limit, query, secrets: this.index.secrets }) }
     catch { requireCondition(false, 'missing') }
     requireCondition(this.index?.logs === logs, 'sessionsLogsOff')
     return {
@@ -265,10 +267,21 @@ export class SessionHistoryService {
       nextCursor: page.more ? encode({ ...identity, historyCursor: null, index: { after: page.entries.at(-1).rowId } }) : null }
   }
 
+  /**
+   * The part of an entry around [query]. Each text goes through `redactOwnSecrets` first, with the exact values that the
+   * daemon knows, also a text of a live provider or of a pi child that no index filter saw. A text of the index stays
+   * as it is, because the import removed these values already.
+   */
   excerpt(entry, query) {
-    const textOffset = Math.max(0, entry.text.toLowerCase().indexOf(query.toLowerCase()) - 300)
-    const text = entry.text.slice(textOffset, textOffset + 1200)
-    return { ...entry, text, textOffset, truncated: text.length < entry.text.length }
+    const whole = redactOwnSecrets(entry.text, this.index?.secrets)
+    const textOffset = Math.max(0, whole.toLowerCase().indexOf(query.toLowerCase()) - 300)
+    const text = whole.slice(textOffset, textOffset + 1200)
+    return { ...entry, text, textOffset, truncated: text.length < whole.length }
+  }
+
+  /** A session of a live provider with its title through `redactOwnSecrets`. */
+  filteredSession(session) {
+    return typeof session?.title === 'string' ? { ...session, title: redactOwnSecrets(session.title, this.index?.secrets) } : session
   }
 
   async close() { await Promise.all(Object.values(this.providers).map(provider => provider.close())) }

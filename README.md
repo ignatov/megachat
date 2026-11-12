@@ -380,6 +380,12 @@ key or a password. It also removes the exact key and base URL of Central that th
 memory only. A transcript stops at 1 MB with a note. The file goes away when the state drops its run. A
 continuation of a task, for example after a restart or a message, is a new run with a new row and a file of its own.
 
+The output of a child that the main agent reads, with `agents_inspect` and in the report of the result, loses only the
+key of Megachat: the exact key and base URL of Central that the daemon knows, and the key after `/wire/` of a URL. The
+same applies to a permission request, to the error of a task, and to a session that the session tools read without the
+index. Other text stays as the child wrote it, so the main agent gets the data that it needs. While a task runs, its
+output lacks the last word, because the next chunk of the reply can complete a key.
+
 Air does not follow the file while it grows. The IDE shows the newer text after its next refresh of the files, for
 example when its window gets the focus again, or after File | Reload All from Disk. A queued task has no transcript yet, and a finished task leaves the tab, so its transcript does not open
 from the chat.

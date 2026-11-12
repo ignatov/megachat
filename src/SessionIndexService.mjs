@@ -106,7 +106,7 @@ export class SessionIndexService {
       this.directories = directoriesOf(this.subscription.value)
       this.directoryKey = JSON.stringify(this.directories.map(directory => directory.cwd).sort())
       this.subscription.start(call => { if (call.kind === 'value') this.#observe(call.value) })
-      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, ...this.catalogOptions })
+      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, secrets: this.secrets, ...this.catalogOptions })
       await this.catalog.start()
     }
     catch (error) {

@@ -162,9 +162,10 @@ export class PiMegachatService {
    * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test. [morningReport] gives the
    * clock of the working day and the time limit of tokprof, for a test. The clock gives the time of the timer of the
    * morning report, of the idle time of the conversation, of the wait of a child result, and of the notes about the
-   * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test.
+   * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test. [secrets] is a
+   * `KnownSecrets` with the exact values of the own secret of Megachat: the state and the session index remove them.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -195,7 +196,7 @@ export class PiMegachatService {
     const agent = agentOf(values, rules)
     const root = await harness.root(context, { agent: { ...agent, maxTurns: 20 } })
     await root.configure(agent, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'], promptSuggestionLifetimeMs })
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'], promptSuggestionLifetimeMs, secrets })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
@@ -219,7 +220,7 @@ export class PiMegachatService {
       root.entries({ order: 'ascending', minEntryId }, 200, cursor, context))
     // The index of the past sessions starts in `resume`, and only with the consent of the user.
     if (sessionsPath) {
-      service.sessionIndex = new SessionIndexService({ path: sessionsPath, state, home, environment, ...indexOptions })
+      service.sessionIndex = new SessionIndexService({ path: sessionsPath, state, home, environment, secrets, ...indexOptions })
       service.sessions.index = service.sessionIndex
     }
     service.sessions.children = new PiChildHistory(harness, state)

@@ -153,6 +153,22 @@ async function answerPrompt(ctx) {
     })))
     if (answers.some(answer => answer.outcome.outcome !== 'selected')) return { stopReason: 'cancelled' }
   }
+  // A child that prints its environment: the key in two chunks, and a last word without a white space after it. Then it
+  // asks for a permission for a command with the base URL in its title and in its input.
+  if (text === 'environment') {
+    const { ANTHROPIC_API_KEY: key = '', ANTHROPIC_BASE_URL: address = '' } = process.env
+    for (const part of [`ANTHROPIC_API_KEY=${key.slice(0, 10)}`, `${key.slice(10)}\nANTHROPIC_BASE_URL=${address}\nThe end`]) {
+      await ctx.client.notify(methods.client.session.update, {
+        sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: part } },
+      })
+    }
+    const answer = await ctx.client.request(methods.client.session.requestPermission, {
+      sessionId: 'fake-session', toolCall: { toolCallId: 'curl', title: `curl ${address}/v1/models`, kind: 'execute',
+        rawInput: { command: `curl ${address}/v1/models`, description: 'List the models' } },
+      options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }, { optionId: 'no', kind: 'reject_once', name: 'Deny' }],
+    })
+    return { stopReason: answer.outcome.outcome === 'selected' ? 'end_turn' : 'cancelled' }
+  }
   let previous = await readFile(join(process.cwd(), 'dispatches'), 'utf8')
   if (text.startsWith('history:')) {
     const server = servers.find(server => server.name === 'megachat')

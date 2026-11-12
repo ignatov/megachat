@@ -2,6 +2,7 @@ import * as fileSystem from 'node:fs/promises'
 import { relative } from 'node:path'
 import { logFailure } from './messages.mjs'
 import { parseLine, readLines, timeOf } from './SessionLog.mjs'
+import { indexedTitle } from './SessionText.mjs'
 import { readBackward } from './SessionTail.mjs'
 
 const HOUR_MS = 3600000
@@ -35,7 +36,8 @@ const fromRow = row => ({ path: row.path, agent: row.agent, ino: row.ino, size: 
  * exists only with the consent of the user, the setting `sessions.index`. For each file it keeps the path, the inode,
  * the size, the byte offset of the read, the agent, the session ID, the `cwd`, the title, the start time, the time of
  * the last write and the last step, and no message text. `sessions.sqlite` keeps the table, so a restart answers at
- * once. A query reads the memory.
+ * once. A query reads the memory. Each title goes through the filter of the titles of the index, with the exact values
+ * of [secrets], an optional `KnownSecrets`, before the table keeps it.
  *
  * The first pass reads the head and the tail of each file: the files with a change in the last 24 hours first, the
  * newest first, and then the other files. After it, the table reads a file on a change event of the watch of the
@@ -43,9 +45,9 @@ const fromRow = row => ({ path: row.path, agent: row.agent, ino: row.ino, size: 
  * appended lines. A smaller file or another inode means that the file is read again. Each file opens read-only.
  */
 export class SessionCatalog {
-  constructor({ index, sources, fs = fileSystem, clock = Date, timers = globalThis, pollMs = POLL_MS }) {
+  constructor({ index, sources, fs = fileSystem, clock = Date, timers = globalThis, pollMs = POLL_MS, secrets }) {
     // No session runs in an archived file, so the table reads no source of archived sessions.
-    Object.assign(this, { index, sources: sources.filter(source => !source.archive), fs, clock, timers, pollMs })
+    Object.assign(this, { index, sources: sources.filter(source => !source.archive), fs, clock, timers, pollMs, secrets })
     this.records = new Map()
     this.locks = new Map()
     this.queue = new Set()
@@ -243,7 +245,7 @@ export class SessionCatalog {
     record.cwd ??= meta.cwd
     record.startedAt ??= meta.startedAt ?? timeOf(value.timestamp)
     if (meta.title !== undefined && (record.titleRank === undefined || meta.titleRank > record.titleRank || newer && meta.titleRank === record.titleRank))
-      Object.assign(record, { title: meta.title, titleRank: meta.titleRank })
+      Object.assign(record, { title: indexedTitle(meta.title, this.secrets), titleRank: meta.titleRank })
   }
 
   /** Reads the appended complete lines after the offset of [old]. */

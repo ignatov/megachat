@@ -276,8 +276,9 @@ export class PiRunService {
             if (work.transcript) transcribe(work.transcript, entry)
             const text = assistantText(entry)
             if (!text) continue
+            // An entry holds a complete answer, so the filter of the state holds back no part of it.
             await this.state.appendUpdate(run.id, generation, { sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: wrote ? `\n\n${text}` : text } })
+              content: { type: 'text', text: wrote ? `\n\n${text}` : text } }, { whole: true })
             wrote = true
           }
         }
