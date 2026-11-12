@@ -105,7 +105,7 @@ test('the process table gives each agent with its working directory, its parent 
   assert.deepEqual(summary(21), ['claude', '/work/ide/module', 'ide', 'IntelliJ IDEA 2026.3 EAP', 5, 'active'])
   assert.deepEqual(summary(30), ['codex', '/work/codex', 'ide', 'IntelliJ IDEA 2026.3 EAP', 5, 'idle'])
   assert.deepEqual(summary(41), ['claude', '/work/megachat-task', 'megachat', 'Megachat', DAEMON, 'idle'])
-  assert.deepEqual(summary(51), ['pi', '/work/pi', 'terminal', 'tmux', 50, 'idle'])
+  assert.deepEqual(summary(51), ['pi', '/work/pi', 'multiplexer', 'tmux', 50, 'idle'])
   assert.deepEqual(summary(61), ['opencode', '/work/opencode', 'terminal', 'Ghostty', 60, 'idle'])
   assert.deepEqual(summary(70), ['claude', '/work/lost', 'unknown', 'launchd', 1, 'orphan'])
   assert.deepEqual(summary(81), ['claude', '/work/old-task', 'megachat', 'Megachat', DAEMON, 'orphan'])
@@ -164,6 +164,74 @@ test('a process with the parent PID 1 and no Megachat run is an orphan, and a Me
   assert.deepEqual(await states([{ id: 'run', pid: 40, status: 'interrupted', cwd: '/work' }]), { 41: 'orphan', 42: 'orphan', 44: 'orphan' })
   // A process of the daemon without a run is a helper of Megachat, such as the account check.
   assert.deepEqual(await states([]), { 42: 'orphan', 44: 'orphan' })
+})
+
+test('a session in a detached multiplexer has the owner kind multiplexer and is no orphan', async () => {
+  const processes = [
+    proc(1, 0, '/sbin/launchd'),
+    // No client is attached: the terminal of each server ended.
+    proc(50, 1, 'tmux new-session -d -s work', { name: 'tmux' }),
+    proc(51, 50, '-zsh'),
+    proc(10, 51, 'claude', { name: '2.1.322' }),
+    proc(60, 1, 'SCREEN -dmS work', { name: 'screen' }),
+    proc(61, 60, '/bin/bash'),
+    proc(20, 61, '/opt/homebrew/bin/codex', { name: 'codex' }),
+    proc(70, 1, '/opt/homebrew/bin/zellij --server /tmp/zellij/work', { name: 'zellij' }),
+    proc(30, 70, 'node /opt/homebrew/bin/pi', { name: 'node' }),
+  ]
+  const { answer } = await view(fakeTable(processes, { 10: '/work/a', 20: '/work/b', 30: '/work/c' }))
+  assert.deepEqual(answer.sessions.map(row => [row.pid, row.state, row.parent.kind, row.parent.name, row.parent.pid]).sort(),
+    [[10, 'idle', 'multiplexer', 'tmux', 50], [20, 'idle', 'multiplexer', 'screen', 60], [30, 'idle', 'multiplexer', 'zellij', 70]])
+})
+
+test('a bare java process of an IDE from sources owns its sessions, and another live process makes the owner unknown', async () => {
+  const jbr = '/Users/user/Library/Java/JavaVirtualMachines/jbr-25/Contents/Home/bin/java'
+  const adapter = '/Users/user/Library/Caches/JetBrains/IntelliJIdea2026.3/acp-agents/claude-acp/0.106.0/claude-agent-acp'
+  const processes = [
+    proc(1, 0, '/sbin/launchd'),
+    // An IDE from sources: the main class of the IDE or of the dev server, and the class path in an argument file.
+    proc(100, 1, `${jbr} -Didea.platform.prefix=idea -Xmx4g @/private/var/folders/xy/T/idea_arg_file1 com.intellij.idea.Main`, { name: 'java' }),
+    proc(101, 100, adapter, { name: 'claude-agent-acp' }),
+    proc(10, 101, '/Users/user/.local/bin/claude', { name: '2.1.322' }),
+    proc(110, 1, `${jbr} -Didea.platform.prefix=idea @/private/var/folders/xy/T/idea_arg_file2 org.jetbrains.intellij.build.devServer.DevMainKt`, { name: 'java' }),
+    proc(11, 110, '/opt/homebrew/bin/codex', { name: 'codex' }),
+    // A JetBrains property without a known main class is no sure sign of an IDE.
+    proc(120, 1, `${jbr} -Didea.platform.prefix=idea @/private/var/folders/xy/T/idea_arg_file3`, { name: 'java' }),
+    proc(121, 120, adapter, { name: 'claude-agent-acp' }),
+    proc(12, 121, '/Users/user/.local/bin/claude', { name: '2.1.322' }),
+    // Another Java program and a script can own the session that they started.
+    proc(130, 1, `${jbr} -Xmx1g -cp /opt/tool/lib/tool.jar org.example.tool.Main`, { name: 'java' }),
+    proc(13, 130, '/Users/user/.local/bin/claude', { name: '2.1.322' }),
+    proc(140, 1, '/usr/bin/python3 /work/scripts/run-agents.py', { name: 'Python' }),
+    proc(14, 140, '/opt/homebrew/bin/codex exec', { name: 'codex' }),
+    // A parent that the table does not have cuts the chain.
+    proc(15, 777, '/Users/user/.local/bin/claude', { name: '2.1.322' }),
+    // The shells, the starters and a supervisor of Megachat without its daemon own no session.
+    proc(150, 1, '/bin/zsh -l'),
+    proc(151, 150, 'nohup /opt/homebrew/bin/codex', { name: 'nohup' }),
+    proc(16, 151, '/opt/homebrew/bin/codex', { name: 'codex' }),
+    proc(160, 1, 'login -pf user', { name: 'login' }),
+    proc(161, 160, '-zsh'),
+    proc(17, 161, '/Users/user/.local/bin/claude', { name: '2.1.322' }),
+    proc(170, 1, '/opt/homebrew/bin/node /Users/user/src/megachat/src/child-supervisor.mjs /opt/homebrew/bin/node', { name: 'node' }),
+    proc(171, 170, '/opt/homebrew/bin/node /Users/user/src/megachat/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', { name: 'node' }),
+    proc(18, 171, '/Users/user/.local/bin/claude', { name: '2.1.322' }),
+  ]
+  const pids = [10, 11, 12, 13, 14, 15, 16, 17, 18]
+  const { answer } = await view(fakeTable(processes, Object.fromEntries(pids.map(pid => [pid, '/work']))))
+  const rows = Object.fromEntries(answer.sessions.map(row => [row.pid, [row.state, row.parent.kind, row.parent.name, row.parent.pid]]))
+  assert.deepEqual(rows, {
+    10: ['idle', 'ide', 'java', 100], 11: ['idle', 'ide', 'java', 110],
+    12: ['unknown', 'unknown', 'java', 120], 13: ['unknown', 'unknown', 'java', 130], 14: ['unknown', 'unknown', 'python3', 140],
+    15: ['unknown', 'unknown', '', 777],
+    16: ['orphan', 'unknown', 'nohup', 151], 17: ['orphan', 'unknown', '-zsh', 161], 18: ['orphan', 'unknown', 'node', 171],
+  })
+  assert.ok(answer.incomplete.includes(message('running.incomplete.owner', 4)))
+  // The order is orphan, unknown, active, idle, and the state selects the rows.
+  assert.deepEqual(answer.sessions.map(row => row.state), ['orphan', 'orphan', 'orphan', 'unknown', 'unknown', 'unknown', 'unknown', 'idle', 'idle'])
+  const { answer: unknown } = await view(fakeTable(processes, {}), { query: { state: 'unknown' } })
+  assert.deepEqual(unknown.sessions.map(row => row.pid).sort(), [12, 13, 14, 15])
+  assert.ok(!JSON.stringify(answer).includes('idea_arg_file'))
 })
 
 test('the list is bounded: limit, nextCursor and truncated page through 500 sessions', async () => {
@@ -365,6 +433,6 @@ test('the main agent has the tool agents_running, and the children do not get it
   const tool = service.extension().tools.find(item => item.name === 'agents_running')
   assert.equal(tool.description, message('tool.running'))
   const answer = JSON.parse((await tool.execute({ agent: 'pi' })).output[0].text)
-  assert.deepEqual(answer.sessions.map(row => [row.pid, row.cwd, row.parent.kind]), [[51, '/work/pi', 'terminal']])
+  assert.deepEqual(answer.sessions.map(row => [row.pid, row.cwd, row.parent.kind]), [[51, '/work/pi', 'multiplexer']])
   assert.ok(!(await readFile(new URL('../src/MegachatHistoryServer.mjs', import.meta.url), 'utf8')).includes('running'))
 })

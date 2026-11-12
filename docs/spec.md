@@ -341,21 +341,32 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   of this daemon outside a child run, such as the account check, must not be rows.
 - Each row must have `agent`, `sessionId`, `title`, `cwd`, `state`, `status`, `startedAt`, `lastActivityAt`, `pid` and
   `parent` with `kind`, `name` and `pid`. `kind` must come from the nearest owner in the parent chain: `megachat`, `ide`
-  for an IDE, an editor or the desktop app of an agent, `terminal` for a terminal app, a multiplexer server or SSH, and
-  `unknown` for the service of an agent, another app, or no owner. `name` must be the name of the app or of the program,
-  never a command line.
+  for an IDE, an editor or the desktop app of an agent, `terminal` for a terminal app or SSH, `multiplexer` for the
+  server of `tmux`, `screen`, `zellij`, `herdr`, `dtach` or `abduco`, and `unknown` for the service of an agent, another
+  app, or no owner. `name` must be the name of the app or of the program, never a command line.
+- A bare `java` process with the main class `com.intellij.idea.Main` or
+  `org.jetbrains.intellij.build.devServer.DevMainKt` on its command line must count as an IDE that runs from sources,
+  with the `kind` `ide` and the `name` `java`. A JetBrains property such as `-Didea.platform.prefix` without such a main
+  class is no sure sign of an IDE.
 - For a process below this daemon, the state of Megachat must be the authority. The run of the supervisor PID must give
   the session ID, the title and the task directory.
-- The state must be `orphan` when the parent chain reaches launchd without an owner, or when the run of a Megachat child
-  ended. A shell that stays after its terminal is no owner. Else the state must be `active` at a CPU load of 10 percent
-  of one core or more, of the session process with its helpers, now or in a scan of the last 2 minutes, or at a write
-  to its session log in the last 2 minutes. Else the state must be `idle`.
-- The server of `tmux`, `screen` or `herdr` must count as a live terminal. Thus a session in a multiplexer without a
-  client is not an orphan.
+- An orphan must mean: the owner process is gone, and the session process is still alive with the same start time.
+  The state must be `orphan` only when the owner is gone for certain: the parent chain reaches launchd without an owner,
+  and each process in it is a shell, `login`, `env`, `nohup`, a helper of Megachat or a process of the same agent; or
+  the run of a Megachat child ended. A shell that stays after its terminal is no owner.
+- The state must be `unknown` when the parent chain has no owner and has another live process that can own the session,
+  such as a bare `java` process without a sure sign of an IDE or a script that started the agent, or when the chain
+  ends before launchd. `incomplete` must give the count of such sessions. A session in the state `unknown` is not an
+  orphan.
+- Else the state must be `active` at a CPU load of 10 percent of one core or more, of the session process with its
+  helpers, now or in a scan of the last 2 minutes, or at a write to its session log in the last 2 minutes. Else the
+  state must be `idle`.
+- The server of a multiplexer must own its sessions, also without a client. Thus a session in a detached `tmux` or
+  `screen` is not an orphan, and its `parent.kind` is `multiplexer`.
 - Without the consent `sessions.index`, `status` and `lastActivityAt` must be null, a session outside Megachat must have
   an empty `sessionId` and `title`, and `incomplete` must say that the session logs are off. Megachat must then read no
   session file and no process file of an agent.
-- The order must be: orphan, active, idle, and the newest activity first in each group: the time of the last log write,
+- The order must be: orphan, unknown, active, idle, and the newest activity first in each group: the time of the last log write,
   or the start time for a row without a log. `limit` must be 1 to 200, and the
   default must be 50. `nextCursor` must continue after the last row of the page, and `truncated` must be true when more
   rows exist. `agent`, `project` and `state` must select the rows. `project` must select each working directory that
@@ -411,7 +422,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   - `waiting_for_permission` must not be given: Claude Code, Codex and pi write no record of a permission request to
     the log. Without the state request of Air it is not knowable. A pending permission prompt shows as `working`, then
     as `stuck`.
-- A session in a detached `tmux` keeps its terminal owner and gets its status from its log as each other session.
+- A session in a detached `tmux` keeps its multiplexer owner and gets its status from its log as each other session.
 - `incomplete` must name the first pass of the table while it reads the files of the last 24 hours, the count of the
   rows without a certain log, and the count of the logs that Megachat could not read.
 - Megachat must write to no provider file and open each one read-only.

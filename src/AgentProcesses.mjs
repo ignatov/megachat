@@ -27,12 +27,27 @@ const INTERPRETERS = new Set(['node', 'nodejs', 'bun', 'deno'])
 /** The apps that own a session as an IDE: the JetBrains IDEs, the other editors, and the desktop apps of the agents. */
 const IDE_APPS = /^(IntelliJ IDEA|PyCharm|WebStorm|GoLand|CLion|PhpStorm|RubyMine|Rider|DataGrip|DataSpell|RustRover|Aqua|Writerside|Fleet|Android Studio|JetBrains Gateway|JetBrains Client|Air|Visual Studio Code|VSCodium|Code - OSS|Cursor|Windsurf|Zed|Xcode|Nova|Sublime Text|Kiro|Trae|Antigravity|ChatGPT|Codex|Claude|OpenCode)\b/
 const TERMINAL_APPS = /^(Terminal|iTerm2?|Ghostty|WezTerm|kitty|Alacritty|Warp|WarpPreview|Hyper|Tabby|Rex|Wave|Termius)\b/
+/** The terminal programs without an app: the server of a remote terminal. */
+const TERMINAL_PROGRAMS = { 'mosh-server': 'mosh', sshd: 'SSH', 'sshd-session': 'SSH' }
 /**
- * The terminal programs without an app. The server of a multiplexer, such as `tmux`, `screen` or `herdr`, stays alive
- * without a client, so a session in it counts as a session with a live terminal.
+ * The servers of a multiplexer. Such a server stays alive without a client, so it owns its sessions also when it is
+ * detached. A session in it is never an orphan.
  */
-const TERMINAL_PROGRAMS = { tmux: 'tmux', screen: 'screen', SCREEN: 'screen', zellij: 'zellij', herdr: 'herdr', 'herdr-core': 'herdr',
-  dtach: 'dtach', abduco: 'abduco', 'mosh-server': 'mosh', sshd: 'SSH', 'sshd-session': 'SSH' }
+const MULTIPLEXERS = { tmux: 'tmux', screen: 'screen', SCREEN: 'screen', zellij: 'zellij', herdr: 'herdr', 'herdr-core': 'herdr',
+  dtach: 'dtach', abduco: 'abduco' }
+/**
+ * The main classes of a JetBrains IDE that runs from sources. Such an IDE is a bare `java` process without an app
+ * bundle. The run configurations of the IntelliJ monorepo start `com.intellij.idea.Main`, or the dev server
+ * `org.jetbrains.intellij.build.devServer.DevMainKt`, which builds the IDE and runs it in the same process. Their mode
+ * of a short command line puts only the class path into an argument file, so the main class stays on the command line.
+ */
+const IDE_MAIN_CLASSES = new Set(['com.intellij.idea.Main', 'org.jetbrains.intellij.build.devServer.DevMainKt'])
+/**
+ * The programs that own no session: a shell that stays after its terminal, and the programs that only start another
+ * program. A process of another program in the parent chain can own the session, so a chain with such a process and
+ * without a known owner gives no orphan.
+ */
+const NO_OWNERS = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'mksh', 'tcsh', 'csh', 'nu', 'login', 'env', 'nohup'])
 
 const baseName = path => path.slice(path.lastIndexOf('/') + 1)
 const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -73,8 +88,8 @@ function describe(item) {
   // A script of Megachat itself, but not a script of a package that Megachat installed, as its adapters are.
   if (interpreted && /megachat/i.test(script.replace(/.*\/node_modules\//, ''))) {
     if (/\/(src\/main|dist\/megachat)\.mjs$/.test(script) && words[0] === 'daemon') return { label, owner: { kind: 'megachat', name: MEGACHAT } }
-    // The launchers in `bin`, the supervisor of a child and the ACP command are no agents.
-    return { label }
+    // The launchers in `bin`, the supervisor of a child and the ACP command are no agents, and they own no session.
+    return { label, passive: true }
   }
   const found = PROGRAMS.find(rule => rule.names.includes(program) || interpreted && rule.script.test(script))
   if (found) {
@@ -89,7 +104,10 @@ function describe(item) {
     return { label, owner: { kind, name: app } }
   }
   if (TERMINAL_PROGRAMS[base]) return { label, owner: { kind: 'terminal', name: TERMINAL_PROGRAMS[base] } }
-  return { label }
+  if (MULTIPLEXERS[base]) return { label, owner: { kind: 'multiplexer', name: MULTIPLEXERS[base] } }
+  if (base === 'java' && words.some(word => IDE_MAIN_CLASSES.has(word))) return { label, owner: { kind: 'ide', name: label } }
+  // A login shell has a dash before its name.
+  return { label, ...(NO_OWNERS.has(base.replace(/^-/, '')) ? { passive: true } : {}) }
 }
 
 /** The longest parent chain that Megachat follows. A chain from a table with a reused PID can have a loop. */
@@ -100,10 +118,15 @@ const MAX_DEPTH = 64
  * process below another process of the same agent is a helper of that session. An adapter is a row only when no agent
  * of its own runs below it, because each agent below an adapter is one session.
  *
- * The parent of a row is the nearest owner in its parent chain: Megachat, an IDE, a terminal, the service of an agent,
- * or another app. A chain that reaches [daemonPid] belongs to this daemon. Then the state is the authority: a process
- * below a supervisor PID of a run is the session of that run, an orphan when the run ended, and each other process of
- * the daemon is a helper of Megachat and not a row. A chain without an owner is an orphan.
+ * The parent of a row is the nearest owner in its parent chain: Megachat, an IDE, a terminal, a multiplexer, the
+ * service of an agent, or another app. A chain that reaches [daemonPid] belongs to this daemon. Then the state is the
+ * authority: a process below a supervisor PID of a run is the session of that run, an orphan when the run ended, and
+ * each other process of the daemon is a helper of Megachat and not a row.
+ *
+ * `ownership` is `owned` with an owner, and `orphan` only when the owner is gone for certain: the chain reaches launchd,
+ * and each process in it is a shell, a program that only starts another program, a helper of Megachat or a process of
+ * the same agent. A chain with another live process, such as a bare `java` that is no IDE for certain or a script that
+ * started the agent, can have a live owner, so its `ownership` is `unknown`. So is a chain that ends before launchd.
  *
  * The CPU load of a row is the sum of its process and of each process below it that is no row of its own.
  */
@@ -144,23 +167,31 @@ export function agentSessions(processes, { daemonPid = process.pid, runs = [] } 
     if (role === 'adapter' && covered.has(item.pid)) continue
     const daemon = chain.findIndex(above => above.pid === daemonPid)
     let parent
-    let orphan = false
+    let ownership = 'owned'
     let run
     if (daemon >= 0) {
       run = [item, ...chain.slice(0, daemon)].map(above => runByPid.get(above.pid)).find(Boolean)
       if (!run) continue
       parent = { kind: 'megachat', name: MEGACHAT, pid: daemonPid }
-      orphan = terminalStates.has(run.status)
+      if (terminalStates.has(run.status)) ownership = 'orphan'
     }
     else {
       const owner = chain.find(above => described.get(above.pid).owner)
+      // A chain that ends before launchd is cut: a loop of reused PIDs, or a parent that the table does not have.
+      const top = chain.at(-1) ?? item
+      const whole = top.pid <= 1 || top.ppid <= 1
+      const possible = chain.find(above => above.pid > 1 && !described.get(above.pid).passive && described.get(above.pid).agent !== agent)
       if (owner) parent = { ...described.get(owner.pid).owner, pid: owner.pid }
+      else if (possible || !whole) {
+        ownership = 'unknown'
+        parent = { kind: 'unknown', name: possible ? described.get(possible.pid).label : '', pid: possible ? possible.pid : item.ppid }
+      }
       else {
-        orphan = true
+        ownership = 'orphan'
         parent = { kind: 'unknown', name: chain.length ? described.get(chain[0].pid).label : '', pid: item.ppid }
       }
     }
-    rows.push({ pid: item.pid, agent, startedAt: item.startedAt, cpu: 0, parent, orphan,
+    rows.push({ pid: item.pid, agent, startedAt: item.startedAt, cpu: 0, parent, ownership,
       ...(run ? { run: { sessionId: run.providerSessionId ?? '', title: run.title ?? '', cwd: run.cwd } } : {}) })
   }
   const rowByPid = new Map(rows.map(row => [row.pid, row]))

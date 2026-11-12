@@ -23,14 +23,18 @@ export const PAGE_VIEW_MS = 60000
 export const ACTIVE_CPU_PERCENT = 10
 export const RUNNING_LIMIT = 50
 export const RUNNING_MAX_LIMIT = 200
-export const STATES = ['orphan', 'active', 'idle']
+/**
+ * The states of a session in the order of the list. `unknown` is a session whose parent chain has a live process that
+ * can own it, so Megachat cannot tell an orphan from an owned session.
+ */
+export const STATES = ['orphan', 'unknown', 'active', 'idle']
 const systemClock = { now: () => Date.now() }
 /** The scan time of the view, then the sort key of the last row of the page. */
-const CURSOR = /^(\d{1,15})\.([0-2])\.(\d{1,15})\.(\d{1,10})(?:\.(\d{1,3}))?$/
+const CURSOR = /^(\d{1,15})\.([0-3])\.(\d{1,15})\.(\d{1,10})(?:\.(\d{1,3}))?$/
 
 /** A row without a log sorts by the start time of its process. `slot` orders the sessions of one process. */
 const sortKey = row => [STATES.indexOf(row.state), row.lastActivityAt ?? row.startedAt, row.pid, row.slot]
-/** The orphans first, then the active and the idle sessions, and the newest activity first in each group. */
+/** The orphans first, then the sessions with an unknown owner, the active and the idle sessions, and the newest activity first in each group. */
 const compare = (left, right) => left[0] - right[0] || right[1] - left[1] || right[2] - left[2] || (right[3] ?? 0) - (left[3] ?? 0)
 const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
 
@@ -95,6 +99,8 @@ export class RunningAgents {
       files: catalog?.source(row.agent)?.keepsOpen ? this.directories.get(row.pid)?.files ?? [] : [] }))
     const unreadable = rows.filter(row => row.cwd === null).length
     if (unreadable) incomplete.push(message('running.incomplete.cwd', unreadable))
+    const uncertain = rows.filter(row => row.ownership === 'unknown').length
+    if (uncertain) incomplete.push(message('running.incomplete.owner', uncertain))
     const view = catalog ? await this.#withLogs(rows, catalog, scannedAt, incomplete)
       : rows.map(row => this.#row(row, { sessionId: row.run?.sessionId ?? '' }, scannedAt))
     view.sort((left, right) => compare(sortKey(left), sortKey(right)))
@@ -181,7 +187,7 @@ export class RunningAgents {
       pid: row.pid, slot, agent: row.agent, startedAt: row.startedAt, parent: row.parent, cwd: row.cwd,
       sessionId: sessionId ?? '', title: row.run?.title || known?.title || '',
       status: known ? sessionStatus(known, now) : null, lastActivityAt,
-      state: row.orphan ? 'orphan' : cpu || written ? 'active' : 'idle',
+      state: row.ownership === 'owned' ? cpu || written ? 'active' : 'idle' : row.ownership,
     }
   }
 

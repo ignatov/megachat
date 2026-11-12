@@ -325,15 +325,21 @@ Ask the agent "what is running now?". The main agent calls its tool `agents_runn
 lists the running sessions of Claude Code, Codex, pi and OpenCode on the machine, from a terminal, an IDE or Megachat.
 It reads the process table with one `ps` call, and the working directory and the open session logs of each new
 session with one `lsof` call. It changes nothing, and it stops no process. Each session has its agent, its project,
-its start time, its owner (the terminal, the IDE or Megachat) and a state:
+its start time, its owner (the terminal, the multiplexer, the IDE or Megachat) and a state:
 
-- `orphan`: no terminal, IDE, app or Megachat run owns the process any more.
+- `orphan`: the owner is gone for certain. No terminal, multiplexer, IDE, app or Megachat run owns the process any
+  more, and between the process and launchd there are only shells and the processes of the same agent.
+- `unknown`: the parent chain has a live process that can own the session, such as a Java process or a script, and
+  Megachat cannot tell whether it does. The answer gives the count of such sessions.
 - `active`: the session and its helpers use 10 percent of one core or more, now or in the last 2 minutes, or its log
   got a write in the last 2 minutes.
 - `idle`: each other session.
 
-The server of `tmux`, `screen` or `herdr` counts as a live terminal, so a session in a detached multiplexer is not an
-orphan. The tool keeps its view for 5 seconds. It reads the processes on macOS only.
+The server of `tmux`, `screen`, `zellij` or `herdr` owns its sessions also without a client, so a session in a detached
+multiplexer is not an orphan, and its owner kind is `multiplexer`. An IDE that runs from sources is a bare `java`
+process. It counts as an IDE when its command line has the main class `com.intellij.idea.Main` or the dev server
+`org.jetbrains.intellij.build.devServer.DevMainKt`. Another Java process gives the state `unknown`. The tool keeps its
+view for 5 seconds. It reads the processes on macOS only.
 
 With the consent `sessions.index` (see the next section), Megachat also reads the metadata and the tail of the session
 log of each running session, also outside the listed directories. Then each session also has its session ID, its
