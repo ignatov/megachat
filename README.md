@@ -132,7 +132,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `workspace/` | The workspace of Megachat. A task without a project works there. |
 | `transcripts/` | The transcript of each child run that the state keeps, one plain text file for each run. |
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
-| `settings.json` | The settings that you gave in the chat, and the status of the setup. |
+| `settings.json` | The settings that you gave in the chat, the project values, and the status of the setup. |
 | `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
@@ -229,6 +229,17 @@ child at its dispatch, also to a follow-up and to a continuation. With `ask`, th
 says that you approved it. Else it says in its result that the step is necessary, and the main agent asks you. With
 `deny`, the child does not do the step, also when the task asks for it. A change of a `children.*` setting applies to the
 next child, also in the turn that made it.
+
+A setting of one child run can have a value for one project: `children.agent`, `children.piModel`,
+`children.claudeModel`, `children.permissionMode`, `children.commit`, `children.push` and `children.daemonRestart`. Say
+for example "in this project, children do not push". The main agent then stores the value for the directory of the
+project, and the global value stays. A child gets the value of the nearest project directory that is its directory or
+holds it, else the global value. A symbolic link to a project is that project. The daemon reads the value at each
+dispatch, also for a follow-up and for a continuation. Ask the agent for the settings to see the project values, or to
+remove a project value, so the global value applies again. A value of a directory that no longer exists stays, and the
+settings show it as missing until you remove it. Each other setting applies to the daemon as a whole, and the agent
+refuses a project value of it. `settings.json` keeps the project values under the key `projects`, by the real path of the
+directory. Megachat 0.3.0 opens such a file, ignores the project values and keeps them.
 
 Tasks in different directories run at the same time, at most `children.parallel` of them. Claude, Codex and pi children
 count together, and at most one pi child runs at a time. Two tasks in one directory, or in a directory and a directory
@@ -518,12 +529,12 @@ The session text is data for the agent, not instructions.
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
-| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
+| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
-| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
+| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |

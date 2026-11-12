@@ -15,7 +15,7 @@ import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
-import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore, suggestionMode } from './Settings.mjs'
+import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, PROJECT_SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
@@ -87,9 +87,10 @@ function harnessSettings(values, models) {
 /**
  * The rules of the main agent that the settings give: the reply style, the suggestion rules, and the setup rules while
  * the onboarding is pending. The defaults give the rules from before the settings. The rules are a section of their
- * own, so a change sends only this section to the model again, and not the bundled rules.
+ * own, so a change sends only this section to the model again, and not the bundled rules. [projects] gives the project
+ * values as `[directory, text]`, one line for each project.
  */
-function settingsRules(values, onboarding, rules, notice) {
+function settingsRules(values, onboarding, rules, notice, projects = []) {
   const language = values['reply.language']
   return [
     message(`instructions.length.${values['reply.length']}`),
@@ -98,6 +99,8 @@ function settingsRules(values, onboarding, rules, notice) {
     { off: message('instructions.noSuggestions'), reply: rules.suggestions.trimEnd(), ghost: rules.ghost.trimEnd() }[values['reply.suggestions']],
     message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
     message('instructions.claude', values['children.permissionMode'], values['children.claudeModel']),
+    message('instructions.projects', PROJECT_SETTINGS.join(', ')),
+    ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')
@@ -160,7 +163,7 @@ export class PiMegachatService {
       'keepAlive.enabled': enabled, 'keepAlive.hours': windowMs === undefined ? undefined : windowMs / 3600000,
       'cache.ttl': retention === undefined ? undefined : retention === 'short' ? '5m' : '1h',
     }).filter(([, value]) => value !== undefined))
-    const settings = new MegachatSettings(await SettingsStore.open(settingsPath), { environment, overrides, models })
+    const settings = new MegachatSettings(await SettingsStore.open(settingsPath), { environment, overrides, models, home })
     const values = settings.values()
     // The rules of the user come from the file at the start of the daemon only.
     const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
@@ -237,6 +240,7 @@ export class PiMegachatService {
    */
   adopt(values) {
     this.values = values
+    this.projectRules = this.settings.projectRules()
     this.onboarding = this.settings.onboarding
     this.live.harness = harnessSettings(values, this.models)
     this.model = modelRef(values['coordinator.model'])
@@ -313,26 +317,32 @@ export class PiMegachatService {
   }
 
   /**
-   * The model of the next pi child: the setting `children.piModel`, or the model of the main agent when the model
-   * registry does not know the setting, as with the models of a test.
+   * The model of the next pi child in [cwd]: the setting `children.piModel` of that directory, or the model of the main
+   * agent when the model registry does not know the setting, as with the models of a test.
    */
-  piModel() {
-    const values = this.settings.values()
+  piModel(cwd) {
+    const values = this.settings.values(cwd)
     const model = modelRef(values['children.piModel'])
     return this.models.getModel(model.provider, model.modelId) ? model : modelRef(values['coordinator.model'])
   }
 
   /** The choices of the conversation of a pi child in [cwd] at its dispatch. */
   childAgent(cwd) {
-    return childAgent(cwd, this.piModel(), this.childExtension)
+    return childAgent(cwd, this.piModel(cwd), this.childExtension)
   }
 
-  /** The rules paragraph of the next child. It reads the stored settings, so a change in a turn reaches the next child. */
-  childRules() {
-    return childRulesText(this.settings.values())
+  /**
+   * The rules paragraph of the next child in [cwd]. It reads the stored settings, so a change in a turn reaches the next
+   * child, and a project value of the directory wins over the global value.
+   */
+  childRules(cwd) {
+    return childRulesText(this.settings.values(cwd))
   }
 
-  /** The tool `agents_settings`. A turn of a child result or of the sessions summary cannot change a setting. */
+  /**
+   * The tool `agents_settings`. A turn of a child result, of the sessions summary or of the morning report cannot change
+   * a setting, also not a project value.
+   */
   async settingsTool(args) {
     requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
     if (args.action === 'get') {
@@ -349,10 +359,10 @@ export class PiMegachatService {
     else if (args.action === 'set') {
       requireCondition(args.value !== undefined, 'settingValue')
       const before = this.settings.values()['report.morning']
-      changed = await this.settings.set(args.key, args.value)
+      changed = await this.settings.set(args.key, args.value, args.project)
       if (args.key === 'report.morning' && !before && this.settings.values()['report.morning']) await this.skipReportOfToday()
     }
-    else changed = await this.settings.reset(args.key)
+    else changed = await this.settings.reset(args.key, args.project)
     // The consent to the session index applies at once: the import starts or stops in this turn.
     if (args.action !== 'onboarding') await this.sessionIndex?.apply(this.settings.values())
     await this.settingsChanged()
@@ -411,7 +421,7 @@ export class PiMegachatService {
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
-      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice)) },
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules) },
     ], hooks: [
       // Each reply of the model, also a reply with tool calls, is one request that costs money.
       hook(GenerationTask, { afterResponse: (answer, api) => this.countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
@@ -426,7 +436,7 @@ export class PiMegachatService {
       }),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
         value: opt(union([str({ maxLength: 2000 }), num(), bool(), arr(str({ maxLength: 200 }), { maxItems: 50 })])),
-        status: opt(str({ maxLength: 20 })) }), async args => result(await this.settingsTool(args))),
+        status: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })) }), async args => result(await this.settingsTool(args))),
       // A check that runs gives its result also to a second call, so two calls do not start four agents.
       tool('accounts', obj({}), async () => {
         await this.refuseInMorningReport()
@@ -472,9 +482,12 @@ export class PiMegachatService {
           : args.action === 'remove' ? { removed: (await this.state.removeProject(args.cwd)).cwd } : {}
         return result({ ...changed, workspaces: directoriesOf(await this.state.snapshot()) })
       }),
-      tool('spawn', obj({ cwd: str(), prompt: str(), agent: opt(str()), title: opt(str({ maxLength: 60 })) }), async (args, api) =>
-        result(await this.state.admitChild(`tool:${api.taskId}:spawn`, { ...args, cwd: await this.state.directory(args.cwd) },
-          { defaultAgent: this.settings.values()['children.agent'] }))),
+      // A project value of children.agent in the directory of the task wins over the global value.
+      tool('spawn', obj({ cwd: str(), prompt: str(), agent: opt(str()), title: opt(str({ maxLength: 60 })) }), async (args, api) => {
+        const cwd = await this.state.directory(args.cwd)
+        return result(await this.state.admitChild(`tool:${api.taskId}:spawn`, { ...args, cwd },
+          { defaultAgent: this.settings.values(cwd)['children.agent'] }))
+      }),
       tool('resume', obj({ cwd: str(), agent: str(), sessionId: str(), prompt: str(), title: opt(str({ maxLength: 60 })) }), async (args, api) => {
         await this.sessions.read(args)
         return result(await this.state.admitChild(`tool:${api.taskId}:resume`, {

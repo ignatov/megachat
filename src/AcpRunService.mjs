@@ -90,14 +90,15 @@ export function steerBlock(items) {
 /**
  * Executes admitted runs. A recorded dispatch is never sent again after a process restart.
  * An automatic continuation waits until its `notBefore` time; later queued runs may start first.
- * [childRules] gives the rules paragraph of the user at the time of each dispatch. The prompt gets it as a block of its
- * own before the task, and the state keeps only the task, so a report quotes the task alone.
+ * [childRules] gives the rules paragraph of the user for the directory of the run at the time of each dispatch. The
+ * prompt gets it as a block of its own before the task, and the state keeps only the task, so a report quotes the task
+ * alone.
  * Only this process has the connection to the agent. So the tool `agents_steer` records a message in the state, and
  * this service sends it, as it does for a cancel. [steerTimeoutMs] limits the wait for the answer of the agent.
  * [pool] holds the places for the children, and this service shares it with the pi run service. A pi run is not for
  * this service. Each run has its own agent process, deadline, permission requests and messages of the user.
- * [settings] gives the effective settings at the time of each dispatch. [resolveSettings] reads the project settings of
- * Claude Code. A test replaces it.
+ * [settings] gives the effective settings for the directory of the run at the time of each dispatch, with the project
+ * values of that directory. [resolveSettings] reads the project settings of Claude Code. A test replaces it.
  */
 export class AcpRunService {
   constructor(state, configuration, {
@@ -187,8 +188,8 @@ export class AcpRunService {
       work.transcript = this.transcripts?.begin(run)
       const agent = run.agent ?? 'claude'
       if (agent === 'claude') await refuseProjectBaseUrl(run.cwd, this.resolveSettings)
-      // The settings of the dispatch. A change during the run applies to the next child.
-      const values = this.settings()
+      // The settings of the dispatch in the directory of the run. A change during the run applies to the next child.
+      const values = this.settings(run.cwd)
       const choice = values['children.permissionMode'] ?? 'inherit'
       const mode = agent === 'claude' ? CLAUDE_PERMISSION_MODES[choice] : undefined
       const model = agent === 'claude' && (values['children.claudeModel'] ?? 'inherit') !== 'inherit' ? values['children.claudeModel'] : undefined
@@ -298,7 +299,7 @@ export class AcpRunService {
       work.part = undefined
       // A message of the user from before the dispatch goes in the prompt. A later one goes through the steering request.
       const added = ((await this.state.snapshot()).runs[run.id].steers ?? []).filter(item => item.delivery === 'fallback')
-      const rules = this.childRules?.()
+      const rules = this.childRules?.(run.cwd)
       // Claude Code never reads `AGENTS.md`. Without a `CLAUDE.md`, the prompt holds it, as the instructions of a pi child do.
       const repository = agent === 'claude' ? await claudeChildRules(run.cwd).catch(() => undefined) : undefined
       const task = run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}`

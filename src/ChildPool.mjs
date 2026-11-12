@@ -1,26 +1,12 @@
-import { realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { directoryKey, isWithin } from './ProjectDirectories.mjs'
 import { DEFAULT_PARALLEL_CHILDREN, MAX_PARALLEL_CHILDREN } from './Settings.mjs'
+
+export { directoryKey }
 
 /** The states of a child run between its start and its end. A run in one of these states holds a place of the pool. */
 const activeStates = new Set(['launching', 'ready', 'dispatched', 'running', 'approval'])
 /** The count of the directories whose real path the pool keeps. The listed directories are fewer. */
 const KEPT_DIRECTORIES = 256
-
-/**
- * The key of the working directory of a run: its real path. So two names of one directory, such as a path through a
- * symbolic link, give one key. A directory that the daemon cannot read gives its absolute path.
- */
-export function directoryKey(cwd) {
-  try { return realpathSync.native(cwd) }
-  catch { return resolve(String(cwd)) }
-}
-
-/** True when [inner] is [outer] or a directory in it. The check compares path segments, so `/app2` is not in `/app`. */
-const isWithin = (inner, outer) => {
-  const path = relative(outer, inner)
-  return path === '' || path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)
-}
 
 /** True when two directory keys are one directory, or one of them is in the other: then they are one checkout. */
 export const overlaps = (first, second) => isWithin(first, second) || isWithin(second, first)

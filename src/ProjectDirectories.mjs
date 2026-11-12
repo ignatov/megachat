@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { lstat, mkdir, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -17,6 +18,21 @@ const applicationDirectories = new Set(['Library', 'AppData'])
 
 export function projectRoots(environment = process.env) {
   return (environment[ROOTS_VARIABLE] ?? '').split(delimiter).filter(isAbsolute).map(path => resolve(path))
+}
+
+/**
+ * The key of a directory: its real path. So two names of one directory, such as a path through a symbolic link, give one
+ * key. A directory that the daemon cannot read gives its absolute path.
+ */
+export function directoryKey(cwd) {
+  try { return realpathSync.native(cwd) }
+  catch { return resolve(String(cwd)) }
+}
+
+/** True when [inner] is [outer] or a directory in it. The check compares path segments, so `/app2` is not in `/app`. */
+export const isWithin = (inner, outer) => {
+  const path = relative(outer, inner)
+  return path === '' || path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)
 }
 
 /** Replaces a `~` at the start of the path with the home directory. */

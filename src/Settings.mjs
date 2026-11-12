@@ -1,9 +1,10 @@
-import { chmod, readFile, rename, writeFile } from 'node:fs/promises'
-import { basename, isAbsolute } from 'node:path'
+import { existsSync } from 'node:fs'
+import { chmod, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { basename, isAbsolute, resolve } from 'node:path'
 import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai/models'
 import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
-import { logEvent, message, requireCondition } from './messages.mjs'
-import { expandHome } from './ProjectDirectories.mjs'
+import { logEvent, message, MegachatError, requireCondition } from './messages.mjs'
+import { directoryKey, expandHome, isWithin } from './ProjectDirectories.mjs'
 import { DEFAULT_WORKDAY_DAYS, knownTimezone, resolvedTimezone, SYSTEM_TIMEZONE, WEEKDAYS } from './Workday.mjs'
 
 /** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
@@ -135,6 +136,8 @@ const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(mo
  *   model of the main agent.
  * - `allowed` gives the allowed values or the range for the output of `get`.
  * - `applies` tells when a change has an effect: `settings.applies.<applies>` in the resources says it to the user.
+ * - `project` marks a setting of one child run. Such a setting can have a value for one project directory. Each other
+ *   setting applies to the daemon as a whole, so it has only the global value.
  */
 export const SETTINGS = [
   { key: 'coordinator.model', default: DEFAULT_MODEL, applies: 'nextTurn', validate: knownModel, allowed: modelValues },
@@ -190,7 +193,7 @@ export const SETTINGS = [
   { key: 'reply.length', default: 'short', applies: 'nextTurn',
     validate: choice(['short', 'normal', 'detailed']), allowed: () => ({ values: ['short', 'normal', 'detailed'] }) },
   { key: 'reply.quoteRequest', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
-  { key: 'children.agent', default: 'claude', applies: 'nextChild', validate: choice(CHILD_AGENTS), allowed: () => ({ values: CHILD_AGENTS }) },
+  { key: 'children.agent', default: 'claude', applies: 'nextChild', project: true, validate: choice(CHILD_AGENTS), allowed: () => ({ values: CHILD_AGENTS }) },
   // The value 1 runs one child at a time, as the builds up to v0.3.0 did.
   { key: 'children.parallel', default: DEFAULT_PARALLEL_CHILDREN, applies: 'nextChild',
     validate: value => {
@@ -199,15 +202,15 @@ export const SETTINGS = [
     },
     allowed: () => ({ minimum: 1, maximum: MAX_PARALLEL_CHILDREN }) },
   // The list of the models is long, and `coordinator.model` gives it already.
-  { key: 'children.piModel', default: DEFAULT_PI_MODEL, applies: 'nextChild', validate: knownModel,
+  { key: 'children.piModel', default: DEFAULT_PI_MODEL, applies: 'nextChild', project: true, validate: knownModel,
     allowed: () => ({ other: message('settings.piModel.other') }) },
-  { key: 'children.claudeModel', default: 'inherit', applies: 'nextChild', validate: claudeModel,
+  { key: 'children.claudeModel', default: 'inherit', applies: 'nextChild', project: true, validate: claudeModel,
     allowed: () => ({ values: ['inherit'], other: message('settings.claudeModel.other') }) },
-  { key: 'children.permissionMode', default: 'inherit', applies: 'nextChild', validate: choice(Object.keys(CLAUDE_PERMISSION_MODES)),
+  { key: 'children.permissionMode', default: 'inherit', applies: 'nextChild', project: true, validate: choice(Object.keys(CLAUDE_PERMISSION_MODES)),
     allowed: () => ({ values: Object.keys(CLAUDE_PERMISSION_MODES) }) },
-  { key: 'children.commit', default: 'allow', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
-  { key: 'children.push', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
-  { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS),
+  { key: 'children.commit', default: 'allow', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
+  { key: 'children.push', default: 'ask', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
+  { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS),
     allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
     // The value must be a path that each create can use: an absolute path after the expansion of `~`, as the create
@@ -236,6 +239,8 @@ export const SETTINGS = [
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))
+/** The keys of the settings that can have a project value. */
+export const PROJECT_SETTINGS = SETTINGS.filter(definition => definition.project).map(definition => definition.key)
 /**
  * The keys of the settings that an earlier build had and this build removed. Megachat up to v0.3.0 had the settings of
  * the project events, `events.enabled` and `events.ignore`. This build ignores a stored value of them, as it ignores
@@ -257,6 +262,12 @@ export function environmentSetting(key, environment = process.env) {
 }
 
 const emptySettings = () => ({ schema: SCHEMA, onboarding: 'pending', values: {} })
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+/**
+ * The project values of [data] by the real path of the project directory. The key `projects` is optional: a file of
+ * v0.3.0 or older has none. A `projects` of another shape gives no project value, and the file keeps it.
+ */
+const projectsOf = data => isRecord(data.projects) ? data.projects : {}
 
 /** Gives the reason why [data] is no valid content of `settings.json`, or `undefined` for valid content. */
 function invalidReason(data) {
@@ -303,6 +314,12 @@ export class SettingsStore {
 
   stored(key) { return Object.hasOwn(this.data.values, key) ? this.data.values[key] : undefined }
 
+  /** Each project directory with its stored values, as `[directory, values]`, in the order of the directories. */
+  projects() {
+    return Object.entries(projectsOf(this.data)).filter(([, values]) => isRecord(values))
+      .sort(([first], [second]) => first < second ? -1 : first > second ? 1 : 0)
+  }
+
   /** Writes a changed copy. The temporary file and the rename keep a complete file also after a crash. */
   change(operation) {
     const next = this.queue.then(async () => {
@@ -323,12 +340,14 @@ export class SettingsStore {
 }
 
 /**
- * The effective settings: an explicit option of the caller, then the environment variable, then the stored setting,
- * then the default. An option comes only from a test or a development caller. Each entry tells its source.
+ * The effective settings: an explicit option of the caller, then the environment variable, then the project value,
+ * then the stored setting, then the default. An option comes only from a test or a development caller. Each entry tells
+ * its source. A project value applies only to a setting of a child run, and only when the caller names the directory of
+ * the run. [home] replaces the home directory for a `~` in a project path, for a test.
  */
 export class MegachatSettings {
-  constructor(store, { environment = process.env, overrides = {}, models } = {}) {
-    Object.assign(this, { store, environment, overrides, models })
+  constructor(store, { environment = process.env, overrides = {}, models, home } = {}) {
+    Object.assign(this, { store, environment, overrides, models, home })
   }
 
   get onboarding() { return this.store.onboarding }
@@ -339,57 +358,165 @@ export class MegachatSettings {
     return { ...context, model: modelOf(this.models, this.entry('coordinator.model', context).value) }
   }
 
-  entry(key, context = this.context()) {
+  /**
+   * The project value of [key] for the directory [real], a real path: the valid value of the nearest project directory
+   * that is [real] or holds it. A stored value that this build does not accept counts as no value.
+   */
+  projectValue(key, real, context) {
+    let found
+    for (const [directory, values] of this.store.projects()) {
+      if (!Object.hasOwn(values, key) || !isWithin(real, directory) || found && found.project.length >= directory.length) continue
+      const value = definitions.get(key).validate(values[key], context)
+      if (value !== undefined) found = { project: directory, value }
+    }
+    return found
+  }
+
+  /** The entry of [key]. With the real path [directory] of a child run, a project value of a setting of a run applies. */
+  entry(key, context = this.context(), directory) {
     const definition = definitions.get(key)
     const stored = this.store.stored(key)
     const valid = stored === undefined ? undefined : definition.validate(stored, context)
     const fromEnvironment = environmentValue(definition, this.environment)
+    const project = directory !== undefined && definition.project ? this.projectValue(key, directory, context) : undefined
     const [value, source] = Object.hasOwn(this.overrides, key) ? [this.overrides[key], 'option']
       : fromEnvironment !== undefined ? [fromEnvironment, 'environment']
-        : valid !== undefined ? [valid, 'setting'] : [definition.default, 'default']
+        : project ? [project.value, 'project']
+          : valid !== undefined ? [valid, 'setting'] : [definition.default, 'default']
     // A stored level that the model does not know becomes the nearest level of the model, so each request agrees.
     const effective = key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
     return { key, value: effective, source, default: definition.default,
       ...(definition.variable ? { variable: definition.variable } : {}),
       ...(stored === undefined ? {} : { stored }),
       ...(stored !== undefined && valid === undefined ? { storedIgnored: true } : {}),
-      ...(valid !== undefined && source !== 'setting' ? { storedHidden: true } : {}) }
+      ...(valid !== undefined && source !== 'setting' ? { storedHidden: true } : {}),
+      ...(project ? { project: project.project } : {}),
+      ...(project && source !== 'project' ? { projectHidden: true } : {}) }
   }
 
-  /** Each effective value by its key. */
-  values() {
+  /**
+   * Each effective value by its key. With the directory [cwd] of a child run, the project values of that directory
+   * apply. The directory need not be a real path.
+   */
+  values(cwd) {
     const context = this.context()
-    return Object.fromEntries(SETTINGS.map(({ key }) => [key, this.entry(key, context).value]))
+    const real = cwd === undefined ? undefined : directoryKey(cwd)
+    return Object.fromEntries(SETTINGS.map(({ key }) => [key, this.entry(key, context, real).value]))
+  }
+
+  /**
+   * The project values that apply, for the rules of the main agent: each project directory with the text
+   * `key=value, ...` of its values. A value that a variable hides, or that this build does not accept, is not in it.
+   */
+  projectRules() {
+    const context = this.context()
+    return this.store.projects().map(([directory, values]) => [directory, Object.keys(values)
+      .filter(key => definitions.get(key)?.project).map(key => this.entry(key, context, directory))
+      .filter(entry => entry.source === 'project' && entry.project === directory)
+      .map(entry => `${entry.key}=${entry.value}`).join(', ')]).filter(([, text]) => text)
+  }
+
+  /**
+   * The project values for the output of `get`. A value that this build does not accept is in `ignored`, and the file
+   * keeps it. A directory that no longer exists keeps its values and gets `missing`: a reset with its path removes them.
+   */
+  describeProjects(context) {
+    return this.store.projects().map(([directory, stored]) => {
+      const values = {}
+      const ignored = {}
+      for (const [key, value] of Object.entries(stored)) {
+        const valid = definitions.get(key)?.project ? definitions.get(key).validate(value, context) : undefined
+        if (valid === undefined) ignored[key] = value
+        else values[key] = valid
+      }
+      return { directory, values, ...(Object.keys(ignored).length ? { ignored } : {}), ...(existsSync(directory) ? {} : { missing: true }) }
+    })
+  }
+
+  /**
+   * The real path of the project directory [path] of a call: an absolute path or a path that starts with `~`, of a
+   * directory that exists. With [stored], a stored project directory that no longer exists is valid too, so a reset can
+   * remove its values.
+   */
+  async projectDirectory(path, stored = false) {
+    const text = typeof path === 'string' ? path.trim() : ''
+    requireCondition(text && text.length <= 4096 && !text.includes('\0'), 'settingProject')
+    const expanded = expandHome(text, this.home)
+    requireCondition(isAbsolute(expanded), 'settingProject')
+    const real = await realpath(expanded).catch(() => undefined)
+    if (real !== undefined && (await stat(real)).isDirectory()) return real
+    const absolute = resolve(expanded)
+    requireCondition(stored && Object.hasOwn(projectsOf(this.store.data), absolute), 'settingProject')
+    return absolute
   }
 
   /** The output of `get`: each entry with its allowed values, its description and the time when a change applies. */
   describe() {
     const context = this.context()
     return { onboarding: this.onboarding, settings: SETTINGS.map(definition => ({ ...this.entry(definition.key, context),
-      ...definition.allowed(context), description: message(`setting.${definition.key}`), applies: message(`settings.applies.${definition.applies}`) })) }
+      ...(definition.project ? { perProject: true } : {}),
+      ...definition.allowed(context), description: message(`setting.${definition.key}`), applies: message(`settings.applies.${definition.applies}`) })),
+    projects: this.describeProjects(context), projectsNote: message('settings.projects.note') }
   }
 
-  /** The output of `set` and `reset` for [key], with a note when a variable or an option hides the stored value. */
-  report(key) {
-    const entry = this.entry(key)
+  /**
+   * The output of `set` and `reset` for [key], with a note when a variable or an option hides the stored value. With a
+   * project [directory], the entry is the entry of a child run in that directory, and `directory` names it.
+   */
+  report(key, directory) {
+    const entry = this.entry(key, this.context(), directory)
     const hidden = entry.source === 'environment' ? message('settings.hidden', entry.variable)
       : entry.source === 'option' ? message('settings.option') : undefined
-    return { ...entry, applies: message(`settings.applies.${definitions.get(key).applies}`), ...(hidden ? { note: hidden } : {}) }
+    return { ...entry, ...(directory === undefined ? {} : { directory }), applies: message(`settings.applies.${definitions.get(key).applies}`),
+      ...(hidden ? { note: hidden } : {}) }
   }
 
-  async set(key, value) {
+  /** Refuses a project value of a setting of the daemon as a whole. */
+  requireProjectSetting(key) {
+    if (!definitions.get(key).project) throw new MegachatError('settingGlobal', key, PROJECT_SETTINGS.join(', '))
+  }
+
+  /** Stores [value] for [key]: the global value, or with [project] the value of that project directory. */
+  async set(key, value, project) {
     const definition = definitions.get(key)
     requireCondition(definition, 'settingKey')
+    if (project !== undefined) this.requireProjectSetting(key)
+    const directory = project === undefined ? undefined : await this.projectDirectory(project)
     const normalized = definition.validate(value, this.context())
     requireCondition(normalized !== undefined, 'settingValue')
-    await this.store.change(data => { data.values[key] = normalized })
-    return this.report(key)
+    await this.store.change(data => {
+      if (directory === undefined) { data.values[key] = normalized; return }
+      if (!isRecord(data.projects)) data.projects = {}
+      data.projects[directory] = { ...(isRecord(data.projects[directory]) ? data.projects[directory] : {}), [key]: normalized }
+    })
+    return this.report(key, directory)
   }
 
-  async reset(key) {
-    requireCondition(definitions.has(key), 'settingKey')
-    await this.store.change(data => { delete data.values[key] })
-    return this.report(key)
+  /**
+   * Removes the stored value of [key]. With [project], it removes the value of that project directory, so the value of
+   * a project that holds it, or the global value, applies again. With [project] and no [key], it removes each value of
+   * the project.
+   */
+  async reset(key, project) {
+    if (project === undefined) {
+      requireCondition(definitions.has(key), 'settingKey')
+      await this.store.change(data => { delete data.values[key] })
+      return this.report(key)
+    }
+    requireCondition(key === undefined || definitions.has(key), 'settingKey')
+    if (key !== undefined) this.requireProjectSetting(key)
+    const directory = await this.projectDirectory(project, true)
+    let removed = []
+    await this.store.change(data => {
+      const values = projectsOf(data)[directory]
+      if (!isRecord(values)) return
+      removed = Object.keys(values).filter(name => key === undefined || name === key)
+      for (const name of removed) delete values[name]
+      if (!Object.keys(values).length) delete data.projects[directory]
+      // Without a project value, the file has the shape of v0.3.0 again.
+      if (!Object.keys(data.projects).length) delete data.projects
+    })
+    return key === undefined ? { directory, removed } : this.report(key, directory)
   }
 
   async setOnboarding(status) {

@@ -43,8 +43,8 @@ async function fixture(t, values, configuration, options = {}) {
     launched.push(agent)
     return configuration ? configuration.childLaunch(agent) : { env: process.env }
   } },
-    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], childRules: () => service.childRules(),
-      settings: () => service.settings.values(), ...options })
+    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], childRules: cwd => service.childRules(cwd),
+      settings: cwd => service.settings.values(cwd), ...options })
   await children.start()
   await service.resume()
   t.after(async () => { await children.close(); await service.close() })

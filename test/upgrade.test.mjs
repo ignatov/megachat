@@ -122,7 +122,7 @@ async function open(directories) {
     await pi.start()
     const children = new AcpRunService(service.state, { childLaunch: async () => ({ env: process.env }) }, {
       args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], historyServer: server.historyConfiguration(),
-      childRules: () => service.childRules(), pool,
+      childRules: cwd => service.childRules(cwd), pool,
     })
     await children.start()
     await service.resume()
