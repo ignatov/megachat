@@ -16,12 +16,12 @@ const MAX_BUFFER = 64 * 1024 * 1024
 /** `ps` writes the column `ucomm` with this width: the length of the executable name that the kernel keeps. */
 const NAME_WIDTH = 16
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const LINE = /^\s*(\d+)\s+(\d+)\s+[A-Z][a-z]{2} ([A-Z][a-z]{2})\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})\s+(\d+(?:[.,]\d+)?) (.*)$/
+const LINE = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+[A-Z][a-z]{2} ([A-Z][a-z]{2})\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})\s+(\d+(?:[.,]\d+)?) (.*)$/
 
 const utf8 = text => Buffer.from(text, 'latin1').toString('utf8')
 
 /**
- * Reads the output of `ps -o pid=,ppid=,lstart=,pcpu=,ucomm=,args=`. Each byte of [output] must be one character, as
+ * Reads the output of `ps -o pid=,ppid=,uid=,lstart=,pcpu=,ucomm=,args=`. Each byte of [output] must be one character, as
  * the encoding `latin1` gives, because `ps` pads the column `ucomm` to 16 bytes and not to 16 characters. A line that
  * does not have this form gives no process.
  */
@@ -31,13 +31,13 @@ export function parseProcesses(output) {
   for (const line of text.split('\n')) {
     const match = LINE.exec(line)
     if (!match) continue
-    const [, pid, ppid, month, day, hours, minutes, seconds, year, cpu, rest] = match
+    const [, pid, ppid, uid, month, day, hours, minutes, seconds, year, cpu, rest] = match
     const startedAt = new Date(Number(year), MONTHS.indexOf(month), Number(day), Number(hours), Number(minutes), Number(seconds)).getTime()
     if (!MONTHS.includes(month) || !Number.isFinite(startedAt)) continue
     // A name of 16 bytes has no space after it, so the space after the column separates the name from the command.
     const padded = rest.length > NAME_WIDTH && rest[NAME_WIDTH] === ' '
     processes.push({
-      pid: Number(pid), ppid: Number(ppid), startedAt, cpu: Number(cpu.replace(',', '.')),
+      pid: Number(pid), ppid: Number(ppid), uid: Number(uid), startedAt, cpu: Number(cpu.replace(',', '.')),
       name: utf8(padded ? rest.slice(0, NAME_WIDTH).trimEnd() : rest.length <= NAME_WIDTH ? rest.trimEnd() : ''),
       command: utf8(padded ? rest.slice(NAME_WIDTH + 1) : rest.length <= NAME_WIDTH ? '' : rest),
     })
@@ -86,7 +86,7 @@ function macProcessTable() {
   return {
     platform: 'darwin', supported: true,
     async processes() {
-      const { stdout } = await execute('/bin/ps', ['-axww', '-o', 'pid=,ppid=,lstart=,pcpu=,ucomm=,args='],
+      const { stdout } = await execute('/bin/ps', ['-axww', '-o', 'pid=,ppid=,uid=,lstart=,pcpu=,ucomm=,args='],
         { env: PS_ENVIRONMENT, encoding: 'latin1', maxBuffer: MAX_BUFFER, timeout: TIMEOUT_MS })
       return parseProcesses(stdout)
     },
@@ -109,9 +109,10 @@ function macProcessTable() {
 
 /**
  * The process table of the platform. Each platform has the same interface, so a test gives a fake:
- * - `processes()` gives each process as `{ pid, ppid, startedAt, cpu, name, command }`. `startedAt` is in milliseconds,
- *   `cpu` is the load in percent of one core, `name` is the name of the executable file, and `command` is the command
- *   line. The command line can hold a prompt or a secret, so only `AgentProcesses.mjs` reads it.
+ * - `processes()` gives each process as `{ pid, ppid, uid, startedAt, cpu, name, command }`. `uid` is the effective user
+ *   ID, `startedAt` is in milliseconds, `cpu` is the load in percent of one core, `name` is the name of the executable
+ *   file, and `command` is the command line. The command line can hold a prompt or a secret, so only
+ *   `AgentProcesses.mjs` reads it.
  * - `resolve(pids)` gives a map from each PID to `{ cwd, files }`, in one call for all the PIDs. `cwd` is null when
  *   Megachat cannot read it. `files` holds the open session logs of the process. Codex keeps its log open, so the open
  *   files link a Codex process to its sessions.

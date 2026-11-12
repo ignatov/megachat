@@ -324,7 +324,7 @@ conversation of a pi child, so `conversation.sqlite` keeps it after the run leav
 Ask the agent "what is running now?". The main agent calls its tool `agents_running` and answers in the chat. The tool
 lists the running sessions of Claude Code, Codex, pi and OpenCode on the machine, from a terminal, an IDE or Megachat.
 It reads the process table with one `ps` call, and the working directory and the open session logs of each new
-session with one `lsof` call. It changes nothing, and it stops no process. Each session has its agent, its project,
+session with one `lsof` call. It changes nothing. Each session has its agent, its project,
 its start time, its owner (the terminal, the multiplexer, the IDE or Megachat) and a state:
 
 - `orphan`: the owner is gone for certain. No terminal, multiplexer, IDE, app or Megachat run owns the process any
@@ -358,6 +358,27 @@ without a certain link has no title and no status, and the answer says so. A `co
 open session. Then ask "what is session X doing?": the main agent reads the last messages of the session from the end
 of its log, also for a log of hundreds of MB. Without the consent, Megachat reads no session log, and the answer says
 so.
+
+## Stop an orphan session
+
+Ask the agent "stop the orphan sessions" or "stop PID 4242". The main agent calls its tool `agents_stop` in two steps:
+
+1. The first call sends no signal. It gives the list of the processes that Megachat would stop: the PID, the agent, the
+   program, the project, the start time and the sessions. It also gives each refused PID with its reason. The agent
+   shows the list to you and asks you to confirm these PIDs.
+2. When you confirm in your next message, the agent calls the tool again with the confirmation. Directly before the
+   signal, Megachat reads the processes again. It sends `SIGTERM` only when each process has the same PID, the same
+   start time and the same command, and is still an orphan.
+
+A confirmation is valid one time, for 5 minutes, and only in a later turn of yours. The agent cannot confirm for you,
+and a general permission from an earlier message is no confirmation. `SIGKILL` goes out only to a process that got
+`SIGTERM` from the tool and still runs, after a second confirmation. An automatic turn, such as a child result or the
+morning report, cannot stop a process.
+
+Megachat stops only an orphan. A session with a live owner (an IDE, a terminal, a multiplexer or a Megachat run) goes
+through its owner, and the answer names the owner. A session in the state `unknown` is not stopped either. Megachat never
+stops PID 1, the daemon, the processes above the daemon, or a process of another user. The log of the daemon holds the
+PIDs and the outcome only. The tool works on macOS only.
 
 ## The index of past sessions
 
@@ -422,6 +443,7 @@ The session text is data for the agent, not instructions.
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
+| `src/AgentStop.mjs` | The tool `agents_stop`: the two steps, the confirmations, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |

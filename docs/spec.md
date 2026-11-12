@@ -387,6 +387,36 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The output must hold no command-line argument, no message text and no environment. The MCP server of the children must
   not have the tool.
   [@test] ../test/running.test.mjs
+- The tool `agents_stop` of the main agent must stop an orphan session of `agents_running` with a signal, in two steps.
+  The MCP server of the children must not have the tool. A restart of the daemon must not run a cut-off call again.
+- The first step, a call with `pids` and without `confirmation`, must send no signal. It must give the targets (the PID,
+  the start time, the agent, the program, the project, the owner and the sessions of each process), the refused PIDs
+  with a reason that the model can give to the user, and a confirmation for the targets. A list without a target must
+  give no confirmation.
+- The confirmation must be bound to the PIDs, their start times, the digests of their command lines, the signal and the
+  turn. It must be valid one time only, also when its check fails, for 5 minutes, and only in a later turn of the user.
+  A confirmation of the same turn, of other PIDs or of another signal, an expired one, a used one and an unknown one
+  must send no signal. The confirmations must stay in the memory of the daemon only.
+- Directly before the signal, Megachat must read the process table again. Each process must have the same PID, the
+  same start time and the same command, and its state must still be `orphan`. Else no process of the call must get the
+  signal, and the result must give the reason for each changed process.
+- Only a turn of the user must call the tool. An automatic turn and a call without a turn must be refused in both
+  steps.
+- Megachat must stop only an orphan. A session with a live owner, such as an IDE, a terminal, a multiplexer or a
+  Megachat run, must be refused with the name of its owner, so the user stops it through the owner. A session in the
+  state `unknown` and a PID that is no agent session must be refused too.
+- The first signal must be `SIGTERM`. `SIGKILL` must go out only through a second confirmation of the same kind, and
+  only to a process that got `SIGTERM` from this tool and still lives with the same start time and command.
+- Before each other check, the tool must refuse PID 1 and below, the PID of the daemon, its parent, each process above
+  them, and a process of another user or of an unknown user. On a platform where `agents_running` gives no row, the tool
+  must refuse.
+- The signal function and the process table must come by injection, so a test sends no real signal. The default signal
+  function must be `process.kill`.
+- The result and the log of the daemon must hold the PIDs and the outcome (`sent`, `ended`, `denied` or `failed`), and
+  no content of a session and no command line.
+- The instructions of the main agent must tell it to show the list to the user, to ask for a confirmation of exactly
+  these PIDs, and never to confirm for the user.
+  [@test] ../test/stop.test.mjs
 - With the consent `sessions.index`, Megachat must keep a live table of each session file of Claude Code, Codex and pi
   on the machine, also outside the listed directories, in a table of its own in `sessions.sqlite`: the path, the inode,
   the size, the byte offset, the agent, the session ID, the `cwd`, the title, the start time, the time of the last write

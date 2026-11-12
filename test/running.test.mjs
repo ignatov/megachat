@@ -364,9 +364,9 @@ test('another platform gives no session and names the platform in incomplete', a
 
 test('the parsers read synthetic ps and lsof output with spaces, short days, long names, UTF-8 and broken lines', () => {
   const pad = (text, width) => text + ' '.repeat(Math.max(0, width - Buffer.byteLength(text)))
-  const line = (pid, ppid, start, cpu, name, args) => `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${start} ${cpu.padStart(6)} ${pad(name, 16)} ${args}`
+  const line = (pid, ppid, start, cpu, name, args, uid = 501) => `${String(pid).padStart(5)} ${String(ppid).padStart(5)} ${String(uid).padStart(5)} ${start} ${cpu.padStart(6)} ${pad(name, 16)} ${args}`
   const output = Buffer.from([
-    line(1, 0, 'Mon Nov  2 22:59:31 2026', '1.0', 'launchd', '/sbin/launchd'),
+    line(1, 0, 'Mon Nov  2 22:59:31 2026', '1.0', 'launchd', '/sbin/launchd', 0),
     line(20404, 1, 'Wed Nov 11 09:05:00 2026', '30,7', 'idea', '/Applications/IntelliJ IDEA 2026.3 EAP.app/Contents/MacOS/idea -Dx=1'),
     line(1448, 1288, 'Wed Nov 11 09:06:00 2026', '0.0', 'Codex (Renderer)', '/Applications/ChatGPT.app/Contents/Frameworks/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer'),
     line(77, 1, 'Thu Jan  1 00:00:01 2026', '0.0', 'привет', '/Users/user/bin/привет arg'),
@@ -387,6 +387,7 @@ test('the parsers read synthetic ps and lsof output with spaces, short days, lon
     [80, 1, 0, 'Café', '/Applications/Café.app/Contents/MacOS/Café --flag'],
     [78, 1, 0, 'zombie', ''],
   ])
+  assert.deepEqual(processes.map(item => item.uid), [0, 501, 501, 501, 501, 501])
   assert.equal(processes[0].startedAt, new Date(2026, 10, 2, 22, 59, 31).getTime())
   assert.equal(processes[3].startedAt, new Date(2026, 0, 1, 0, 0, 1).getTime())
   const found = parseOpenFiles([
@@ -405,6 +406,7 @@ test('the real process table of macOS gives this test process and its working di
   const processes = await table.processes()
   const self = processes.find(item => item.pid === process.pid)
   assert.equal(self?.ppid, process.ppid)
+  assert.equal(self.uid, process.geteuid())
   assert.ok(Math.abs(self.startedAt - (Date.now() - process.uptime() * 1000)) < 5000)
   const found = await table.resolve([process.pid])
   assert.equal(found.get(process.pid).cwd, await realpath(process.cwd()))

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { terminalStates } from './MegachatState.mjs'
 
 /**
@@ -97,7 +98,9 @@ function describe(item) {
     let role = found.role
     if (agent === 'claude' && words[0] === 'daemon' || agent === 'codex' && words[0] === 'app-server' && words[1] === 'daemon') role = 'service'
     else if (agent === 'claude' && /^bg-/.test(words[0] ?? '')) role = 'helper'
-    return { label, agent, role, ...(role === 'service' ? { owner: { kind: 'unknown', name: AGENT_NAMES[agent] } } : {}) }
+    // The name of the program for the user: the executable name, or the name of the package of a script.
+    const name = found.names.includes(program) ? program : found.names[0]
+    return { label, agent, role, program: name, ...(role === 'service' ? { owner: { kind: 'unknown', name: AGENT_NAMES[agent] } } : {}) }
   }
   if (app) {
     const kind = TERMINAL_APPS.test(app) ? 'terminal' : IDE_APPS.test(app) ? 'ide' : 'unknown'
@@ -109,6 +112,12 @@ function describe(item) {
   // A login shell has a dash before its name.
   return { label, ...(NO_OWNERS.has(base.replace(/^-/, '')) ? { passive: true } : {}) }
 }
+
+/**
+ * A digest of the executable name and the command line of a process. A stop compares it, so a PID that now runs
+ * another command is another process. The digest holds no readable part of the command line.
+ */
+export const identityOf = item => createHash('sha256').update(`${item.name ?? ''}\0${item.command ?? ''}`).digest('hex')
 
 /** The longest parent chain that Megachat follows. A chain from a table with a reused PID can have a loop. */
 const MAX_DEPTH = 64
@@ -128,7 +137,9 @@ const MAX_DEPTH = 64
  * the same agent. A chain with another live process, such as a bare `java` that is no IDE for certain or a script that
  * started the agent, can have a live owner, so its `ownership` is `unknown`. So is a chain that ends before launchd.
  *
- * The CPU load of a row is the sum of its process and of each process below it that is no row of its own.
+ * The CPU load of a row is the sum of its process and of each process below it that is no row of its own. `program` is
+ * the name of the program of the session for the user, `uid` the user of its process, and `identity` the digest of its
+ * command line for a stop.
  */
 export function agentSessions(processes, { daemonPid = process.pid, runs = [] } = {}) {
   const byPid = new Map(processes.map(item => [item.pid, item]))
@@ -191,7 +202,8 @@ export function agentSessions(processes, { daemonPid = process.pid, runs = [] } 
         parent = { kind: 'unknown', name: chain.length ? described.get(chain[0].pid).label : '', pid: item.ppid }
       }
     }
-    rows.push({ pid: item.pid, agent, startedAt: item.startedAt, cpu: 0, parent, ownership,
+    rows.push({ pid: item.pid, agent, startedAt: item.startedAt, cpu: 0, parent, ownership, uid: item.uid,
+      program: described.get(item.pid).program, identity: identityOf(item),
       ...(run ? { run: { sessionId: run.providerSessionId ?? '', title: run.title ?? '', cwd: run.cwd } } : {}) })
   }
   const rowByPid = new Map(rows.map(row => [row.pid, row]))

@@ -14,6 +14,7 @@ import { directoriesOf } from './ProjectDirectories.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
+import { AgentStop } from './AgentStop.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore, suggestionMode } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
@@ -141,11 +142,12 @@ export class PiMegachatService {
    * `settings.json`, for a test. The daemon passes none of them. [clock] gives the time of the daily spend, for a test.
    * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`. [processTable] replaces the
    * process table of the platform for the tool `agents_running`, and [clock] also gives the age of its view, for a test.
+   * [stop] gives the signal function of the tool `agents_stop`, and the PID and the user of the daemon, for a test.
    * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test. [morningReport] gives the
    * clock of the working day and the time limit of tokprof, for a test. The clock gives the time of the timer of the
    * morning report, of the idle time of the conversation, and of the wait of a child result.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, promptSuggestionLifetimeMs, morningReport: reportOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -185,6 +187,7 @@ export class PiMegachatService {
       spend: await DailySpend.open(spendPath, clock),
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
+    service.stopper = new AgentStop(state, { table: service.running.table, running: service.running, clock, ...stopOptions })
     service.adopt(values)
     service.workdayClock = reportOptions.clock ?? workdayClock
     service.morningReport = new MorningReport({ clock: service.workdayClock, values: () => service.settings.values(),
@@ -400,8 +403,8 @@ export class PiMegachatService {
   }
 
   extension() {
-    const tool = (name, parameters, execute, description = `tool.${name}`) => defineTool({
-      name: `agents_${name}`, description: message(description), parameters, replay: 'safe', execute,
+    const tool = (name, parameters, execute, description = `tool.${name}`, replay = 'safe') => defineTool({
+      name: `agents_${name}`, description: message(description), parameters, replay, execute,
     })
     const ghost = this.suggestions === 'ghost'
     const inspect = async args => result(await this.state.readRun(args.runId))
@@ -445,6 +448,9 @@ export class PiMegachatService {
       // The tool reads the processes only. The children do not get it: their MCP server has the history tools only.
       tool('running', obj({ agent: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })), state: opt(str({ maxLength: 20 })),
         limit: opt(int({ minimum: 1, maximum: 200 })), cursor: opt(str({ maxLength: 64 })) }), async args => result(await this.running.query(args))),
+      // A stop does not run again after a restart of the daemon, and a restart makes each confirmation invalid.
+      tool('stop', obj({ pids: arr(int(), { maxItems: 20 }), signal: opt(str({ maxLength: 10 })), confirmation: opt(str({ maxLength: 64 })) }),
+        async args => result(await this.stopper.call(args)), undefined, 'unsafe'),
       // The suggestion tools exist only in the modes `reply` and `ghost`. The stored suggestion state stays without them.
       // In the `ghost` mode the result tells the agent that the client shows the text, so the reply does not repeat it.
       ...(this.suggestions !== 'off' ? [
