@@ -501,6 +501,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A version newer than this build supports must stop the start with "Megachat state was created by a newer Megachat build; update Megachat." It must not change the state.
 - A failed integrity check must leave the earlier state unchanged and start no daemon.
   [@test] ../test/home.test.mjs
+- A state of the last release must open with the new release, after a stop and after a kill of the daemon. The open
+  must write no failure to the log. Each run, permission request, report, suggestion and history entry of the state
+  must stay, and each field that the new release added must get its default. A dispatched run and a pending permission
+  request must recover as after a restart of the same release. The search index of the state must stay in use.
+  `test/fixtures/v0.2.0/generate.mjs` makes the fixture with the code of the last release.
+  [@test] ../test/upgrade.test.mjs
 - The daemon must retain the output of an interrupted task.
 - A failed Central configuration must start no child agent.
 - Stored conversation data must contain no Central credentials.
