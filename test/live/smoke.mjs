@@ -4,20 +4,23 @@
 // own throwaway projects. The run costs real money. See the section about the live smoke run in `README.md`.
 //
 // Usage: node test/live/smoke.mjs [<scenario>...]
-// The scenarios are chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw and
-// waiting. Without a name, all of them run.
+// The scenarios are chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw,
+// waiting and failures. Without a name, all of them run.
+import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { chmod, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import {
   assertTemporary, daemonEnvironment, daemonOf, delay, LEASE, leaks, LiveClient, loadSecrets, makeHome, makeProject, makeRoot,
   redact, replies, stopDaemon, suggestions, writeSettings,
 } from './live-client.mjs'
 
 const { terminalStates } = await import(join(LEASE, 'src', 'MegachatState.mjs'))
+const { message } = await import(join(LEASE, 'src', 'messages.mjs'))
 const SCENARIOS = ['chat', 'suggest', 'rules', 'permissions', 'tasks', 'steer', 'others', 'workday', 'restart', 'twotools',
-  'withdraw', 'waiting']
+  'withdraw', 'waiting', 'failures']
 const selected = process.argv.slice(2).length ? process.argv.slice(2) : SCENARIOS
 for (const name of selected) if (!SCENARIOS.includes(name)) throw new Error(`Unknown scenario ${name}`)
 
@@ -54,9 +57,9 @@ const quiet = count => state => !state.current && runsOf(state).length >= count
 const byTitle = (state, title) => runsOf(state).filter(item => item.title === title || item.prompt?.includes(title))
 const iso = time => time ? new Date(time).toISOString().slice(11, 23) : null
 
-/** Starts a home with [values] and gives its environment. */
-async function setup(name, values, extra = {}) {
-  const home = await makeHome(root, name, { 'keepAlive.enabled': false, ...values })
+/** Starts a home with [values] and the project values [projects], and gives its environment. */
+async function setup(name, values, extra = {}, projects) {
+  const home = await makeHome(root, name, { 'keepAlive.enabled': false, ...values }, projects)
   const env = daemonEnvironment(root, { MEGACHAT_HOME: home, ...extra })
   homes.push({ home, env })
   return { name, home, env, log: join(root, `${name}.acp.jsonl`) }
@@ -108,6 +111,26 @@ async function waitForTool(home, client, runId, word, timeoutMs = 240000) {
 }
 
 const readText = path => readFile(path, 'utf8').catch(() => null)
+
+/**
+ * The entries of the daemon log of [home] about the child run [runId]: each line that names the run, with the lines of
+ * the agent (`  | `) that follow it. The text is redacted.
+ */
+async function childLog(home, runId) {
+  const lines = ((await readText(join(home, 'daemon', 'daemon.log'))) ?? '').split('\n')
+  const found = []
+  let inside = false
+  for (const line of lines) {
+    if (line.startsWith('  | ')) { if (inside) found.push(redact(line)); continue }
+    inside = Boolean(runId) && line.includes(runId)
+    if (inside) found.push(redact(line))
+  }
+  return found
+}
+/** True when [lines] of the log show the answer or the error output of an agent: only a failed run shows them. */
+const showsErrorOutput = lines => lines.some(line => /wrote this error output|wrote no error output|answered the request/.test(line))
+/** True when the error of a run names an exit code, a signal or the error output of the agent. */
+const namesAgentEnd = text => /exit code|the signal|error output says|daemon\.log/.test(text ?? '')
 const lastAssistantTexts = async home => (await conversationOf(home)).entries
   .flatMap(entry => (entry.model ?? []).filter(item => item.role === 'assistant'))
   .map(item => item.content.filter(block => block.type === 'text').map(block => block.text).join(''))
@@ -367,6 +390,7 @@ async function tasks() {
   }
   // The queued row of B2 waits behind B in the same project.
   const queued = await view.waitFor(() => openRow(view, ids.B2), 30000, 'the queued row of B2')
+  const queuedStopAt = Date.now()
   const queuedStop = await view.stopTask(queued.asyncTaskId)
   const queuedEnd = await view.waitFor(() => rows(view.updates).find(row => row.asyncTaskId === queued.asyncTaskId && row.endState), 30000, 'the end of the row of B2')
   // The running row of A, while its command runs.
@@ -374,6 +398,7 @@ async function tasks() {
   await delay(3000)
   const running = openRow(view, ids.A)
   const transcriptA = await transcript(context.home, ids.A)
+  const runningStopAt = Date.now()
   const runningStop = await view.stopTask(running.asyncTaskId)
   const stoppedAt = Date.now()
   const runningEnd = await view.waitFor(() => rows(view.updates).find(row => row.asyncTaskId === running.asyncTaskId && row.endState), 60000, 'the end of the row of A')
@@ -387,6 +412,9 @@ async function tasks() {
   const files = Object.fromEntries(await Promise.all([['a1', a], ['a2', a], ['b1', b], ['b2', b], ['s', sub]]
     .map(async ([name, directory]) => [name, existsSync(join(directory, `${name}.txt`))])))
   const homeLeaks = await scanLeaks(context.home, context.log)
+  // A stopped run shows no error output of the agent, and its stop does not wait for that output.
+  const stoppedLogs = { A: await childLog(context.home, ids.A), B2: await childLog(context.home, ids.B2) }
+  const quietStop = !showsErrorOutput([...stoppedLogs.A, ...stoppedLogs.B2]) && !namesAgentEnd(run('A').error) && !namesAgentEnd(run('B2').error)
   await view.close()
   await stopDaemon(context.home, context.env)
 
@@ -398,13 +426,15 @@ async function tasks() {
   const stopOk = runningStop?.stopped === true && runningEnd.endState === 'stopped' && queuedStop?.stopped === true && queuedEnd.endState === 'stopped'
     && run('A').status === 'cancelled' && run('B2').status === 'cancelled' && !run('B2').startedAt && run('B').status === 'completed'
     && later.length === 0 && !files.a1 && !files.b2
-  record('5 Task rows, Stop, transcript', rowsOk && fileOk && stopOk && !homeLeaks.length ? 'pass' : 'fail', {
+  record('5 Task rows, Stop, transcript', rowsOk && fileOk && stopOk && quietStop && !homeLeaks.length ? 'pass' : 'fail', {
     rows: allRows.map(row => ({ id: row.asyncTaskId.replace(/^[0-9a-f-]{36}/, short => keyOf(ids, short)), name: row.name, description: row.description,
       canStop: row.canStop, outputFilePath: row.outputFilePath ? row.outputFilePath.replace(context.home, '<home>') : null, spawned: iso(row.spawnedAt),
       end: row.endState ?? null, ended: iso(row.endedAt) })),
     transcriptOfA: { mode: transcriptA.mode, directoryMode: transcriptA.directoryMode, bytes: transcriptA.bytes, toolLines: transcriptA.tools,
       endedLine: finalTranscriptA.ended, leaks: transcriptA.leaks, toolLine: redact(toolLine), excerpt: excerpt(finalTranscriptA.text ?? '', 1500) },
-    stops: { running: runningStop, runningEnd: runningEnd.endState, queued: queuedStop, queuedEnd: queuedEnd.endState },
+    stops: { running: runningStop, runningEnd: runningEnd.endState, runningMs: runningEnd.endedAt - runningStopAt, queued: queuedStop,
+      queuedEnd: queuedEnd.endState, queuedMs: queuedEnd.endedAt - queuedStopAt, errors: { A: run('A').error ?? null, B2: run('B2').error ?? null },
+      logLines: stoppedLogs, quietStop },
     statuses: Object.fromEntries(Object.keys(ids).map(key => [key, run(key).status])), startedAgain: later.length, files,
     reports: reports.slice(1).map(text => excerpt(text, 500)), leaksInHome: homeLeaks })
 
@@ -525,6 +555,7 @@ async function restart() {
   await delay(5000)
   const stoppedAt = Date.now()
   const stop = await stopDaemon(context.home, context.env)
+  const stopMs = Date.now() - stoppedAt
   const clientExit = await Promise.race([view.exited, delay(15000).then(() => 'still running')])
   const beforeText = (await transcript(context.home, firstId)).text ?? ''
   view = await connect(context, [project], { name: 'view after restart', sessionId })
@@ -535,11 +566,15 @@ async function restart() {
   const facts = await Promise.all(runs.map(item => transcript(context.home, item.id)))
   const file = await readText(join(project, 'r.txt'))
   const allRows = rows(view.updates)
+  // A stop of the daemon shows no error output of the agent, and it does not wait for that output.
+  const firstLog = await childLog(context.home, firstId)
+  const quietStop = !showsErrorOutput(firstLog) && !namesAgentEnd(first?.error)
   await view.close()
   await stopDaemon(context.home, context.env)
-  const ok = stop.stopped && first?.status === 'resumed' && next?.status === 'completed' && file?.trim() === 'r'
-  record('10 Restart', ok ? 'pass' : 'fail', { daemonStopped: stop.stopped, stoppedAt: iso(stoppedAt), clientExit,
-    first: { status: first?.status, finished: iso(first?.finishedAt), error: redact(first?.error ?? ''), resumedBy: Boolean(first?.resumedBy) },
+  const ok = stop.stopped && first?.status === 'resumed' && next?.status === 'completed' && file?.trim() === 'r' && quietStop
+  record('10 Restart', ok ? 'pass' : 'fail', { daemonStopped: stop.stopped, stoppedAt: iso(stoppedAt), stopMs, clientExit,
+    first: { status: first?.status, finished: iso(first?.finishedAt), error: redact(first?.error ?? ''), resumedBy: Boolean(first?.resumedBy),
+      logLines: firstLog, quietStop },
     continuation: next ? { status: next.status, started: iso(next.startedAt), finished: iso(next.finishedAt), sameSession: next.providerSessionId === first.providerSessionId } : null,
     runs: runs.length, file, rowsAfterRestart: allRows.map(row => ({ phase: row.asyncTaskId.split(':').at(-1), description: row.description, end: row.endState ?? null })),
     transcriptBeforeStop: excerpt(beforeText.split('\n').slice(-4).join('\n'), 600),
@@ -706,6 +741,189 @@ async function waiting() {
   await stopDaemon(context.home, context.env)
 }
 
+// Item 14: the error of a child run that fails. A refused model of Codex and of Claude, an agent process that dies
+// during the task, a Claude Code process that dies during the task, and an agent that fails at its start. Each case
+// records the error of each run, the answer of the main agent and the entries of the daemon log about the run.
+const execute = promisify(execFile)
+const failurePrompt = (agent, cwd, title, task) => `Start one ${agent} task now in the project ${cwd}. Title: "${title}". Task for the child: "${task}" Do not wait for the result. If the task fails, tell me why in at most two sentences, and do not start it again. Answer in one sentence.`
+
+/**
+ * Each process of the machine: its PID, the PID of its parent, and the first line of its command line, without the
+ * spaces at its end. An argument can hold a line break or be empty. Nothing of it goes out unredacted.
+ */
+async function processes() {
+  const { stdout } = await execute('ps', ['-A', '-ww', '-o', 'pid=,ppid=,command='], { maxBuffer: 16 * 1024 * 1024 })
+  return stdout.split('\n').map(line => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)).filter(Boolean)
+    .map(([, pid, ppid, command]) => ({ pid: Number(pid), ppid: Number(ppid), command: command.trimEnd() }))
+}
+/** The first line of the command line of the process [pid], as `processes` gives it, or null when it does not run. */
+const commandOf = pid => execute('ps', ['-ww', '-p', String(pid), '-o', 'command='])
+  .then(result => result.stdout.replace(/^\n+/, '').split('\n')[0].trimEnd() || null, () => null)
+/** The processes under [pid], the first level first. */
+function below(list, pid) {
+  const found = []
+  for (let level = [pid]; level.length;) {
+    level = list.filter(item => level.includes(item.ppid)).map(item => (found.push(item), item.pid))
+  }
+  return found
+}
+const shortCommand = command => redact(command.replaceAll(LEASE, '<lease>').replaceAll(root, '<root>').replaceAll(homedir(), '~')).slice(0, 200)
+
+/**
+ * Sends SIGKILL to one process of the Claude child [runId], while its tool `sleep` runs. [target] `agent` is the agent
+ * process of the run, whose PID the state holds. `claude` is the Claude Code process under the adapter. The command
+ * line of each process must be the one of this run before the signal.
+ */
+async function killChild(context, view, runId, target) {
+  await waitForTool(context.home, view, runId, 'sleep')
+  await delay(3000)
+  const pid = (await snapshot(context.home)).runs[runId]?.pid
+  const list = await processes()
+  const agent = list.find(item => item.pid === pid)
+  const supervisor = join(LEASE, 'src', 'child-supervisor.mjs')
+  if (!pid || !agent?.command.includes(supervisor) || !agent.command.includes('claude-agent-acp')) throw new Error(`The PID of the run ${runId} is not its Claude agent`)
+  const tree = below(list, pid)
+  const adapter = tree.find(item => item.ppid === pid)
+  const claude = tree.filter(item => item.ppid === adapter?.pid && !/node_modules\/\.bin|\/(z|ba)?sh /.test(item.command))
+  const victim = target === 'agent' ? agent : claude.length === 1 ? claude[0] : undefined
+  if (!victim) throw new Error(`No single Claude Code process under the adapter of the run ${runId}`)
+  // The PID can only belong to this run when its command line did not change since the list.
+  if (await commandOf(victim.pid) !== victim.command) throw new Error(`The process ${victim.pid} changed`)
+  process.kill(victim.pid, 'SIGKILL')
+  return { killedAt: Date.now(), target, victim: shortCommand(victim.command), tree: [agent, ...tree] }
+}
+
+/**
+ * The processes of [tree] that still run with the same command line 3 seconds after the end of their run. Each one gets
+ * SIGKILL, because this run started it and nothing else stops it.
+ */
+async function survivors(tree) {
+  const found = []
+  for (const item of tree) {
+    if (await commandOf(item.pid) !== item.command) continue
+    found.push(shortCommand(item.command))
+    try { process.kill(item.pid, 'SIGKILL') }
+    catch { /* It ended in the meantime. */ }
+  }
+  return found
+}
+
+/** Waits until each run of [home] ended and was reported, and no new run came for 10 seconds. */
+async function settled(home, count, timeoutMs) {
+  const end = Date.now() + timeoutMs
+  for (let last = -1; ;) {
+    const state = await waitState(home, quiet(count + 1), Math.max(1000, end - Date.now()), 'the end of the failed runs')
+    if (runsOf(state).length === last) return state
+    last = runsOf(state).length
+    await delay(10000)
+  }
+}
+
+/**
+ * One case of item 14: one prompt to the main agent, an optional action [during] on the first run, and the evidence of
+ * each run that the case made. [check] gives true when the case passes.
+ */
+async function failureCase(context, view, { item, title, prompt, during, check }) {
+  const count = runsOf(await snapshot(context.home)).length
+  const step = await turn(context, view, prompt)
+  let action
+  if (during) {
+    const runId = await view.waitFor(async () => byTitle(await snapshot(context.home), title)[0]?.id, 60000, `the run ${title}`)
+    action = await during(runId)
+    await waitState(context.home, value => terminalStates.has(value.runs[runId]?.status), 120000, `the end of the run ${title}`)
+    await delay(3000)
+    action.left = await survivors(action.tree)
+  }
+  const state = await settled(context.home, count, 600000)
+  const made = runsOf(state).slice(count)
+  const runs = await Promise.all(made.map(async run => {
+    const facts = await transcript(context.home, run.id)
+    const log = await childLog(context.home, run.id)
+    return { id: run.id.slice(0, 8), title: run.title, agent: run.agent, status: run.status, error: run.error ?? null,
+      autoResume: run.autoResume ?? null, continues: made.find(other => other.id === run.resumeOf)?.id.slice(0, 8) ?? null,
+      ms: run.finishedAt && run.startedAt ? run.finishedAt - run.startedAt : null,
+      transcript: { exists: facts.exists, ended: facts.ended ?? null, leaks: facts.leaks ?? false },
+      errorLeaks: leaks(run.error ?? ''), logLineCount: log.length, agentLineCount: log.filter(line => line.startsWith('  | ')).length,
+      log: log.slice(0, 12) }
+  }))
+  const answer = replies(view.updates.slice(step.from)).map(entry => entry.text).join('\n---\n')
+  const logInfo = await stat(join(context.home, 'daemon', 'daemon.log'))
+  const evidence = { action: action ? { target: action.target, victim: action.victim, processes: action.tree.length } : null,
+    survivors: action?.left ?? [], runs, answer: redact(answer), logMode: (logInfo.mode & 0o777).toString(8), leaksInHome: await scanLeaks(context.home, context.log) }
+  const verdict = runs.length > 0 ? check(made, runs, evidence) : false
+  const safe = evidence.logMode === '600' && !evidence.leaksInHome.length && runs.every(run => !run.errorLeaks && !run.transcript.leaks)
+  record(item, verdict === 'not checked' && safe ? verdict : verdict === true && safe ? 'pass' : 'fail', evidence)
+  return evidence
+}
+
+/** True when [run] holds the answer of the agent to [method] in the log. */
+const loggedAnswer = (run, method) => run.log.some(line => line.includes(`answered the request ${method} `))
+
+async function failures() {
+  const codex = await makeProject(root, 'fail-codex-model', { 'README.md': 'codex\n' }, { git: true })
+  const claude = await makeProject(root, 'fail-claude-model')
+  const kill = await makeProject(root, 'fail-kill', {}, { git: true })
+  const codexModel = 'openai/gpt-nonexistent-9'
+  const claudeModel = 'anthropic/claude-nonexistent-9'
+  const context = await setup('failures', { 'children.permissionMode': 'allowEdits' }, {},
+    { [codex]: { 'children.codexModel': codexModel }, [claude]: { 'children.claudeModel': claudeModel } })
+  const view = await connect(context, [codex, claude, kill])
+  const refused = (key, model, method) => (made, runs) => runs.length === 1 && runs[0].status === 'interrupted'
+    && runs[0].error === message(key, model) && runs[0].autoResume === false && loggedAnswer(runs[0], method)
+  await failureCase(context, view, { item: '14.1 Refused Codex model', title: 'codex model',
+    prompt: failurePrompt('Codex', codex, 'codex model', 'Create the file codex.txt with the text hi. Do nothing else.'),
+    check: refused('error.childCodexModel', codexModel, 'session/set_config_option') })
+  await failureCase(context, view, { item: '14.2 Refused Claude model', title: 'claude model',
+    prompt: failurePrompt('Claude', claude, 'claude model', 'Create the file claude.txt with the text hi. Do nothing else.'),
+    check: refused('error.childModel', claudeModel, 'session/set_config_option') })
+  // After the task: the agent got the prompt, so the error says that the task can have run in part, and a continuation follows.
+  const killTask = file => `Run the shell command \`sleep 45\`. Then create the file ${file} with the text done. Do nothing else.`
+  // A run with a continuation has the status resumed.
+  const afterPrompt = start => (made, runs) => ['interrupted', 'resumed'].includes(runs[0].status) && runs[0].autoResume === true && start.test(runs[0].error ?? '')
+    && /after it got the task, so the task can have run in part/.test(runs[0].error ?? '') && runs.some(run => run.continues === runs[0].id)
+  await failureCase(context, view, { item: '14.3 Agent process killed during the task', title: 'killed agent',
+    prompt: failurePrompt('Claude', kill, 'killed agent', killTask('agent.txt')), during: runId => killChild(context, view, runId, 'agent'),
+    check: afterPrompt(new RegExp(`^${message('error.child.exit.after', message('error.child.signal', 'SIGKILL')).replace(/[.,]/g, '\\$&')}`)) })
+  await failureCase(context, view, { item: '14.3b Claude Code process killed during the task', title: 'killed claude',
+    prompt: failurePrompt('Claude', kill, 'killed claude', killTask('claude.txt')), during: runId => killChild(context, view, runId, 'claude'),
+    check: afterPrompt(/^The agent (answered session\/prompt with the error|process ended with)/) })
+  await view.close()
+  await stopDaemon(context.home, context.env)
+
+  // At the start: Megachat did not send the task. Each variant needs its own agent command, so it has its own home.
+  const adapter = join(LEASE, 'node_modules', '@agentclientprotocol', 'claude-agent-acp', 'dist', 'index.js')
+  const notAFolder = join(root, 'claude-config-file')
+  await writeFile(notAFolder, 'not a folder\n', { mode: 0o600 })
+  // A Claude Code executable that runs the real one with an option that it does not know, so Claude Code exits at its start.
+  const badClaude = join(root, 'claude-unknown-option.sh')
+  await writeFile(badClaude, '#!/bin/sh\nexec "$SMOKE_REAL_CLAUDE" --smoke-unknown-option "$@"\n', { mode: 0o700 })
+  await chmod(badClaude, 0o700)
+  const starts = [
+    ['14.4a Claude Code with a configuration folder that is a file', 'config file',
+      { command: process.execPath, args: [adapter], env: { CLAUDE_CONFIG_DIR: notAFolder } }],
+    ['14.4b Claude Code that exits at its start', 'claude exits',
+      { command: '/bin/sh', args: ['-c', 'export SMOKE_REAL_CLAUDE="$CLAUDE_CODE_EXECUTABLE" CLAUDE_CODE_EXECUTABLE="$SMOKE_BAD_CLAUDE"; exec "$@"', 'sh', process.execPath, adapter],
+        env: { SMOKE_BAD_CLAUDE: badClaude } }],
+    ['14.4c Agent command that exits at its start', 'agent exits',
+      { command: process.execPath, args: ['-e', 'process.stderr.write("Error: the agent cannot open its license file /opt/agent/license.\\n"); process.exit(3)'] }],
+  ]
+  for (const [item, title, command] of starts) {
+    const name = `failures-${title.replace(' ', '-')}`
+    const project = await makeProject(root, name)
+    const start = await setup(name, { 'children.permissionMode': 'allowEdits' }, { MEGACHAT_CLAUDE_ACP: JSON.stringify(command) })
+    const client = await connect(start, [project])
+    await failureCase(start, client, { item, title,
+      prompt: failurePrompt('Claude', project, title, 'Create the file start.txt with the text hi. Do nothing else.'),
+      // A Claude Code that does not fail with this cause gives no evidence for the case.
+      check: (made, runs) => runs[0].status === 'completed' ? 'not checked' : runs.every(run => ['interrupted', 'resumed'].includes(run.status)
+        && /so Megachat did not send the task to the agent in this run|before Megachat sent the task, so the agent did not get the task/.test(run.error ?? '')
+        && run.error.includes(message('error.child.log')) && !/^Internal error\.?$/.test(run.error))
+        && runs.every(run => loggedAnswer(run, 'session/new') || loggedAnswer(run, 'initialize') || run.agentLineCount > 0) })
+    await client.close()
+    await stopDaemon(start.home, start.env)
+  }
+}
+
 /** The files in [home] and the log of the client that hold a value or an address of Central. */
 async function scanLeaks(home, ...files) {
   const found = []
@@ -735,7 +953,7 @@ async function spend() {
   return { usd: Number(usd.toFixed(4)), piUsd: Number(piUsd.toFixed(4)) }
 }
 
-const scenarios = { chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw, waiting }
+const scenarios = { chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw, waiting, failures }
 try {
   for (const name of selected) {
     say(`Scenario ${name} starts at ${new Date().toISOString().slice(11, 19)}.`)

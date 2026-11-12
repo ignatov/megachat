@@ -67,16 +67,18 @@ export async function makeRoot() {
 }
 
 /** A new state home with [values] in `settings.json`, the onboarding done. */
-export async function makeHome(root, name, values) {
+export async function makeHome(root, name, values, projects) {
   const home = join(root, `home-${name}`)
   await mkdir(home, { mode: 0o700 })
-  await writeSettings(home, values)
+  await writeSettings(home, values, projects)
   return assertTemporary(home)
 }
 
-export async function writeSettings(home, values) {
+/** Writes `settings.json` of [home] with [values], and with [projects], the values of each project by its real path. */
+export async function writeSettings(home, values, projects) {
   assertTemporary(home)
-  await writeFile(join(home, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values }, null, 1), { mode: 0o600 })
+  await writeFile(join(home, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values, ...(projects ? { projects } : {}) }, null, 1),
+    { mode: 0o600 })
 }
 
 /** A throwaway project with [files], optionally a git repository. */
