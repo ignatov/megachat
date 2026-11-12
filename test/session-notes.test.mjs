@@ -271,7 +271,7 @@ test('no note goes out while the conversation sleeps; a session that still waits
   ])
   const { service, advance, notes, clock } = await open(t, { view, clock: fakeClock('2026-11-11T22:00:00Z'), settings: { ...ON, ...workday } })
   await service.sessionNotes.running
-  assert.equal(service.resultsWait(), true)
+  assert.equal(service.sleeping(), true)
   await advance(HOUR)
   assert.ok(view.reads > 1)
   assert.deepEqual(await notes(), [])

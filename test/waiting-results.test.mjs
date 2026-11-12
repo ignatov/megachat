@@ -85,7 +85,26 @@ test('the next turn of the user takes the waiting results right after it', { tim
   assert.deepEqual(requests.map(request => [isResult(request), request.at]), [[false, '2026-11-11T23:30:00.000Z'], [true, '2026-11-11T23:30:00.000Z']])
 })
 
-test('while the user is active at night, a result starts its turn at once', { timeout: 20000 }, async t => {
+test('with workday.idleMinutes 0, a waiting result goes out right after the next turn of the user, and a later result waits', { timeout: 20000 }, async t => {
+  const { service, daemon, requests, clock, project } = await daemonFixture(t, { start: '2026-11-11T23:00:00Z', values: { ...NIGHT, 'workday.idleMinutes': 0 } })
+  await service.resume()
+  await finish(service, 'night', project, '2026-11-11T23:00:00Z')
+  await settle()
+  assert.deepEqual(requests, [])
+  clock.sleep(30 * MINUTE)
+  const receipt = await daemon.json('/input', { requestId: 'user-night', text: 'Are you there?' })
+  await daemon.json(`/wait?submission=${receipt.submissionId}`)
+  await reported(service, 'night')
+  assert.deepEqual(requests.map(request => [isResult(request), request.at]), [[false, '2026-11-11T23:30:00.000Z'], [true, '2026-11-11T23:30:00.000Z']])
+  // The conversation sleeps again at once, so a result after the turn of the user waits for the next one.
+  clock.sleep(5 * MINUTE)
+  await finish(service, 'later', project, '2026-11-11T23:35:00Z')
+  await settle()
+  assert.equal(requests.length, 2)
+  assert.equal((await service.state.snapshot()).runs.later.reported, false)
+})
+
+test('while the user is active at night, a result starts its turn at once',{ timeout: 20000 }, async t => {
   const { service, daemon, requests, clock, project } = await daemonFixture(t, { start: '2026-11-11T23:00:00Z', values: NIGHT })
   await service.resume()
   const receipt = await daemon.json('/input', { requestId: 'user-night', text: 'Start the build.' })

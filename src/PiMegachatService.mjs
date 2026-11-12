@@ -211,7 +211,7 @@ export class PiMegachatService {
       lastDate: async () => (await state.snapshot()).morningReport.lastDate, prepare: date => service.prepareMorningReport(date) })
     // The notes start in `resume`, and only with the setting `sessions.notes` and the consent `sessions.index`.
     service.sessionNotes = new SessionNotes({ clock: service.workdayClock, view: notesOptions.view ?? (() => service.running.view()),
-      sleeping: () => service.resultsWait(), deliver: (plan, now) => state.sessionNote(plan, now) })
+      sleeping: () => service.sleeping(), deliver: (plan, now) => state.sessionNote(plan, now) })
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
@@ -670,14 +670,14 @@ export class PiMegachatService {
         this.reportTimer.unref()
       }
       this.watchPromptSuggestion(snapshot)
-      const resultsWait = resultsPending && this.resultsWait()
+      const resultsWait = resultsPending && this.resultsWait(snapshot)
       if (resultsWait) this.watchWaitingResults(observe)
       const sessionsPending = Boolean(snapshot.sessionIndex?.summary)
       const reportPending = Boolean(snapshot.morningReport?.pending)
       if ((!resultsPending || resultsWait) && !sessionsPending && !reportPending) return
       this.eventPump = this.eventPump.then(async () => {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
-        const receipt = (this.resultsWait() ? null : await this.state.nextChildResults()) ?? await this.state.nextSessionsEvent()
+        const receipt = (this.resultsWait(await this.state.snapshot()) ? null : await this.state.nextChildResults()) ?? await this.state.nextSessionsEvent()
           ?? await this.state.nextMorningReport()
         if (receipt) this.follow(receipt)
       }).catch(error => {
@@ -697,13 +697,24 @@ export class PiMegachatService {
   }
 
   /**
-   * True when a child result waits: with `workday.enabled` on, while the conversation sleeps outside the working hours,
-   * as the keep-alive decides it. Only a turn of the user ends the idle time, so a chain of results waits. A turn of the user, or the start of the working hours, ends the wait. A permission
-   * request of a child does not wait, because it is no turn.
+   * True while the conversation sleeps: with `workday.enabled` on, outside the working hours, after the idle time of the
+   * last turn of the user, as the keep-alive decides it. The child results and the notes about the waiting sessions use it.
    */
-  resultsWait() {
+  sleeping() {
     const workday = workdaySettings(this.values)
     return workday !== undefined && isSleeping(workday, this.workdayClock.now(), this.userIdleSince)
+  }
+
+  /**
+   * True when the child results of [snapshot] wait: with `workday.enabled` on, while the conversation sleeps outside the
+   * working hours, as the keep-alive decides it. Only a turn of the user ends the idle time, so a chain of results waits.
+   * A turn of the user, or the start of the working hours, ends the wait. A result that was ready at the end of the last
+   * turn of the user goes out right after that turn, also when `workday.idleMinutes` is 0 and the conversation sleeps
+   * again at once. A permission request of a child does not wait, because it is no turn.
+   */
+  resultsWait(snapshot) {
+    return this.sleeping() && !Object.values(snapshot.runs).some(run => terminalStates.has(run.status) && !run.reported
+      && (run.reportAfter ?? 0) <= Date.now() && run.finishedAt <= this.userIdleSince)
   }
 
   /**
