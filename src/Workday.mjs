@@ -109,7 +109,7 @@ export function idleEnd(workday, idleSince) {
 
 /**
  * True when the conversation sleeps at the time [at]: outside the working hours of [workday], and idle for
- * `idleMinutes` since the end of the last turn at [idleSince]. The keep-alive stops its requests and the waiting child
+ * `idleMinutes` since the end of the last turn of the user at [idleSince]. The keep-alive stops its requests and the waiting child
  * results stay back on the same decision.
  */
 export function isSleeping(workday, at, idleSince) {

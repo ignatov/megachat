@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { logEvent, logFailure } from './messages.mjs'
-import { terminalStates } from './MegachatState.mjs'
+import { automaticRequest, terminalStates } from './MegachatState.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { directoryOf } from './SessionLog.mjs'
 import { readTokprof } from './Tokprof.mjs'
@@ -18,8 +18,6 @@ const SESSION_TITLES = 5
 const COMMIT_PROJECTS = 20
 const COMMITS = 30
 const GIT_TIMEOUT_MS = 10000
-/** The request IDs of the automatic turns. Each other input is a turn of the user. */
-const AUTOMATIC_REQUEST = /^(children|sessions|morning):/
 
 const systemClock = {
   now: () => Date.now(),
@@ -135,7 +133,7 @@ export async function collectReportData({ state, date, workday, spend, sessionSt
   const to = zonedTime(date, '00:00', timezone)
   const inPeriod = time => Number.isFinite(time) && time >= from && time < to
   const userTurns = Object.entries(state.inputs)
-    .filter(([requestId, input]) => !AUTOMATIC_REQUEST.test(requestId) && inPeriod(input.admittedAt)).length
+    .filter(([requestId, input]) => !automaticRequest.test(requestId) && inPeriod(input.admittedAt)).length
   const runs = Object.values(state.runs)
   const periodRuns = runs.filter(run => inPeriod(run.createdAt) || inPeriod(run.finishedAt))
   if (!userTurns && !periodRuns.length) return null

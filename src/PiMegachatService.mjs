@@ -5,7 +5,7 @@ import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtens
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
-import { automaticKinds, findSteer, MegachatState, terminalStates } from './MegachatState.mjs'
+import { automaticKinds, findSteer, lastUserTurnEnd, MegachatState, terminalStates } from './MegachatState.mjs'
 import { collectReportData, logReport, MorningReport, REPORT_RECHECK_MS, reportWorkday } from './MorningReport.mjs'
 import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
 import { PiChildHistory } from './PiChildHistory.mjs'
@@ -577,12 +577,13 @@ export class PiMegachatService {
   async resume() {
     const snapshot = await this.state.snapshot()
     if (snapshot.current) this.follow(snapshot.inputs[snapshot.current.requestId])
+    // After a restart, the state gives the end of the last turn of the user, and the last message stands for the last
+    // model request.
+    this.userIdleSince = lastUserTurnEnd(snapshot)
     if (snapshot.current) this.keepAlive?.turnStarted()
     else {
       const last = await this.lastMessageTime()
-      // After a restart, the last message stands for the end of the last turn, as for the keep-alive.
-      this.idleSince = last
-      if (last !== undefined) this.keepAlive?.turnEnded(last)
+      if (last !== undefined) this.keepAlive?.turnEnded(last, { kind: 'restart', userIdleSince: this.userIdleSince })
     }
     let running = Boolean(snapshot.current)
     let kind = snapshot.current?.kind
@@ -592,11 +593,10 @@ export class PiMegachatService {
         running = Boolean(snapshot.current)
         if (running) this.keepAlive?.turnStarted()
         else {
-          // The morning report comes while the user can be away, so it starts no window of keep-alive requests, and it
-          // does not wake the conversation for the child results.
-          const automatic = kind === 'morning'
-          if (!automatic) this.idleSince = this.workdayClock.now()
-          this.keepAlive?.turnEnded(undefined, { automatic })
+          // Only a turn of the user ends the idle time of the working day. A turn of a child result or of the sessions
+          // summary starts the window of keep-alive requests again, and the morning report does not.
+          if (kind === 'user') this.userIdleSince = this.workdayClock.now()
+          this.keepAlive?.turnEnded(undefined, { kind })
         }
       }
       kind = snapshot.current?.kind ?? kind
@@ -641,12 +641,12 @@ export class PiMegachatService {
 
   /**
    * True when a child result waits: with `workday.enabled` on, while the conversation sleeps outside the working hours,
-   * as the keep-alive decides it. A turn of the user, or the start of the working hours, ends the wait. A permission
+   * as the keep-alive decides it. Only a turn of the user ends the idle time, so a chain of results waits. A turn of the user, or the start of the working hours, ends the wait. A permission
    * request of a child does not wait, because it is no turn.
    */
   resultsWait() {
     const workday = workdaySettings(this.values)
-    return workday !== undefined && isSleeping(workday, this.workdayClock.now(), this.idleSince)
+    return workday !== undefined && isSleeping(workday, this.workdayClock.now(), this.userIdleSince)
   }
 
   /**

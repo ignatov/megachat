@@ -5,8 +5,11 @@ import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { AcpBridge } from '../src/AcpBridge.mjs'
 import { message } from '../src/messages.mjs'
+import { lastUserTurnEnd } from '../src/MegachatState.mjs'
+import { PromptCacheKeepAlive } from '../src/PromptCacheKeepAlive.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 import { idleEnd, isSleeping } from '../src/Workday.mjs'
+import { fakeClock } from './fake-clock.mjs'
 import { at, daemonFixture, logLines, temporary } from './workday-daemon.mjs'
 
 const MINUTE = 60000
@@ -163,4 +166,98 @@ test('a permission request of a child shows at once while its result would wait'
   assert.match(params.toolCall.title, /Write a file/)
   assert.deepEqual(requests, [])
   assert.equal((await service.state.snapshot()).runs.night.reported, false)
+})
+
+test('a chain of child results at night does not keep the conversation awake, because only a turn of the user ends the idle time', { timeout: 20000 }, async t => {
+  const { service, daemon, requests, clock, advance, project } = await daemonFixture(t, { start: '2026-11-11T22:55:00Z', values: NIGHT })
+  await service.resume()
+  const receipt = await daemon.json('/input', { requestId: 'user-last', text: 'Run the three tasks. I go to sleep.' })
+  await daemon.json(`/wait?submission=${receipt.submissionId}`)
+  await waitForState(service.state, state => !state.current ? true : undefined)
+  // The first result comes 15 minutes after the last turn of the user, so it starts its turn at once.
+  clock.sleep(15 * MINUTE)
+  await finish(service, 'first', project, '2026-11-11T23:10:00Z')
+  await reported(service, 'first')
+  // The turn of the first result does not end the idle time: the conversation sleeps from 23:25, and the next result waits.
+  clock.sleep(25 * MINUTE)
+  await finish(service, 'second', project, '2026-11-11T23:35:00Z')
+  await settle()
+  assert.deepEqual(requests.map(request => [isResult(request), request.at]), [[false, '2026-11-11T22:55:00.000Z'], [true, '2026-11-11T23:10:00.000Z']])
+  assert.equal((await service.state.snapshot()).runs.second.reported, false)
+  await logLines(t, async () => {
+    await advance(9 * HOUR + 25 * MINUTE)
+    await reported(service, 'second')
+  })
+  assert.equal(requests.at(-1).at, '2026-11-12T09:00:00.000Z')
+})
+
+test('after a restart, the end of the last turn of the user gives the idle time, not the last message of a result turn', { timeout: 30000 }, async t => {
+  const directory = await temporary(t)
+  const database = join(directory, 'conversation.sqlite')
+  const first = await daemonFixture(t, { directory, start: '2026-11-11T22:55:00Z', values: NIGHT, storage: await openNodeSqliteStorage(database) })
+  await first.service.resume()
+  const receipt = await first.daemon.json('/input', { requestId: 'user-last', text: 'Run the tasks. I go to sleep.' })
+  await first.daemon.json(`/wait?submission=${receipt.submissionId}`)
+  await waitForState(first.service.state, state => !state.current ? true : undefined)
+  first.clock.sleep(15 * MINUTE)
+  await finish(first.service, 'first', first.project, '2026-11-11T23:10:00Z')
+  await reported(first.service, 'first')
+  // The state takes the times of the real clock. The fake clock of the test gives them here.
+  await first.service.state.change(state => { state.inputs['user-last'].settledAt = at('2026-11-11T22:55:00Z') })
+  await first.close()
+  const second = await daemonFixture(t, { directory, start: '2026-11-11T23:35:00Z', values: NIGHT, storage: await openNodeSqliteStorage(database) })
+  await second.service.resume()
+  await finish(second.service, 'second', second.project, '2026-11-11T23:35:00Z')
+  await settle()
+  assert.deepEqual(second.requests, [])
+  assert.equal((await second.service.state.snapshot()).runs.second.reported, false)
+})
+
+test('the end of the last turn of the user comes from the inputs of the state', () => {
+  const inputs = {
+    'user-old': { status: 'completed', admittedAt: 100 },
+    'user-new': { status: 'completed', admittedAt: 200, settledAt: 260 },
+    'children:1': { status: 'completed', admittedAt: 300, settledAt: 320 },
+    'sessions:1': { status: 'completed', admittedAt: 400, settledAt: 420 },
+    'morning:1': { status: 'completed', admittedAt: 500, settledAt: 520 },
+    'user-running': { status: 'running', admittedAt: 600 },
+  }
+  assert.equal(lastUserTurnEnd({ inputs }), 260)
+  // An input of an earlier build has only its admission time.
+  assert.equal(lastUserTurnEnd({ inputs: { 'user-old': inputs['user-old'] } }), 100)
+  assert.equal(lastUserTurnEnd({ inputs: {} }), undefined)
+})
+
+test('the keep-alive takes the idle time of the working day from the turns of the user, and the window from each turn but the report', async t => {
+  const pings = []
+  const compacts = []
+  const make = (start, size, workday) => {
+    const clock = fakeClock(start)
+    const keepAlive = new PromptCacheKeepAlive({ ttlMs: HOUR, windowMs: 6 * HOUR, compactTokens: 100000, minTokens: 1000, workday, clock, tokens: async () => size,
+      ping: async () => { pings.push(new Date(clock.now()).toISOString().slice(11, 16)); return { input: 1, cacheRead: 1, cacheWrite: 0, output: 1 } },
+      compact: async () => { compacts.push(new Date(clock.now()).toISOString().slice(11, 16)); return { compacted: true } } })
+    return { clock, keepAlive, advance: ms => clock.advance(ms, () => keepAlive.running) }
+  }
+  // The user goes away at 22:55, and a result turn ends at 23:10. The idle time of 55 minutes ends at 23:50, not at 00:05.
+  const night = make('2026-11-11T22:55:00Z', 150000, { ...WORKDAY, idleMinutes: 55 })
+  await logLines(t, async () => {
+    night.keepAlive.turnEnded()
+    night.clock.sleep(15 * MINUTE)
+    night.keepAlive.turnStarted()
+    night.keepAlive.turnEnded(undefined, { kind: 'report' })
+    await night.advance(3 * HOUR)
+  })
+  assert.deepEqual(compacts, ['00:00'])
+  await night.keepAlive.close()
+  // In the working hours, a turn of a child result starts the window of keep-alive requests again, as before.
+  const day = make('2026-11-11T08:00:00Z', 50000, undefined)
+  await logLines(t, async () => {
+    day.keepAlive.turnEnded()
+    day.clock.sleep(5 * HOUR)
+    day.keepAlive.turnStarted()
+    day.keepAlive.turnEnded(undefined, { kind: 'report' })
+    await day.advance(12 * HOUR)
+  })
+  assert.equal(pings.at(-1), '18:50')
+  await day.keepAlive.close()
 })

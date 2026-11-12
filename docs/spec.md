@@ -161,7 +161,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A `settings.json` without the `workday.*` keys must open with the defaults.
   [@test] ../test/workday.test.mjs
   [@test] ../test/settings.test.mjs
-- With `workday.enabled` on, a child result must start no turn while the conversation sleeps: outside the working hours, and idle for `workday.idleMinutes` since the end of the last turn. The keep-alive and the wait of the results must use one shared pure function for this decision, `isSleeping` of `src/Workday.mjs`. The turn of the morning report does not end the idle time.
+- With `workday.enabled` on, a child result must start no turn while the conversation sleeps: outside the working hours, and idle for `workday.idleMinutes` since the end of the last turn of the user. The keep-alive and the wait of the results must use one shared pure function for this decision, `isSleeping` of `src/Workday.mjs`.
+- Only a turn of the user must end this idle time, in the service and in the keep-alive. A turn of a child result, of the sessions summary and of the morning report must not end it, so a chain of child results at night does not keep the conversation awake: after a last turn of the user at 22:55, a result at 23:10 starts its turn, and a result at 23:35 waits. In the working hours, a turn of a child result and a turn of the sessions summary must still start the `keepAlive.hours` window again.
+- After a restart, the end of the last turn of the user must come from the state: the time when the state settled its input, else its admission time for an input of an earlier build. The inputs of the automatic turns have the request ID prefixes `children:`, `sessions:` and `morning:`.
 - The waiting results must go out at the first of these: right after the next turn of the user, or at `workday.start` of the next working day. A Friday night result goes out on Monday.
 - While the user is active outside the working hours, with a turn in the last `workday.idleMinutes`, a child result must start its turn at once.
 - A permission request of a child must show at once. Only the turn of the result waits.

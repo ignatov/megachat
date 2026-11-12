@@ -36,7 +36,7 @@ const systemClock = {
  *
  * [workday] holds the working-day settings of `workdaySettings`, or it is `undefined`. With these settings, the idle
  * daemon sends no keep-alive request outside the working hours. Outside the working hours, it acts only when the
- * conversation is idle for `idleMinutes`. Then the conversation goes to sleep: above [compactTokens] it gets the summary,
+ * user did no turn for `idleMinutes`. Then the conversation goes to sleep: above [compactTokens] it gets the summary,
  * and no request goes out until the next turn. This summary comes also on a cold cache: the summary request sends the
  * conversation as a transcript with its own system prompt and no cache retention, so it reads no prompt cache, and a
  * cold cache does not change its cost. In the working hours, the idle daemon acts as without [workday].
@@ -57,14 +57,20 @@ export class PromptCacheKeepAlive {
   }
 
   /**
-   * The conversation is idle since [at], the time of its last model request. A turn that the user did not cause, such as
-   * the morning report ([automatic]), keeps the idle time of the earlier turn, so it starts no `keepAlive.hours` window.
-   * Without an earlier turn, the idle time has no start, and no window is open.
+   * The conversation is idle since [at], the time of its last model request. The kind of the turn tells which idle time
+   * starts again:
+   * - The `keepAlive.hours` window starts again after each turn but the morning report (`morning`), which comes while
+   *   the user can be away. Without an earlier turn, the window has no start, and it is not open.
+   * - The idle time of the working day ([userIdleSince]) starts again only after a turn of the user (`user`). So a chain
+   *   of child results at night does not keep the conversation awake.
+   * A restart gives the end of the last turn of the user from the state as [userIdleSince].
    */
-  turnEnded(at = this.clock.now(), { automatic = false } = {}) {
+  turnEnded(at = this.clock.now(), { kind = 'user', userIdleSince } = {}) {
     this.busy = false
-    if (!automatic) this.idleSince = at
+    if (kind !== 'morning') this.idleSince = at
     else this.idleSince ??= -Infinity
+    if (userIdleSince !== undefined) this.userIdleSince = userIdleSince
+    else if (kind === 'user') this.userIdleSince = at
     this.schedule(at)
   }
 
@@ -94,8 +100,8 @@ export class PromptCacheKeepAlive {
     if (!resting && now - this.lastRequestAt >= this.ttlMs) return
     // The user can still work after the end of the working hours. So the conversation goes to sleep only after the idle
     // time, and until then no request goes out.
-    if (resting && !isSleeping(this.workday, now, this.idleSince)) {
-      this.wake(idleEnd(this.workday, this.idleSince))
+    if (resting && !isSleeping(this.workday, now, this.userIdleSince)) {
+      this.wake(idleEnd(this.workday, this.userIdleSince))
       return
     }
     const size = await this.tokens()

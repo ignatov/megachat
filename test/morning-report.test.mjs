@@ -522,7 +522,7 @@ test('the turn of the morning report starts no window of keep-alive requests', {
     await keepAlive.clock.advance(3 * DAY, () => keepAlive.running)
     const before = pings.length
     keepAlive.turnStarted()
-    keepAlive.turnEnded(undefined, { automatic: true })
+    keepAlive.turnEnded(undefined, { kind: 'morning' })
     await keepAlive.clock.advance(6 * HOUR, () => keepAlive.running)
     assert.equal(pings.length, before)
     keepAlive.turnStarted()

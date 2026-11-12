@@ -12,6 +12,22 @@ export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 
  * a child result (`report`), and the morning report (`morning`). Such a turn starts no work and changes no setting.
  */
 export const automaticKinds = new Set(['event', 'report', 'morning'])
+/** The request IDs of the inputs of the automatic turns. Each other input is a turn of the user. */
+export const automaticRequest = /^(children|sessions|morning):/
+
+/**
+ * The end of the last turn of the user in [state]: the time when the state settled its input, else its admission time,
+ * which an input of an earlier build has alone. Gives `undefined` without a settled turn of the user.
+ */
+export function lastUserTurnEnd(state) {
+  let last
+  for (const [requestId, input] of Object.entries(state.inputs)) {
+    if (automaticRequest.test(requestId) || input.status === 'running') continue
+    const end = input.settledAt ?? input.admittedAt
+    if (Number.isFinite(end) && !(end <= last)) last = end
+  }
+  return last
+}
 export const maxAutomaticResumes = 2
 /** The limit of the messages that the user adds to one task, for its first run and each continuation together. */
 export const maxSteers = 16
@@ -602,6 +618,8 @@ export class MegachatState {
       const input = state.inputs[state.current.requestId]
       if (state.current.cancelling) status = 'cancelled'
       input.status = status
+      // After a restart, the end of the last turn of the user gives the idle time of the working day.
+      input.settledAt = Date.now()
       // Only a completed turn keeps its prompt suggestion. A delegation acknowledgment gets none, also when the main
       // agent admitted the child after the proposal.
       const suggestion = state.initiative.promptSuggestion
