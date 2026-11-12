@@ -327,6 +327,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   proposal. An automatic turn must not reset the count of the refusals.
 - An event must not start delegated work without a user request.
 - A user message must interrupt an automatic turn, such as the turn of the summary of the past sessions.
+- A turn of the summary of the past sessions that a user message interrupted, or that failed for a reason that can go away, must run again one time with the same data after the turn of the user, as the morning report does. A stop of the user and a reason that does not go away, such as the limit of tool rounds, must end it.
   [@test] ../test/state.test.mjs
   [@test] ../test/integration.test.mjs
 - A child that finishes after the main reply must produce a result in the main conversation.

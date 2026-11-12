@@ -270,8 +270,10 @@ export class MegachatState {
       state.serviceSessions ??= serviceSessionsOf(state.runs)
       state.projects ??= []
       state.projectCreations ??= {}
-      // The task of an import pass ends with its daemon. A summary that waits for its event turn stays.
-      state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null }
+      // The task of an import pass ends with its daemon. A summary that waits for its event turn stays, and so does the
+      // summary of the turn that runs, which can wait for its repeat. A state of an earlier build has neither field.
+      state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null, repeated: state.sessionIndex?.repeated ?? false,
+        running: state.sessionIndex?.running ?? null }
       // The morning report: the local date of the last report, the data of a report that waits for its turn, and the
       // report of the turn that runs. A state of an earlier build has none.
       state.morningReport ??= { lastDate: null, pending: null, running: null }
@@ -489,14 +491,17 @@ export class MegachatState {
     await this.change(state => { state.sessionIndex.task = task })
   }
 
-  /** Stores the summary of the first pass of the session index. The next event turn tells it to the user one time. */
+  /**
+   * Stores the summary of the first pass of the session index. The next event turn tells it to the user one time. A
+   * turn that a user message interrupted, or that failed for a reason that can go away, runs again one time.
+   */
   async sessionsIndexed(summary) {
-    await this.change(state => { state.sessionIndex = { task: null, summary } })
+    await this.change(state => { state.sessionIndex = { task: null, summary, repeated: false, running: null } })
   }
 
   /** Forgets the task and the summary of the session index after the user took the consent back. */
   async sessionsOff() {
-    await this.change(state => { state.sessionIndex = { task: null, summary: null } })
+    await this.change(state => { state.sessionIndex = { task: null, summary: null, repeated: false, running: null } })
   }
 
   /** Starts the event turn that tells the summary of the first pass of the session index. */
@@ -506,13 +511,15 @@ export class MegachatState {
       if (state.current || !summary) return null
       retain(state)
       clearPromptSuggestion(state.initiative)
-      const requestId = `sessions:${digest(summary)}`
+      const repeated = state.sessionIndex.repeated === true
+      // A repeat is an input of its own, so it gets a request ID of its own.
+      const requestId = `sessions:${digest(summary)}${repeated ? ':repeat' : ''}`
       const mainRunId = randomUUID()
       const submissionId = await this.root.submit(tx, {
         type: 'input', requestId, content: `${message(`event.sessions${this.eventSuffix}`)}\n${JSON.stringify(summary)}`,
         entry: { kind: 'air.megachat.event', data: { type: 'sessions', ...summary } },
       })
-      state.sessionIndex.summary = null
+      Object.assign(state.sessionIndex, { summary: null, repeated: false, running: { summary, repeated, mainRunId, interrupted: false } })
       const input = { digest: digest(summary), mainRunId, submissionId, status: 'running', admittedAt: Date.now() }
       state.inputs[requestId] = input
       state.current = { id: mainRunId, requestId, cancelling: false, kind: 'event' }
@@ -609,8 +616,9 @@ export class MegachatState {
   /**
    * Ends the current turn. [reason] is the reason code of Pi Durable for a turn without an answer. A result report
    * that fails for a reason that can go away is sent once more, after a delay. A cancelled report is not: the user
-   * stopped it, or `interruptAutomaticTurn` already asked for a new report. A morning report that a user message
-   * interrupted, or that failed for a reason that can go away, waits for one more turn. The user can stop it for good.
+   * stopped it, or `interruptAutomaticTurn` already asked for a new report. A morning report or a summary of the
+   * session index that a user message interrupted, or that failed for a reason that can go away, waits for one more
+   * turn. The user can stop it for good.
    */
   async settleInput(mainRunId, status, reason) {
     await this.change(state => {
@@ -630,6 +638,13 @@ export class MegachatState {
         const repeatable = morning.interrupted || status === 'interrupted' && (reason === undefined || repeatableReasons.has(reason))
         if (repeatable && !morning.repeated) state.morningReport.pending = { date: morning.date, data: morning.data, repeated: true }
         state.morningReport.running = null
+      }
+      const sessions = state.sessionIndex?.running?.mainRunId === mainRunId ? state.sessionIndex.running : null
+      if (sessions) {
+        const repeatable = sessions.interrupted || status === 'interrupted' && (reason === undefined || repeatableReasons.has(reason))
+        // A new summary that came during the turn wins over the repeat.
+        if (repeatable && !sessions.repeated && !state.sessionIndex.summary) Object.assign(state.sessionIndex, { summary: sessions.summary, repeated: true })
+        state.sessionIndex.running = null
       }
       if (status === 'interrupted') {
         // The state keeps only the reason code. The detail of the reason can hold the text of a provider.
@@ -654,6 +669,7 @@ export class MegachatState {
       state.current.cancelling = true
       for (const id of state.inputs[state.current.requestId].resultRunIds ?? []) state.runs[id].reported = false
       if (state.current.kind === 'morning' && state.morningReport.running) state.morningReport.running.interrupted = true
+      if (state.sessionIndex?.running?.mainRunId === state.current.id) state.sessionIndex.running.interrupted = true
       return true
     })
   }

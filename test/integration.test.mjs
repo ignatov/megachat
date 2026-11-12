@@ -841,26 +841,35 @@ test('a reply that fails on a model error tells the user that the model did not 
 })
 
 
-test('a user message interrupts an automatic event turn', { timeout: 10000 }, async t => {
-  const { daemon, cwd, fake, service } = await fixture(t)
-  const started = Promise.withResolvers()
-  fake.setResponses([
-    async (_context, options) => {
-      started.resolve()
-      await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
-      return fauxAssistantMessage('Interrupted', { stopReason: 'aborted' })
-    },
-    fauxAssistantMessage('User reply.'),
-  ])
-  await service.state.sessionsIndexed({ passId: 'pass-1', sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] })
-  await started.promise
+test('a user message interrupts the summary of the session index, and the summary runs again one time', { timeout: 10000 }, async t => {
+  const { daemon, fake, service } = await fixture(t)
+  const started = [Promise.withResolvers(), Promise.withResolvers()]
+  const prompts = []
+  const hang = index => async (context, options) => {
+    prompts.push(JSON.stringify(context.messages.at(-1)))
+    started[index].resolve()
+    await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
+    return fauxAssistantMessage('Interrupted', { stopReason: 'aborted' })
+  }
+  fake.setResponses([hang(0), fauxAssistantMessage('User reply.'), hang(1), fauxAssistantMessage('Second reply.'), fauxAssistantMessage('No third summary.')])
+  const summary = { passId: 'pass-1', sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] }
+  await service.state.sessionsIndexed(summary)
+  await started[0].promise
   const receipt = await daemon.json('/input', { requestId: 'user-priority', text: 'My task comes first' })
   await daemon.json(`/wait?submission=${receipt.submissionId}`)
-  const state = await service.state.snapshot()
-  assert.equal(state.inputs['user-priority'].status, 'completed')
-  assert.equal(state.current, null)
+  assert.equal((await service.state.snapshot()).inputs['user-priority'].status, 'completed')
   assert.ok((await service.view()).entries.some(entry => entry.model?.some(item =>
     item.role === 'assistant' && item.content.some(block => block.text === 'User reply.'))))
+  // The repeat has the same data, and a second user message interrupts it too.
+  await started[1].promise
+  const second = await daemon.json('/input', { requestId: 'user-second', text: 'Another question' })
+  await daemon.json(`/wait?submission=${second.submissionId}`)
+  const state = await waitForState(service.state, value => value.current === null ? value : undefined)
+  const summaries = Object.entries(state.inputs).filter(([id]) => id.startsWith('sessions:'))
+  assert.deepEqual(summaries.map(([id, input]) => [id.endsWith(':repeat'), input.status]), [[false, 'cancelled'], [true, 'cancelled']])
+  assert.equal(prompts.length, 2)
+  assert.ok(prompts.every(prompt => prompt.includes('"passId\\":\\"pass-1')), prompts[1].slice(0, 200))
+  assert.deepEqual(state.sessionIndex, { task: null, summary: null, repeated: false, running: null }, 'No third summary follows')
 })
 
 test('a child searches the whole retained history through the search index', { timeout: 10000 }, async t => {

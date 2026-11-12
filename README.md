@@ -448,7 +448,8 @@ Codex sessions then reads them live, as before.
   filter makes the index again one time.
 - **The import.** The first pass runs in the background, the projects of an IDE first and the newest sessions first.
   The chat lists it as a background task with its progress. After the first pass, the main agent tells you the count of
-  the sessions and of the projects, and the last unfinished sessions. Then the index catches up at the start of the
+  the sessions and of the projects, and the last unfinished sessions. When your message interrupts this summary, it
+  comes one more time after your turn. Then the index catches up at the start of the
   daemon and on each change of a session file. It reads only the new lines of a file.
 - **The size.** One measurement with 100,000 synthetic messages of 2 KB gave a file of 640 MB. Real text takes less
   room, but plan for some hundreds of MB. The age limit and the limit of 2 KB for each message bound the file.

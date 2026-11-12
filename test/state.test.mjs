@@ -169,6 +169,42 @@ test('a result report cut by a daemon stop is sent once more, and a cancelled or
   assert.equal(await state.nextChildResults(), null)
 })
 
+test('a summary of the session index that failed for a reason that can go away runs again one time, and a stop of the user ends it', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  const summary = passId => ({ passId, sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] })
+  const index = async () => (await state.snapshot()).sessionIndex
+
+  await state.sessionsIndexed(summary('pass-1'))
+  const first = await state.nextSessionsEvent()
+  assert.equal((await index()).running.mainRunId, first.mainRunId)
+  await state.settleInput(first.mainRunId, 'interrupted', 'model_error')
+  assert.deepEqual(await index(), { task: null, summary: summary('pass-1'), repeated: true, running: null })
+  const second = await state.nextSessionsEvent()
+  assert.ok(Object.keys((await state.snapshot()).inputs).includes(`sessions:${second.digest}:repeat`))
+  await state.settleInput(second.mainRunId, 'interrupted', 'model_error')
+  assert.deepEqual(await index(), { task: null, summary: null, repeated: false, running: null }, 'A second failure ends the summary')
+  assert.equal(await state.nextSessionsEvent(), null)
+
+  // A reason that does not go away, and a stop of the user, end the summary at once.
+  await state.sessionsIndexed(summary('pass-2'))
+  const limited = await state.nextSessionsEvent()
+  await state.settleInput(limited.mainRunId, 'interrupted', 'turn_limit')
+  assert.equal((await index()).summary, null)
+  await state.sessionsIndexed(summary('pass-3'))
+  const stopped = await state.nextSessionsEvent()
+  await state.cancel(stopped.mainRunId)
+  await state.settleInput(stopped.mainRunId, 'interrupted', 'aborted')
+  assert.equal((await index()).summary, null)
+
+  // A user message interrupts the turn, and the summary waits for one more turn.
+  await state.sessionsIndexed(summary('pass-4'))
+  const interrupted = await state.nextSessionsEvent()
+  assert.equal(await state.interruptAutomaticTurn(), true)
+  await state.settleInput(interrupted.mainRunId, 'interrupted', 'aborted')
+  assert.deepEqual(await index(), { task: null, summary: summary('pass-4'), repeated: true, running: null })
+})
+
 test('a run that never reached its provider is dispatched again and continuations are capped', { timeout: 10000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))
