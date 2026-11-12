@@ -238,7 +238,9 @@ export class SessionIndex {
 
   /**
    * Deletes the entries that a file gave, in batches, and the import state of the file. A session without a file then
-   * leaves the index. [pause] runs between the batches, so the event loop does not stay blocked.
+   * leaves the index. [pause] runs between the batches, so the event loop does not stay blocked. An entry that another
+   * file of the same session holds too belonged to this file, so each other file of the session gets the import state
+   * of a file that the import did not read yet. Gives the paths of these other files.
    */
   async dropFile(path, pause = async () => {}) {
     const fileId = (await this.file(path))?.id
@@ -251,19 +253,21 @@ export class SessionIndex {
       if (removed < DELETE_BATCH) break
       await pause()
     }
-    await this.#guard(() => this.db.transaction(async tx => {
+    return this.#guard(() => this.db.transaction(async tx => {
       const file = await tx.get('SELECT session FROM files WHERE path = ?', path)
       await tx.run('DELETE FROM files WHERE path = ?', path)
-      if (file?.session == null || await tx.get('SELECT 1 FROM files WHERE session = ?', file.session)) {
-        if (file?.session != null) {
-          const count = await tx.get('SELECT count(*) AS count FROM entries WHERE session = ? AND role != ?', file.session, 'title')
-          await tx.run('UPDATE sessions SET entry_count = ? WHERE id = ?', count.count, file.session)
-        }
-        return
+      if (file?.session == null) return []
+      if (await tx.get('SELECT 1 FROM files WHERE session = ?', file.session)) {
+        const count = await tx.get('SELECT count(*) AS count FROM entries WHERE session = ? AND role != ?', file.session, 'title')
+        await tx.run('UPDATE sessions SET entry_count = ? WHERE id = ?', count.count, file.session)
+        const others = await tx.all("SELECT path FROM files WHERE session = ? AND state = 'indexed'", file.session)
+        await tx.run("UPDATE files SET size = -1, offset = 0, tail = NULL WHERE session = ? AND state = 'indexed'", file.session)
+        return others.map(row => row.path)
       }
       // The entries of other files with the same session, such as the title, go with the session.
       await this.#deleteEntries(tx, (await tx.all('SELECT id FROM entries WHERE session = ?', file.session)).map(row => row.id))
       await tx.run('DELETE FROM sessions WHERE id = ?', file.session)
+      return []
     }))
   }
 

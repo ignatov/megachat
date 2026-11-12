@@ -438,7 +438,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   these PIDs, and never to confirm for the user.
   [@test] ../test/stop.test.mjs
 - With the consent `sessions.index`, Megachat must keep a live table of each session file of Claude Code, Codex and pi
-  on the machine, also outside the listed directories, in a table of its own in `sessions.sqlite`: the path, the inode,
+  on the machine, also outside the listed directories, without the archived and the compressed Codex session files, in a table of its own in `sessions.sqlite`: the path, the inode,
   the size, the byte offset, the agent, the session ID, the `cwd`, the title, the start time, the time of the last write
   and the last step. It must hold no message text. A restart must answer from this table before it reads a file again.
   A query of `agents_running` must read the memory, not the session files.
@@ -499,6 +499,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - When the consent goes off, a call of `agents_running` or of `agents_session_history` that runs must read no more
   session file, and a call after the change must get no data of a log, also from a scan that started before it.
   [@test] ../test/session-logs.test.mjs
+  [@test] ../test/session-index.test.mjs
 - `agents_session_history` of the main agent with `order` `newest` must read a session of the live table by its agent
   and session ID, also outside the listed directories, from the end of its log: the last `limit` entries (20 by
   default, at most 100) in the order of the log, and a cursor to the older page. `query` must select the entries in the
@@ -517,7 +518,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - With the setting off, Megachat must read no session file for the index or for the live table of `agents_running`, watch no directory of a provider, and keep no `sessions.sqlite`. A change to off must stop the import and delete the file.
 - A change to on must start the import at once, without a restart. A start that failed, for example because the index file could not open, must run again at the next set of a setting of the index, also of the same value.
 - The index must hold only a session whose `cwd` is a listed directory or a directory in one. The sessions of a newly listed directory must enter the index. The sessions of a removed directory must leave it.
-- The sources must be `~/.claude/projects/<encoded cwd>/<session ID>.jsonl`, `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` or `$CODEX_HOME/sessions`, and `~/.pi/agent/sessions/--<path>--/*.jsonl` or `PI_CODING_AGENT_SESSION_DIR`.
+- The sources must be `~/.claude/projects/<encoded cwd>/<session ID>.jsonl`, `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` or `$CODEX_HOME/sessions`, the archived Codex sessions `~/.codex/archived_sessions/rollout-*.jsonl` or `$CODEX_HOME/archived_sessions`, and `~/.pi/agent/sessions/--<path>--/*.jsonl` or `PI_CODING_AGENT_SESSION_DIR`.
+- Codex compresses a session file without a change for 7 days to `rollout-*.jsonl.zst`, in both Codex directories. The import must read such a file with the same rules as a plain file: the age limit by the modification time, the cut of each entry and the secret filter. A compressed file must have a new import of the whole file at each change. When the plain file and the compressed file of one session both exist, the import must take the plain file, as Codex does.
+- When Codex compresses a file, makes a plain file of a compressed one again, or moves a file to the archive and back, the session must keep each entry, in each order of the watch events. A file that leaves the index must make a new import of each other file of its session from the start.
+- An archived file and a compressed file hold no running session: the live table of `agents_running` must not read them.
 - The import must take the sessions with activity in the last `sessions.days` days, 180 by default. The value 0 must take all sessions. A session that becomes older must leave the index at the next pass.
 - For each file, the index must keep the path, the size, the modification time, the inode, the byte offset of the import, and a hash of the 128 bytes before the offset. The import must read only the appended complete lines. A last line without a newline must stay unread until it is complete.
 - A smaller file, another inode, or other bytes before the offset, as after a rewrite in place, must make the import read the whole file again.

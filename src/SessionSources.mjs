@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import { ClaudeSessionSource } from './ClaudeSessionSource.mjs'
-import { CodexSessionSource } from './CodexSessionSource.mjs'
+import { CodexArchiveSource, CodexSessionSource } from './CodexSessionSource.mjs'
 import { PiSessionSource } from './PiSessionSource.mjs'
 
 /**
@@ -21,9 +21,14 @@ import { PiSessionSource } from './PiSessionSource.mjs'
  *   the step of the session that the line shows: `call`, `result`, `prompt` and `open` while the agent owes the next
  *   step, `reply` and `end` after a finished turn, or undefined for a line that changes no step.
  * - `keepsOpen` is true for an agent that keeps the session file open while the session is loaded: Codex.
+ * - `archive` is true for a source of archived sessions: the archived sessions of Codex. The index reads it, and the
+ *   live table of the running sessions does not.
+ * - `sibling(path)` and `prefers(sibling)`, when a source has them, give the other form of the same session file,
+ *   such as the compressed file of a plain file, and tell whether the index takes that form and not [path].
  * `src/SessionLog.mjs` holds the line reader and the helpers of the parsers. The roots come from [home] and
  * [environment], so a test gives its own directories.
  */
 export function sessionSources({ home = homedir(), environment = process.env } = {}) {
-  return [new ClaudeSessionSource({ home, environment }), new CodexSessionSource({ home, environment }), new PiSessionSource({ home, environment })]
+  return [new ClaudeSessionSource({ home, environment }), new CodexSessionSource({ home, environment }),
+    new CodexArchiveSource({ home, environment }), new PiSessionSource({ home, environment })]
 }

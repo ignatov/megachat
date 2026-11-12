@@ -6,7 +6,7 @@ import { logFailure } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { SessionCatalog } from './SessionCatalog.mjs'
 import { SessionIndex } from './SessionIndex.mjs'
-import { directoryOf, readLines } from './SessionLog.mjs'
+import { directoryOf, isCompressed, readLines } from './SessionLog.mjs'
 import { sessionSources } from './SessionSources.mjs'
 import { indexedText } from './SessionText.mjs'
 import { deleteSidecar } from './SqliteSidecar.mjs'
@@ -32,6 +32,8 @@ const TAIL_BYTES = 128
 /** Gives the event loop to other work, such as a turn of the chat, between two batches of the import. */
 const pause = () => new Promise(resolve => setImmediate(resolve))
 const identity = stat => ({ size: stat.size, mtimeMs: stat.mtimeMs, ino: String(stat.ino) })
+/** The session ID that the name of a file gives, when the file names none: the name without `.jsonl` or `.jsonl.zst`. */
+const nameOf = path => basename(path).replace(/\.jsonl(?:\.zst)?$/, '')
 
 /**
  * Imports the past sessions of Claude Code, Codex and pi of the listed directories into `sessions.sqlite`, with the
@@ -282,7 +284,7 @@ export class SessionIndexService {
     for (const row of await this.index.files()) {
       if (signal.aborted) return
       const gone = !present.has(row.path) || row.state === 'indexed' && !directoryOf(row.cwd, directories)
-      if (gone) { await this.index.dropFile(row.path, pause); await pause() }
+      if (gone) { await this.#drop(row.path); await pause() }
     }
     const rows = new Map((await this.index.files()).map(row => [row.path, row]))
     const work = []
@@ -357,7 +359,10 @@ export class SessionIndexService {
       if (!source) continue
       const stat = await this.fs.stat(path).catch(() => undefined)
       if (!stat?.isFile() || stat.mtimeMs < this.cutoff) {
-        if (await this.index.file(path)) await this.index.dropFile(path, pause)
+        if (await this.index.file(path)) await this.#drop(path)
+        // Codex replaces a plain session file with its compressed file, and back. The other form then has the session.
+        const sibling = source.sibling?.(path)
+        if (sibling && !paths.includes(sibling) && (await this.fs.stat(sibling).catch(() => undefined))?.isFile()) this.pending.paths.add(sibling)
         continue
       }
       const file = { source, path, ...identity(stat) }
@@ -379,6 +384,17 @@ export class SessionIndexService {
     await (row?.state === 'indexed' ? this.index.touch(file) : this.index.outside({ ...file, agent: file.source.agent }, null)).catch(() => {})
   }
 
+  /**
+   * Deletes the entries of a file and its import state. Another file of the same session can hold a copy of an entry
+   * that the index kept only for this file, as after a move of the file to the archive. So each other file of the
+   * session gets a new import from its start, and the import adds the entries that went away.
+   */
+  async #drop(path) {
+    const others = await this.index.dropFile(path, pause)
+    for (const other of others) this.pending.paths.add(other)
+    if (others.length) this.#request({})
+  }
+
   /** Runs one import of a file at a time. A second import of the same file waits for the first one. */
   async #import(file, directories, options) {
     while (this.locks.has(file.path)) await this.locks.get(file.path).catch(() => {})
@@ -390,7 +406,7 @@ export class SessionIndexService {
 
   /** Reads the first lines of a file until the session tells its `cwd`. */
   async #peek(source, path) {
-    for await (const batch of readLines(this.fs, path, { end: PEEK_BYTES, batchLines: 8 })) {
+    for await (const batch of readLines(this.fs, path, { end: PEEK_BYTES, batchLines: 8, compressed: isCompressed(path) })) {
       for (const line of batch.lines) {
         const cwd = this.#parse(source, line, path)?.meta?.cwd
         if (cwd) return cwd
@@ -421,7 +437,9 @@ export class SessionIndexService {
 
   /**
    * Imports the new complete lines of one file. A smaller file or another inode means a truncation or a rotation, and
-   * other bytes before the offset mean a rewrite in place: the import then takes the whole file again. Gives false when
+   * other bytes before the offset mean a rewrite in place: the import then takes the whole file again. A compressed
+   * file gets no new lines, so each change of it makes a new import of the whole file. Of the two forms of one session
+   * file, the import takes the form that the agent reads first, and the other form leaves the index. Gives false when
    * [deadline] or a stop ended the import before the end.
    */
   async #importFile(file, directories, { signal, deadline }) {
@@ -430,15 +448,24 @@ export class SessionIndexService {
     const stat = await this.fs.stat(path).catch(() => undefined)
     if (!stat?.isFile()) return true
     Object.assign(file, identity(stat))
+    const sibling = source.sibling?.(path)
+    if (sibling) {
+      if (source.prefers(sibling) && (await this.fs.stat(sibling).catch(() => undefined))?.isFile()) {
+        if (await this.index.file(path)) await this.#drop(path)
+        return true
+      }
+      if (await this.index.file(sibling)) await this.#drop(sibling)
+    }
+    const compressed = isCompressed(path)
     let row = await this.index.file(path)
     if (row && !this.#needsWork(row, file, directories)) return true
     if (row?.state === 'outside') {
       if (row.ino === file.ino && row.cwd && !directoryOf(row.cwd, directories)) { await this.index.touch({ ...file, agent }); return true }
       row = undefined
     }
-    if (row && (row.ino !== file.ino || file.size < row.offset || row.size >= 0 && file.size < row.size
+    if (row && (compressed || row.ino !== file.ino || file.size < row.offset || row.size >= 0 && file.size < row.size
       || await this.#tail(path, row.offset) !== row.tail)) {
-      await this.index.dropFile(path, pause)
+      await this.#drop(path)
       row = undefined
     }
     let meta
@@ -451,7 +478,9 @@ export class SessionIndexService {
     // The size of a file is stored only after the import reached its end, so a stopped import continues later.
     const partial = { ...file, agent, size: -1, tail: row?.tail ?? null }
     let offset = row?.offset ?? 0
-    for await (const batch of readLines(this.fs, path, { start: offset, end: file.size, batchBytes: BATCH_BYTES, batchLines: BATCH_LINES })) {
+    // The size of a compressed file is no size of its text, so its reader reads to the end of the text.
+    for await (const batch of readLines(this.fs, path, { start: offset, end: compressed ? undefined : file.size, batchBytes: BATCH_BYTES,
+      batchLines: BATCH_LINES, compressed })) {
       const entries = []
       for (const line of batch.lines) {
         const parsed = this.#parse(source, line, path)
@@ -462,8 +491,8 @@ export class SessionIndexService {
         if (found.title !== undefined && !(meta.titleRank > found.titleRank)) Object.assign(meta, { title: found.title, titleRank: found.titleRank })
         if (parsed.entry) entries.push({ ...parsed.entry, ...indexedText(parsed.entry.text) })
       }
-      meta.sessionId ??= basename(path, '.jsonl')
-      partial.tail = await this.#tail(path, batch.end)
+      meta.sessionId ??= nameOf(path)
+      partial.tail = compressed ? null : await this.#tail(path, batch.end)
       await this.index.write(partial, meta, entries, batch.end)
       while (await this.index.mergeStep()) await pause()
       delete meta.title
@@ -472,7 +501,7 @@ export class SessionIndexService {
       await pause()
       if (signal?.aborted || deadline !== undefined && this.clock.now() > deadline) return false
     }
-    meta.sessionId ??= basename(path, '.jsonl')
+    meta.sessionId ??= nameOf(path)
     if (offset === (row?.offset ?? 0)) await this.index.write(partial, meta, [], offset)
     await this.index.touch({ ...file, agent })
     return true

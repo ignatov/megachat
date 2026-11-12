@@ -44,7 +44,8 @@ const fromRow = row => ({ path: row.path, agent: row.agent, ino: row.ino, size: 
  */
 export class SessionCatalog {
   constructor({ index, sources, fs = fileSystem, clock = Date, timers = globalThis, pollMs = POLL_MS }) {
-    Object.assign(this, { index, sources, fs, clock, timers, pollMs })
+    // No session runs in an archived file, so the table reads no source of archived sessions.
+    Object.assign(this, { index, sources: sources.filter(source => !source.archive), fs, clock, timers, pollMs })
     this.records = new Map()
     this.locks = new Map()
     this.queue = new Set()

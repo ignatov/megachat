@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { sep } from 'node:path'
+import { pipeline } from 'node:stream'
+import { createZstdDecompress } from 'node:zlib'
 import { SOURCE_TEXT_LIMIT } from './SessionText.mjs'
 
 /** The rank of a title: a title of the user wins over a title of the agent, and that one wins over a first prompt. */
@@ -102,16 +104,54 @@ export async function readSmall(fs, path, limit = 64 * 1024) {
   finally { await handle.close() }
 }
 
+/** True for a session file that zstd compressed, such as a cold Codex session `rollout-*.jsonl.zst`. */
+export const isCompressed = path => path.endsWith('.zst')
+
+/**
+ * The chunks of a file from [start] to [end], as `{ buffer, bytesRead }`. A compressed file gives the chunks of its
+ * text from the start, and [end] then counts the bytes of the text. The zstd stream of Node.js decompresses outside
+ * the event loop.
+ */
+async function* chunksOf(handle, { start, end, chunkBytes, compressed }) {
+  if (!compressed) {
+    const buffer = Buffer.alloc(chunkBytes)
+    for (let position = start; end === undefined || position < end;) {
+      const { bytesRead } = await handle.read(buffer, 0, end === undefined ? chunkBytes : Math.min(chunkBytes, end - position), position)
+      if (bytesRead === 0) return
+      yield { buffer, bytesRead }
+      position += bytesRead
+    }
+    return
+  }
+  const input = handle.createReadStream({ start: 0, autoClose: false, highWaterMark: chunkBytes })
+  const output = createZstdDecompress()
+  pipeline(input, output, () => {})
+  try {
+    let position = 0
+    for await (const chunk of output) {
+      const bytesRead = end === undefined ? chunk.length : Math.min(chunk.length, end - position)
+      yield { buffer: chunk, bytesRead }
+      position += bytesRead
+      if (end !== undefined && position >= end) return
+    }
+  }
+  finally {
+    input.destroy()
+    output.destroy()
+  }
+}
+
 /**
  * Reads the complete lines of a file from [start] to [end] in batches, as `{ lines, end }`. `end` is the byte offset
  * after the last line of the batch. A last line without a newline stays unread until a writer completes it. A line
  * above [maxLine] bytes is skipped, because the parse of such a line blocks the event loop: mostly an image or a large
- * tool output.
+ * tool output. A compressed file (`compressed`) is complete: the reader reads its text from the start, offsets count the
+ * bytes of the text, and a last line without a newline counts too.
  */
-export async function* readLines(fs, path, { start = 0, end, chunkBytes = 256 * 1024, batchBytes = 256 * 1024, batchLines = 64, maxLine = 4 * 1024 * 1024 } = {}) {
+export async function* readLines(fs, path, { start = 0, end, chunkBytes = 256 * 1024, batchBytes = 256 * 1024, batchLines = 64, maxLine = 4 * 1024 * 1024, compressed = false } = {}) {
   const handle = await fs.open(path, 'r')
   try {
-    const buffer = Buffer.alloc(chunkBytes)
+    if (compressed) start = 0
     let position = start
     let pending = []
     let pendingBytes = 0
@@ -120,9 +160,7 @@ export async function* readLines(fs, path, { start = 0, end, chunkBytes = 256 * 
     let bytes = 0
     let consumed = start
     let given = start
-    while (end === undefined || position < end) {
-      const { bytesRead } = await handle.read(buffer, 0, end === undefined ? chunkBytes : Math.min(chunkBytes, end - position), position)
-      if (bytesRead === 0) break
+    for await (const { buffer, bytesRead } of chunksOf(handle, { start, end, chunkBytes, compressed })) {
       let from = 0
       for (let newline = buffer.indexOf(10, 0); newline >= 0 && newline < bytesRead; newline = buffer.indexOf(10, from)) {
         const part = buffer.subarray(from, newline)
@@ -151,6 +189,12 @@ export async function* readLines(fs, path, { start = 0, end, chunkBytes = 256 * 
         }
       }
       position += bytesRead
+    }
+    // No writer adds to a compressed file, so its last line is complete also without a newline.
+    if (compressed && pendingBytes && (end === undefined || position < end)) {
+      const line = Buffer.concat(pending).toString('utf8')
+      if (line.trim()) lines.push(line)
+      consumed = position
     }
     if (consumed > given) yield { lines, end: consumed }
   }

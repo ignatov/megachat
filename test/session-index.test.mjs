@@ -3,8 +3,9 @@ import { existsSync } from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, utimes, writeFile, appendFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import test from 'node:test'
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { DatabaseSync } from 'node:sqlite'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
@@ -59,17 +60,22 @@ async function claudeSession(home, cwd, id, lines, mtime) {
   return path
 }
 
-async function codexSession(home, cwd, id, texts, mtime) {
-  const directory = join(home, '.codex', 'sessions', '2026', '11', '10')
+/**
+ * Writes a Codex session of [cwd] and gives its path. [archived] puts it in `archived_sessions`, and [compressed] writes
+ * the file `.jsonl.zst` that Codex makes of a cold session.
+ */
+async function codexSession(home, cwd, id, texts, mtime, { archived = false, compressed = false } = {}) {
+  const directory = archived ? join(home, '.codex', 'archived_sessions') : join(home, '.codex', 'sessions', '2026', '11', '10')
   await mkdir(directory, { recursive: true })
-  const path = join(directory, `rollout-2026-11-10T10-00-00-${id}.jsonl`)
+  const path = join(directory, `rollout-2026-11-10T10-00-00-${id}.jsonl${compressed ? '.zst' : ''}`)
   const lines = [{ timestamp: iso(NOW - DAY), type: 'session_meta', payload: { id, cwd, timestamp: iso(NOW - DAY), base_instructions: { text: 'x'.repeat(500) } } },
     { timestamp: iso(NOW - DAY), type: 'response_item', payload: { type: 'message', role: 'user', id: `${id}-env`, content: [{ type: 'input_text', text: '<environment_context>cwd</environment_context>' }] } },
     ...texts.map((text, index) => ({ timestamp: iso(NOW - DAY + index), type: 'response_item',
       payload: { type: 'message', role: index % 2 ? 'assistant' : 'user', id: `${id}-${index}`, content: [{ type: index % 2 ? 'output_text' : 'input_text', text }] } })),
     { timestamp: iso(NOW - DAY), type: 'response_item', payload: { type: 'function_call', id: `${id}-call`, call_id: 'c1', name: 'shell', arguments: '{"cmd":"ls juniper"}' } },
     { timestamp: iso(NOW - DAY), type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: 'juniper.txt' } }]
-  await writeFile(path, lines.map(line => `${JSON.stringify(line)}\n`).join(''))
+  const text = lines.map(line => `${JSON.stringify(line)}\n`).join('')
+  await writeFile(path, compressed ? zstdCompressSync(text) : text)
   if (mtime !== undefined) await utimes(path, new Date(mtime), new Date(mtime))
   return path
 }
@@ -236,6 +242,78 @@ test('a fork with copied entries keeps each entry one time', async t => {
   assert.equal((await hits(index, 'claude', project, 'fork')).length, 1)
 })
 
+test('the archived and the compressed Codex sessions enter the index with the age limit, the cut and the secret filter', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const live = await codexSession(home, project, 'live', ['juniper live question', 'answer'], NOW - DAY)
+  const cold = await codexSession(home, project, 'cold', ['juniper cold question', 'answer'], NOW - 10 * DAY, { compressed: true })
+  const archived = await codexSession(home, project, 'archived', ['juniper archived question', 'answer'], NOW - 20 * DAY, { archived: true })
+  // The last line of a compressed file has no newline here, and it counts.
+  const secret = `juniper packed ${'q'.repeat(3000)}`
+  const packed = await codexSession(home, project, 'packed', [secret, 'password=hunter2hunter2'], NOW - 30 * DAY, { archived: true, compressed: true })
+  await writeFile(packed, zstdCompressSync(zstdDecompressSync(await readFile(packed)).toString('utf8').trimEnd()))
+  await utimes(packed, new Date(NOW - 30 * DAY), new Date(NOW - 30 * DAY))
+  await codexSession(home, project, 'ancient', ['juniper ancient question', 'answer'], NOW - 200 * DAY, { archived: true, compressed: true })
+  // Codex reads the plain file first, so the compressed file of the same session stays out.
+  await codexSession(home, project, 'both', ['juniper both plain', 'answer'], NOW - DAY)
+  await codexSession(home, project, 'both', ['juniper both stale', 'answer'], NOW - DAY, { compressed: true })
+  const { index } = await service(t, directories, fakeState({ workspaces: [project] }))
+  await index.apply(ON)
+  await index.idle()
+  assert.deepEqual((await hits(index, 'codex', project, 'juniper')).map(hit => hit.session.sessionId).sort(), ['archived', 'both', 'cold', 'live', 'packed'])
+  assert.equal((await hits(index, 'codex', project, 'stale')).length, 0)
+  const session = await index.store.session('codex', project, 'packed')
+  const { entries } = await index.store.entries(session.id)
+  assert.ok(entries[0].text.length <= 2000 && entries[0].clipped)
+  assert.ok(entries.some(entry => entry.text === `password=${message('sessions.secret')}`), 'The filter reads the last line')
+  assert.equal((await hits(index, 'codex', project, 'hunter2')).length, 0)
+  // An archived or a compressed file holds no running session, so the live table of agents_running does not read it.
+  assert.ok(index.logs.records.has(live))
+  for (const path of [cold, archived, packed]) assert.ok(!index.logs.records.has(path), path)
+  assert.equal(index.logs.sources.filter(source => source.agent === 'codex').length, 1)
+})
+
+test('a Codex session keeps its entries when Codex compresses its file and when the user archives it', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const plain = await codexSession(home, project, 'moved', ['juniper moved question', 'answer'], NOW - DAY)
+  const { index, watch } = await service(t, directories, fakeState({ workspaces: [project] }))
+  await index.apply(ON)
+  await index.idle()
+  const count = (await index.store.counts()).entries
+  const sessions = join(home, '.codex', 'sessions')
+  const archive = join(home, '.codex', 'archived_sessions')
+  const name = basename(plain)
+  const day = join('2026', '11', '10')
+  // Codex writes the compressed file next to the plain file, then it deletes the plain file.
+  await writeFile(`${plain}.zst`, zstdCompressSync(await readFile(plain)))
+  watch.change(sessions, join(day, `${name}.zst`))
+  await index.idle()
+  assert.equal((await index.store.counts()).entries, count)
+  await rm(plain)
+  watch.change(sessions, join(day, name))
+  await index.idle()
+  assert.equal((await hits(index, 'codex', project, 'moved')).length, 1)
+  assert.equal((await index.store.counts()).entries, count, 'The compressed file has each entry')
+  // An archive moves the file. The watch can tell the new path before the old one.
+  await mkdir(archive, { recursive: true })
+  await rename(`${plain}.zst`, join(archive, `${name}.zst`))
+  watch.change(archive, `${name}.zst`)
+  await index.idle()
+  watch.change(sessions, join(day, `${name}.zst`))
+  await index.idle()
+  assert.equal((await hits(index, 'codex', project, 'moved')).length, 1)
+  assert.equal((await index.store.counts()).entries, count, 'The archived file has each entry')
+  // A restore of the session gives a plain file again in the tree of the sessions.
+  await writeFile(plain, zstdDecompressSync(await readFile(join(archive, `${name}.zst`))))
+  await rm(join(archive, `${name}.zst`))
+  watch.change(sessions, join(day, name))
+  watch.change(archive, `${name}.zst`)
+  await index.idle()
+  assert.equal((await index.store.counts()).entries, count)
+  assert.equal((await index.store.files()).length, 1)
+})
+
 test('only the sessions of the listed directories enter the index, and a new listed directory brings its old sessions', async t => {
   const directories = await fixture(t)
   const { home, project, other, sibling } = directories
@@ -305,7 +383,7 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   await tool('settings', { action: 'set', key: 'sessions.index', value: 'on' })
   await main.sessionIndex.idle()
   assert.ok(fs.calls.length > 0)
-  assert.equal(watch.watchers.length, 3)
+  assert.equal(watch.watchers.length, 4)
   assert.equal((await stat(path)).mode & 0o777, 0o600)
   const found = await tool('sessions', { cwd: project, agent: 'pi', query: 'pine' })
   assert.equal(found.pages[0].source, 'index')
@@ -432,11 +510,11 @@ test('a root of a provider that does not exist at the start gets its watch when 
   const { index } = await service(t, directories, state, { watch: strict })
   await index.apply(ON)
   await index.idle()
-  assert.deepEqual(watch.watchers.map(item => [item.root, Boolean(item.options.recursive)]), [[home, false], [home, false], [home, false]])
+  assert.deepEqual(watch.watchers.map(item => [item.root, Boolean(item.options.recursive)]), [[home, false], [home, false], [home, false], [home, false]])
   await claudeSession(home, project, 'later', [claudeLine('u1', 'user', 'juniper later', project)])
   watch.change(home, 'unrelated.txt')
   await index.idle()
-  assert.equal(watch.watchers.filter(item => !item.closed).length, 3, 'A change of another name tries no watch')
+  assert.equal(watch.watchers.filter(item => !item.closed).length, 4, 'A change of another name tries no watch')
   watch.change(home, '.claude')
   await index.idle()
   const root = join(home, '.claude', 'projects')
@@ -885,9 +963,11 @@ test('the child MCP tools accept pi and say that the index is off', async t => {
 })
 
 test('each source parses a line into the session data and one entry with its key, role, time and tool kind', () => {
-  const [claude, codex, pi] = sessionSources({ home: '/home/user', environment: {} })
-  assert.deepEqual([claude.root, codex.root, pi.root], ['/home/user/.claude/projects', '/home/user/.codex/sessions', '/home/user/.pi/agent/sessions'])
-  assert.equal(sessionSources({ home: '/h', environment: { PI_CODING_AGENT_SESSION_DIR: '/pi', CODEX_HOME: '/cx' } })[2].root, '/pi')
+  const [claude, codex, archive, pi] = sessionSources({ home: '/home/user', environment: {} })
+  assert.deepEqual([claude.root, codex.root, archive.root, pi.root], ['/home/user/.claude/projects', '/home/user/.codex/sessions',
+    '/home/user/.codex/archived_sessions', '/home/user/.pi/agent/sessions'])
+  assert.deepEqual(sessionSources({ home: '/h', environment: { PI_CODING_AGENT_SESSION_DIR: '/pi', CODEX_HOME: '/cx' } }).map(source => source.root).slice(1),
+    ['/cx/sessions', '/cx/archived_sessions', '/pi'])
   const parse = (source, value, path = '/p/s1.jsonl') => source.parse(value, JSON.stringify(value), path)
   const time = '2026-11-10T10:00:00.000Z'
   assert.deepEqual(parse(claude, { type: 'assistant', uuid: 'u', cwd: '/w', timestamp: time,
