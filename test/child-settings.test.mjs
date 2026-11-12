@@ -56,8 +56,8 @@ async function fixture(t, values, configuration, options = {}) {
       && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
   }
   const prompts = async () => (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-  const modes = async () => (await readFile(join(cwd, 'modes'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
-  return { service, cwd, launched, script, turn, prompts, modes, settingsPath }
+  const lines = name => async () => (await readFile(join(cwd, name), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
+  return { service, cwd, launched, script, turn, prompts, modes: lines('modes'), configs: lines('configs'), settingsPath }
 }
 
 test('a task without a named agent goes to the agent of children.agent, and a follow-up stays with its session', { timeout: 20000 }, async t => {
@@ -239,4 +239,50 @@ test('a failed read of the project settings goes to the log without its message,
   assert.equal(logged.length, 1)
   assert.match(logged[0], /name=SyntaxError/)
   assert.doesNotMatch(lines.join(''), /secret|ANTHROPIC_BASE_URL":/)
+})
+
+test('with children.claudeModel inherit a Claude child gets no model request, and a model of the setting goes before the mode and the prompt', { timeout: 30000 }, async t => {
+  // The fake registry has no anthropic model, so the test gives an explicit value of the setting to the run service.
+  // The settings test covers the validation.
+  let model
+  const { service, cwd, turn, configs, modes } = await fixture(t, { 'children.commit': 'deny', 'children.permissionMode': 'ask' },
+    { childLaunch: async () => ({ env: process.env, model: 'claude-sonnet-5-5' }) },
+    { settings: () => ({ ...service.settings.values(), ...(model ? { 'children.claudeModel': model } : {}) }) })
+  const options = async () => JSON.parse(await readFile(join(cwd, 'claude-options.json'), 'utf8'))
+  // A settings.json of an earlier build has no key children.claudeModel. It opens with the default inherit.
+  assert.deepEqual([service.settings.entry('children.claudeModel').value, service.settings.entry('children.claudeModel').source],
+    ['inherit', 'default'])
+  let state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  // With inherit, the options keep the model of the launch, and no request switches the model.
+  assert.equal((await options()).model, 'claude-sonnet-5-5')
+  assert.deepEqual(await configs(), [])
+  const [first] = Object.values(state.runs)
+  // A change applies to the next child. A follow-up loads its session and gets the model too.
+  model = 'anthropic/claude-haiku-5-5'
+  state = await turn('second', call('agents_send', { childSessionId: first.childSessionId, cwd, prompt: 'follow-up' }), fauxAssistantMessage('Sent.'))
+  assert.deepEqual(Object.values(state.runs).map(run => run.status), ['completed', 'completed'])
+  await turn('third', call('agents_spawn', { cwd, prompt: 'third task' }), fauxAssistantMessage('Started.'))
+  assert.equal((await options()).model, 'claude-haiku-5-5')
+  await turn('codex', call('agents_spawn', { cwd, agent: 'codex', prompt: 'codex task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(await configs(), ['model=claude-haiku-5-5 before the prompt', 'model=claude-haiku-5-5 before the prompt'])
+  assert.equal((await modes()).length, 3)
+})
+
+test('a model that the agent refuses fails the run before the prompt, with no continuation', { timeout: 20000 }, async t => {
+  const env = { ...process.env, FAKE_ACP_MODELS: 'claude-opus-5-5' }
+  let service
+  const fixed = await fixture(t, { 'children.permissionMode': 'ask' }, { childLaunch: async () => ({ env }) },
+    { settings: () => ({ ...service.settings.values(), 'children.claudeModel': 'anthropic/claude-haiku-5-5' }) })
+  service = fixed.service
+  const { cwd, turn, prompts, modes, configs } = fixed
+  t.mock.method(process.stderr, 'write', () => true)
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  const runs = Object.values(state.runs)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].error, message('error.childModel', 'anthropic/claude-haiku-5-5'))
+  assert.equal(runs[0].autoResume, false)
+  assert.deepEqual(await configs(), ['model=claude-haiku-5-5 before the prompt'])
+  // The model comes before the mode, so the refused model sends no mode.
+  assert.deepEqual(await modes(), [])
+  await assert.rejects(prompts(), { code: 'ENOENT' })
 })

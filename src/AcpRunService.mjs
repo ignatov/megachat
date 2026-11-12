@@ -12,7 +12,7 @@ import { VERSION } from './MegachatBuild.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
-import { CLAUDE_PERMISSION_MODES } from './Settings.mjs'
+import { CLAUDE_PERMISSION_MODES, modelRef } from './Settings.mjs'
 
 /**
  * Refuses a Claude child in [cwd] when its project settings set `ANTHROPIC_BASE_URL` in `env`. Claude Code applies the
@@ -90,12 +90,12 @@ export function steerBlock(items) {
  */
 export class AcpRunService {
   constructor(state, configuration, {
-    command, args, model, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, slot = new ChildSlot(),
+    command, args, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, slot = new ChildSlot(),
     settings = () => ({}), resolveSettings = resolveClaudeSettings,
   } = {}) {
     this.state = state
     this.configuration = configuration
-    this.launch = { command, args, model, deadlineMs }
+    this.launch = { command, args, deadlineMs }
     this.steerTimeoutMs = steerTimeoutMs
     this.historyServer = historyServer
     this.childRules = childRules
@@ -173,8 +173,10 @@ export class AcpRunService {
       const agent = run.agent ?? 'claude'
       if (agent === 'claude') await refuseProjectBaseUrl(run.cwd, this.resolveSettings)
       // The settings of the dispatch. A change during the run applies to the next child.
-      const choice = this.settings()['children.permissionMode'] ?? 'inherit'
+      const values = this.settings()
+      const choice = values['children.permissionMode'] ?? 'inherit'
       const mode = agent === 'claude' ? CLAUDE_PERMISSION_MODES[choice] : undefined
+      const model = agent === 'claude' && (values['children.claudeModel'] ?? 'inherit') !== 'inherit' ? values['children.claudeModel'] : undefined
       const configured = await this.configuration.childLaunch(agent)
       const launch = { ...configured, ...Object.fromEntries(Object.entries(this.launch).filter(([, value]) => value !== undefined)) }
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
@@ -234,7 +236,7 @@ export class AcpRunService {
         // the permissions, the hooks, the MCP servers and the skills. It loads no local settings and no file of the user.
         // The options hold no session settings: the SDK puts them in the command line of Claude, and the base URL of
         // Central holds the key. `refuseProjectBaseUrl` guards the base URL.
-        ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: launch.model, settingSources: ['project'],
+        ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: model ? modelRef(model).modelId : launch.model, settingSources: ['project'],
           promptSuggestions: false, maxTurns: 30 } } } } : {}),
       }
       let sessionId
@@ -247,16 +249,21 @@ export class AcpRunService {
         const session = await ctx.request(methods.agent.session.new, params)
         sessionId = session.sessionId
       }
+      // A refusal of the adapter is an error answer with a JSON-RPC code. The run then fails and sends no prompt. A closed
+      // connection is another error, and the run then gets a continuation as after a crash.
+      const refused = (code, value) => error => { throw Number.isInteger(error?.code) ? new MegachatError(code, value) : error }
+      if (model) {
+        // The adapter switches a session to `model` of the settings of Claude Code, also of `~/.claude/settings.json`,
+        // after the start with the model of the options, and a load continues with the model of the transcript. With
+        // `inherit`, that stays so. An explicit model of the setting goes in its own request. It comes before the mode,
+        // because a change of the model can change the mode `auto`.
+        await ctx.request(methods.agent.session.setConfigOption, { sessionId, configId: 'model', value: modelRef(model).modelId })
+          .catch(refused('childModel', model))
+      }
       // The adapter takes the start mode from `permissions.defaultMode` of each settings file of Claude Code, also of the
       // files of the user, whatever `settingSources` says, and a load continues in the mode of the transcript. It ignores
-      // `permissionMode` in the options. So a mode of the setting goes in its own request before the prompt. When the
-      // adapter refuses the mode, the run fails and sends no prompt. A refusal is an error answer of the adapter, with
-      // a JSON-RPC code. A closed connection is another error, and the run then gets a continuation as after a crash.
-      if (mode) {
-        await ctx.request(methods.agent.session.setMode, { sessionId, modeId: mode }).catch(error => {
-          throw Number.isInteger(error?.code) ? new MegachatError('childMode', choice) : error
-        })
-      }
+      // `permissionMode` in the options. So a mode of the setting goes in its own request before the prompt.
+      if (mode) await ctx.request(methods.agent.session.setMode, { sessionId, modeId: mode }).catch(refused('childMode', choice))
       await this.state.transition(run.id, ['launching'], { providerSessionId: sessionId, status: 'ready' })
       work.cancel = () => {
         ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => this.kill(child))

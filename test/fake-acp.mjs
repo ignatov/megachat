@@ -72,6 +72,14 @@ agent({ name: 'fake-claude' })
       throw RequestError.invalidParams(undefined, `Mode ${ctx.params.modeId} is not available in this session`)
     return {}
   })
+  // Each configuration request, so a test can read the model that the daemon sends. FAKE_ACP_MODELS lists the models
+  // of the session, as the adapter lists the models that the settings of Claude Code allow.
+  .onRequest(methods.agent.session.setConfigOption, async ctx => {
+    await appendFile(join(process.cwd(), 'configs'), `${ctx.params.configId}=${ctx.params.value} ${prompted ? 'after' : 'before'} the prompt\n`)
+    if (ctx.params.configId === 'model' && process.env.FAKE_ACP_MODELS && !process.env.FAKE_ACP_MODELS.split(',').includes(ctx.params.value))
+      throw RequestError.invalidParams(undefined, `Invalid value for config option model: ${ctx.params.value}`)
+    return { configOptions: [] }
+  })
   .onNotification(methods.agent.session.cancel, () => { cancelled = true; cancel?.() })
   .onRequest(methods.agent.session.prompt, async ctx => {
     prompting = true

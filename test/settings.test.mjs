@@ -117,7 +117,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
-    'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
+    'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
@@ -166,6 +166,8 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.agent': [['codex', 'codex'], [' claude ', 'claude']],
     'children.piModel': [[FAST, FAST], [` ${DEEP} `, DEEP]],
     'children.permissionMode': [['ask', 'ask'], [' allowEdits ', 'allowEdits'], ['auto', 'auto'], ['inherit', 'inherit']],
+    // The fake registry has no anthropic model. The test with the anthropic registry covers the models.
+    'children.claudeModel': [['inherit', 'inherit'], [' inherit ', 'inherit']],
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
@@ -197,6 +199,8 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.piModel': ['anthropic/claude-haiku-5-5', 'small', 'faux/', 7],
     // The setting takes its own names, not the mode names of Claude Code. It never offers the modes plan and bypassPermissions.
     'children.permissionMode': ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'Ask', true],
+    // Claude Code cannot use a model of another provider.
+    'children.claudeModel': [FAST, DEEP, 'anthropic/claude-sonnet-5-5', 'claude-sonnet-5-5', 'Inherit', '', 7],
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
@@ -244,6 +248,11 @@ test('the levels of a model limit the reasoning level, and get lists the models 
   await assert.rejects(opus.set('coordinator.thinking', 'off'), { code: 'settingValue' })
   assert.equal((await opus.set('coordinator.thinking', 'high')).value, 'high')
   assert.deepEqual(opus.describe().settings.find(entry => entry.key === 'coordinator.thinking').values, ['low', 'medium', 'high', 'xhigh', 'max'])
+  // The model of a Claude child must be an anthropic model of the registry.
+  assert.equal(opus.entry('children.claudeModel').value, 'inherit')
+  assert.equal((await opus.set('children.claudeModel', ' anthropic/claude-haiku-5-5 ')).value, 'anthropic/claude-haiku-5-5')
+  for (const value of ['anthropic/claude-unknown-9', 'claude-opus-5-5', 'anthropic/', 'openai/gpt-5'])
+    await assert.rejects(opus.set('children.claudeModel', value), { code: 'settingValue' }, value)
 })
 
 test('no file means a pending onboarding, and each answer goes at once to a private file that a new start reads', { timeout: 20000 }, async t => {

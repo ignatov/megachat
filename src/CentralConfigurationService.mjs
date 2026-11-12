@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import { logFailure, MegachatError, requireCondition } from './messages.mjs'
+import { DEFAULT_CLAUDE_MODEL, modelRef } from './Settings.mjs'
 
 const execute = promisify(execFile)
 
@@ -134,13 +135,15 @@ export class CentralConfigurationService {
    * Claude runs the ACP command that the IDE passed, else the agent that npm installed with Megachat. Codex runs through
    * Central, and `bin/codex` starts the Codex ACP command that the IDE passed. The module system finds the installed
    * agent: in a checkout it is in `node_modules` of the checkout, and in an installed copy it is next to the copy.
+   * The model of a Claude launch goes in the options of the session. The model of the settings of Claude Code wins over
+   * it, and an explicit value of `children.claudeModel` wins over both.
    */
   async childLaunch(agent) {
     if (agent === 'claude') {
       const claude = agentCommand(this.environment[CLAUDE_ACP_VARIABLE]) ?? { command: process.execPath, env: {},
         args: [fileURLToPath(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js'))] }
       return { command: claude.command, args: claude.args, ...(claude.cwd ? { cwd: claude.cwd } : {}),
-        model: 'claude-sonnet-5-5', env: { ...claude.env, ...await this.childEnvironment() } }
+        model: modelRef(DEFAULT_CLAUDE_MODEL).modelId, env: { ...claude.env, ...await this.childEnvironment() } }
     }
     requireCondition(agent === 'codex')
     const env = this.baseEnvironment()

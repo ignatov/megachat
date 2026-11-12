@@ -212,6 +212,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
 | `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
 | `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
+| `children.claudeModel` | `inherit` | | The model of a Claude child: `inherit` (the model of your settings of Claude Code, else `anthropic/claude-sonnet-5-5`), or an `anthropic` model of the registry. See below. |
 | `children.permissionMode` | `inherit` | | The permission mode of a Claude child: `inherit` (the settings of Claude Code decide), `ask`, `allowEdits` or `auto`. It does not change a Codex child or a pi child. See below. |
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
@@ -244,6 +245,12 @@ command. `allowEdits` is the mode `acceptEdits`, so the child changes files with
 command. `auto` lets the classifier of Claude Code decide. A question of the child goes to the main conversation.
 Megachat offers no `bypassPermissions` and no `plan`. When Claude Code refuses the mode, for example because your
 settings turn off the mode `auto`, the task fails before it starts.
+
+The adapter also switches a Claude child to the `model` of your settings of Claude Code. With `children.claudeModel`
+`inherit`, Megachat keeps that: the model of your settings decides, and without one the child uses
+`anthropic/claude-sonnet-5-5`. Another value names a model, and Megachat sends it after the start of each Claude child,
+so it wins over your settings. When your settings of Claude Code do not allow that model, for example with
+`availableModels`, the task fails before it starts.
 
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.

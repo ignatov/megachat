@@ -29,6 +29,11 @@ export const SUGGESTION_MODES = ['off', 'reply', 'ghost']
 export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'
 /** The model of a pi child: small and cheap, for a task that only reads files. */
 export const DEFAULT_PI_MODEL = 'anthropic/claude-haiku-5-5'
+/**
+ * The model that the options of a Claude child name. With `children.claudeModel` `inherit`, the model of the settings of
+ * Claude Code wins over it, and only without such a model does it apply. Claude Code gets the model ID without the provider.
+ */
+export const DEFAULT_CLAUDE_MODEL = 'anthropic/claude-sonnet-5-5'
 /** The cache retention of pi-ai for each value of `cache.ttl`. */
 export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
 export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
@@ -98,6 +103,15 @@ const modelOf = (models, value) => {
 }
 const knownModel = (value, { models }) => typeof value === 'string' && /^[^/\s]+\/\S+$/.test(value.trim()) && modelOf(models, value.trim())
   ? value.trim() : undefined
+/**
+ * `inherit`, or a model of the registry that Claude Code can use: a model of the provider `anthropic`, as the key of
+ * Central serves it.
+ */
+const claudeModel = (value, context) => {
+  if (typeof value === 'string' && value.trim() === 'inherit') return 'inherit'
+  const model = knownModel(value, context)
+  return model && modelRef(model).provider === 'anthropic' ? model : undefined
+}
 const modelValues = ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
   contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') })
 const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(model) : [...MODEL_THINKING_LEVELS]
@@ -171,6 +185,8 @@ export const SETTINGS = [
   // The list of the models is long, and `coordinator.model` gives it already.
   { key: 'children.piModel', default: DEFAULT_PI_MODEL, applies: 'nextChild', validate: knownModel,
     allowed: () => ({ other: message('settings.piModel.other') }) },
+  { key: 'children.claudeModel', default: 'inherit', applies: 'nextChild', validate: claudeModel,
+    allowed: () => ({ values: ['inherit'], other: message('settings.claudeModel.other') }) },
   { key: 'children.permissionMode', default: 'inherit', applies: 'nextChild', validate: choice(Object.keys(CLAUDE_PERMISSION_MODES)),
     allowed: () => ({ values: Object.keys(CLAUDE_PERMISSION_MODES) }) },
   { key: 'children.commit', default: 'allow', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
