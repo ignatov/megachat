@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { watch as watchFiles } from 'node:fs'
 import * as fileSystem from 'node:fs/promises'
-import { basename, join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
 import { logFailure } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { SessionCatalog } from './SessionCatalog.mjs'
@@ -52,6 +52,8 @@ export class SessionIndexService {
     this.on = false
     this.days = 0
     this.pending = { full: false, paths: new Set() }
+    /** The sources with a root that appeared after the start. The next pass gives their files to the live table. */
+    this.appeared = new Set()
     this.locks = new Map()
     this.watchers = []
     this.loop = undefined
@@ -150,8 +152,9 @@ export class SessionIndexService {
   }
 
   /**
-   * Watches the root of a source recursively. A root that does not exist yet gets no watch until the next start. Each
-   * session file goes to the live table, and a file of a listed directory goes to the import too.
+   * Watches the root of a source recursively. For a root that does not exist yet, it watches the nearest parent that
+   * exists, without recursion. Each session file goes to the live table, and a file of a listed directory goes to the
+   * import too. Gives true when the root has its watch.
    */
   #watchRoot(source) {
     let watcher
@@ -164,9 +167,41 @@ export class SessionIndexService {
         this.timer ??= setTimeout(() => { this.timer = undefined; this.#request({}) }, this.debounceMs)
       })
     }
-    catch { return }
+    catch { this.#watchParent(source); return false }
     watcher.on?.('error', () => {})
     this.watchers.push(watcher)
+    return true
+  }
+
+  /**
+   * Watches the nearest parent of a missing root that exists. When the next directory on the path to the root appears,
+   * this watch closes and the root gets its watch again. A root that then exists gets a pass, which imports its files
+   * and gives each session file of the root to the live table.
+   */
+  #watchParent(source) {
+    let directory = dirname(source.root)
+    for (;;) {
+      const next = relative(directory, source.root).split(sep)[0]
+      let watcher
+      try {
+        watcher = this.watch(directory, { persistent: false }, (_event, file) => {
+          if (!this.on || typeof file === 'string' && file !== next) return
+          watcher.close()
+          this.watchers = this.watchers.filter(item => item !== watcher)
+          if (!this.#watchRoot(source)) return
+          this.appeared.add(source)
+          this.#request({ full: true })
+        })
+      }
+      catch {
+        if (dirname(directory) === directory) return
+        directory = dirname(directory)
+        continue
+      }
+      watcher.on?.('error', () => {})
+      this.watchers.push(watcher)
+      return
+    }
   }
 
   #request({ full = false }) {
@@ -236,6 +271,10 @@ export class SessionIndexService {
    */
   async #pass() {
     const signal = this.lifetime.signal
+    for (const source of this.appeared) {
+      this.appeared.delete(source)
+      for (const { path } of await source.all(this.fs)) this.catalog?.changed(path)
+    }
     const directories = directoriesOf(await this.state.snapshot())
     this.directories = directories
     const candidates = await this.#candidates(directories)

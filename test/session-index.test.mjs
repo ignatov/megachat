@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, utimes, writeFile, appendFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -123,7 +124,7 @@ function blockingFs(blocked = new Set()) {
 function fakeWatch() {
   const watchers = []
   const watch = (root, options, listener) => {
-    const watcher = { root, listener, closed: false, close() { watcher.closed = true }, on() {} }
+    const watcher = { root, options, listener, closed: false, close() { watcher.closed = true }, on() {} }
     watchers.push(watcher)
     return watcher
   }
@@ -418,6 +419,40 @@ test('a pass that failed runs again on the next change of a session file', async
   assert.equal(state.summaries.length, 1)
 })
 
+test('a root of a provider that does not exist at the start gets its watch when it appears', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  // A watch fails for a path that does not exist, as fs.watch does.
+  const watch = fakeWatch()
+  const strict = (root, options, listener) => {
+    if (!existsSync(root)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    return watch.watch(root, options, listener)
+  }
+  const state = fakeState({ workspaces: [project] })
+  const { index } = await service(t, directories, state, { watch: strict })
+  await index.apply(ON)
+  await index.idle()
+  assert.deepEqual(watch.watchers.map(item => [item.root, Boolean(item.options.recursive)]), [[home, false], [home, false], [home, false]])
+  await claudeSession(home, project, 'later', [claudeLine('u1', 'user', 'juniper later', project)])
+  watch.change(home, 'unrelated.txt')
+  await index.idle()
+  assert.equal(watch.watchers.filter(item => !item.closed).length, 3, 'A change of another name tries no watch')
+  watch.change(home, '.claude')
+  await index.idle()
+  const root = join(home, '.claude', 'projects')
+  assert.ok(watch.watchers.some(item => item.root === root && !item.closed && item.options.recursive))
+  assert.equal((await hits(index, 'claude', project, 'juniper')).length, 1, 'A pass imports the files of the new root')
+  const logPath = join(root, project.replace(/[^a-zA-Z0-9]/g, '-'), 'later.jsonl')
+  assert.equal(index.logs.records.get(logPath)?.read, true, 'The live table reads the files of the new root')
+  const newest = await new SessionHistoryService(state, { claude: liveSource(project) }, index).readNewest({ agent: 'claude', sessionId: 'later' })
+  assert.equal(newest.entries.at(-1).text, 'juniper later')
+  assert.equal(newest.index.state, 'ready', 'A read from the end of a log gives the state of the index')
+  await appendFile(join(root, `${project.replace(/[^a-zA-Z0-9]/g, '-')}`, 'later.jsonl'), claudeLine('u2', 'user', 'juniper second', project))
+  watch.change(root, `${project.replace(/[^a-zA-Z0-9]/g, '-')}/later.jsonl`)
+  await index.idle()
+  assert.equal((await hits(index, 'claude', project, 'second')).length, 1)
+})
+
 test('a start of the index that failed runs again at the next apply of the settings', async t => {
   const directories = await fixture(t)
   const { home, project } = directories
@@ -653,6 +688,7 @@ test('the tools answer from the index, page through it, and fall back to the liv
 
   const first = await sessions.read({ cwd: project, agent: 'claude', sessionId: 'indexed' })
   assert.equal(first.source, 'index')
+  assert.equal(first.index.state, 'ready', 'A read gives the state of the index')
   assert.equal(first.entries.length, 20)
   assert.deepEqual([first.entries[0].id, first.entries[0].role, first.entries[0].timestamp], ['m0', 'user', iso(NOW - DAY)])
   const rest = await sessions.read({ cwd: project, agent: 'claude', sessionId: 'indexed', cursor: first.nextCursor })
@@ -662,7 +698,9 @@ test('the tools answer from the index, page through it, and fall back to the liv
   const pi = await sessions.read({ cwd: project, agent: 'pi', sessionId: 'pi-one', query: 'pine' })
   assert.deepEqual(pi.entries.map(entry => [entry.role, entry.tool ?? null]), [['user', null], ['assistant', 'call'], ['tool', 'result']])
   await assert.rejects(sessions.read({ cwd: project, agent: 'pi', sessionId: 'missing' }), { code: 'missing' })
-  assert.equal((await sessions.read({ cwd: project, agent: 'codex', sessionId: 'live' })).entries[0].text, 'juniper live')
+  const live = await sessions.read({ cwd: project, agent: 'codex', sessionId: 'live' })
+  assert.equal(live.entries[0].text, 'juniper live')
+  assert.equal(live.index.state, 'ready')
 
   await index.apply({ ...ON, 'sessions.index': 'off' })
   await assert.rejects(sessions.read({ cwd: project, agent: 'claude', sessionId: 'indexed', cursor: first.nextCursor }), { code: 'invalid' })

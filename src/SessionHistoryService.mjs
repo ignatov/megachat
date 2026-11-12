@@ -185,13 +185,15 @@ export class SessionHistoryService {
     if (position?.index !== undefined) requireCondition(this.indexed && indexPosition(position.index))
     if (this.indexed && (!position || position.index)) {
       const page = await this.indexRead(identity, position?.index?.after ?? 0)
-      if (page) return page
+      if (page) return { ...page, index: await this.index.status() }
     }
     requireCondition(agent !== INDEX_ONLY, 'missing')
     const page = await this.providers[agent].read(cwd, sessionId, position?.historyCursor ?? null)
     return { agent, session: page.session,
       entries: page.entries.filter(entry => entry.text.toLowerCase().includes(query.toLowerCase())).map(entry => this.excerpt(entry, query)),
-      nextCursor: page.nextCursor === null ? null : encode({ ...identity, historyCursor: page.nextCursor }) }
+      nextCursor: page.nextCursor === null ? null : encode({ ...identity, historyCursor: page.nextCursor }),
+      // As a search does, a read gives the state and the progress of the index while the consent is on.
+      ...(this.indexed ? { index: await this.index.status() } : {}) }
   }
 
   /**
@@ -227,6 +229,8 @@ export class SessionHistoryService {
         return { ...excerpt, truncated: excerpt.truncated || clipped }
       }),
       nextCursor: page.before === null ? null : encode({ ...identity, historyCursor: null, before: page.before, path: record.path, ino: record.ino }),
+      // As a search does, a read gives the state and the progress of the index while the consent is on.
+      ...(this.indexed ? { index: await this.index.status() } : {}),
     }
   }
 
