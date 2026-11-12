@@ -418,6 +418,38 @@ test('a pass that failed runs again on the next change of a session file', async
   assert.equal(state.summaries.length, 1)
 })
 
+test('a start of the index that failed runs again at the next apply of the settings', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  await claudeSession(home, project, 'one', [claudeLine('u1', 'user', 'juniper', project)])
+  const path = join(home, 'later', 'sessions.sqlite')
+  const { index, watch } = await service(t, { ...directories, path }, fakeState({ workspaces: [project] }))
+  await assert.rejects(index.apply(ON))
+  assert.deepEqual(await index.status(), { state: 'off' })
+  assert.deepEqual(watch.watchers, [])
+  await mkdir(join(home, 'later'))
+  await index.apply(ON)
+  await index.idle()
+  assert.equal((await index.status()).state, 'ready')
+  assert.equal((await hits(index, 'claude', project, 'juniper')).length, 1)
+})
+
+test('a start that failed in the live table closes the index file and the live table, and the next apply starts both', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  await claudeSession(home, project, 'one', [claudeLine('u1', 'user', 'juniper', project)])
+  let failures = 1
+  const timers = { setInterval: (...args) => { if (failures-- > 0) throw new Error('No timer'); return setInterval(...args) }, clearInterval }
+  const { index, watch } = await service(t, directories, fakeState({ workspaces: [project] }), { catalog: { timers } })
+  await assert.rejects(index.apply(ON), /No timer/)
+  assert.deepEqual(await index.status(), { state: 'off' })
+  assert.deepEqual([index.index, index.catalog, index.logs, watch.watchers.length], [undefined, undefined, undefined, 0])
+  await index.apply(ON)
+  await index.idle()
+  assert.equal((await index.status()).state, 'ready')
+  assert.ok(index.logs.records.has(join(home, '.claude', 'projects', project.replace(/[^a-zA-Z0-9]/g, '-'), 'one.jsonl')))
+})
+
 test('the age limit skips old sessions, and a session that gets too old leaves the index at the next start', async t => {
   const directories = await fixture(t)
   const { home, project } = directories

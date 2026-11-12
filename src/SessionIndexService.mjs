@@ -82,7 +82,8 @@ export class SessionIndexService {
       }
       const changed = days !== this.days
       this.days = days
-      if (!this.on) { this.on = true; await this.#start(); return }
+      // The consent counts as on only after a start that succeeded, so the next apply tries a failed start again.
+      if (!this.on) { await this.#start(); return }
       if (changed) this.#request({ full: true })
     })
     this.applying = next.catch(() => {})
@@ -91,16 +92,30 @@ export class SessionIndexService {
 
   async #start() {
     this.lifetime = new AbortController()
-    this.index = await SessionIndex.open(this.path)
-    const meta = await this.index.meta()
-    this.firstPassAt = meta.firstPassAt ?? undefined
-    this.announce = meta.announce === 1
-    this.subscription = await this.state.watch()
-    this.directories = directoriesOf(this.subscription.value)
-    this.directoryKey = JSON.stringify(this.directories.map(directory => directory.cwd).sort())
-    this.subscription.start(call => { if (call.kind === 'value') this.#observe(call.value) })
-    this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, ...this.catalogOptions })
-    await this.catalog.start()
+    try {
+      this.index = await SessionIndex.open(this.path)
+      const meta = await this.index.meta()
+      this.firstPassAt = meta.firstPassAt ?? undefined
+      this.announce = meta.announce === 1
+      this.subscription = await this.state.watch()
+      this.directories = directoriesOf(this.subscription.value)
+      this.directoryKey = JSON.stringify(this.directories.map(directory => directory.cwd).sort())
+      this.subscription.start(call => { if (call.kind === 'value') this.#observe(call.value) })
+      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, ...this.catalogOptions })
+      await this.catalog.start()
+    }
+    catch (error) {
+      // A failed start keeps nothing open, so the next apply starts again from the beginning.
+      this.lifetime.abort()
+      await this.subscription?.stop().catch(() => {})
+      this.subscription = undefined
+      await this.catalog?.close().catch(() => {})
+      this.catalog = undefined
+      await this.index?.close().catch(() => {})
+      this.index = undefined
+      throw error
+    }
+    this.on = true
     for (const source of this.sources) this.#watchRoot(source)
     this.#request({ full: true })
   }
