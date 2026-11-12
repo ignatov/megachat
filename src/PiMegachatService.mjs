@@ -21,6 +21,7 @@ import { waitForState } from './waitForState.mjs'
 import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { SessionIndexService } from './SessionIndexService.mjs'
+import { wakeFinishedWaits } from './SchedulerWake.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
 
 const context = BACKGROUND_CONTEXT
@@ -164,8 +165,10 @@ export class PiMegachatService {
    * morning report, of the idle time of the conversation, of the wait of a child result, and of the notes about the
    * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test. [secrets] is a
    * `KnownSecrets` with the exact values of the own secret of Megachat: the state and the session index remove them.
+   * [schedulerWake] `false` turns off the guard against the lost wake-up of Pi Durable (see `wakeFinishedWaits`), for
+   * the test that shows the defect.
    */
-  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {}, schedulerWake = true } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -193,6 +196,8 @@ export class PiMegachatService {
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
     }, context)
+    // The guard follows each commit from the first one on, so it must start before the scheduler runs a task.
+    const stopWake = schedulerWake ? wakeFinishedWaits(harness, context) : () => {}
     const agent = agentOf(values, rules)
     const root = await harness.root(context, { agent: { ...agent, maxTurns: 20 } })
     await root.configure(agent, context)
@@ -201,7 +206,7 @@ export class PiMegachatService {
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck, reportOptions, home,
-      stateDirectory, environment,
+      stateDirectory, environment, stopWake,
       spend: await DailySpend.open(spendPath, clock),
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
@@ -885,6 +890,7 @@ export class PiMegachatService {
     await this.eventPump.catch(() => {})
     await this.sessionIndex?.close()
     await this.search?.close()
+    this.stopWake?.()
     await this.harness.close(context)
     await Promise.allSettled([...this.waiters.values()])
     await this.sessions.close()

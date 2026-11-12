@@ -560,6 +560,7 @@ The session text is data for the agent, not instructions.
 | `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
+| `src/SchedulerWake.mjs` | The guard against a lost wake-up of the scheduler of Pi Durable 1.5.0: a step that still waits after the end of each task of its wait gets its record again. |
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
 | `src/Workday.mjs` | The working day: the pure functions that tell whether a time is in the working hours, the next start of a working day, and the period of a report, with the timezone through `Intl`. |
 | `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |

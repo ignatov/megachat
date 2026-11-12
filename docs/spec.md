@@ -39,6 +39,16 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Stop must cancel the main task and each child that it owns.
 - Stop must cancel only the turn that the view shows. A stop for a turn that ended must not cancel the next turn.
 - The main reply must finish without waiting for its children.
+- A turn must end when the tool calls of its step ended, also when the scheduler of Pi Durable 1.5.0 loses the wake-up
+  of the step that waits for them. After each commit that ends a task of Pi Durable with an owner task, the daemon must
+  examine the owner in a commit of its own, one macrotask later. When the owner still waits and each task of its wait
+  ended, that commit must write the record of the owner again, with no change, so the scheduler runs the step. The
+  guard must write nothing for a step that the scheduler already took, so no work starts twice and no tool result is
+  lost. The log of the daemon must have one line for each record that the guard wrote. Limits: the guard has no timer
+  and no time limit of its own. It covers only a task that waits for the tasks that it owns, as each wait of the main
+  agent and of a pi child does. It uses the internal `setTask` of the Pi Durable transaction, so a new version of Pi
+  Durable needs a check of the guard.
+  [@test] ../test/scheduler-wake.test.mjs
 - The main conversation must accept new messages while a child works or needs permission.
 - A new delegated task must wait in a durable queue when its directory is busy or when the limit of the children that run at the same time is full.
 - A later user message may cancel an earlier background task.
