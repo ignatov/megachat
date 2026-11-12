@@ -1,5 +1,5 @@
 import { lstat, realpath } from 'node:fs/promises'
-import { sep } from 'node:path'
+import { dirname, sep } from 'node:path'
 import { err, ExecutionError, FileError, ok } from '@earendil-works/pi-durable/env'
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { message } from './messages.mjs'
@@ -24,10 +24,32 @@ export class ProjectReadEnv {
   /** The real path of [path] when it is in the project, else a failed result. */
   async resolve(path, context) {
     const real = await this.inner.canonicalPath(path, context)
-    if (!real.ok) return real
     this.realRoot ??= await realpath(this.root)
-    return isInside(this.realRoot, real.value) ? real
-      : err(new FileError('permission_denied', message('error.pi.outside', path), path))
+    // The error of a path without a real path must not tell whether a path out of the project exists.
+    if (!real.ok) return await this.missingInside(path, context) ? real : this.outside(path)
+    return isInside(this.realRoot, real.value) ? real : this.outside(path)
+  }
+
+  outside(path) { return err(new FileError('permission_denied', message('error.pi.outside', path), path)) }
+
+  /**
+   * Tells whether [path], which has no real path, is a missing path in the project: the nearest directory above it that
+   * has a real path is in the project, and the next part of the path does not exist. A part that exists without a real
+   * path, such as a broken symbolic link, can point out of the project, so it does not count.
+   */
+  async missingInside(path, context) {
+    const absolute = await this.inner.absolutePath(path, context)
+    if (!absolute.ok) return false
+    for (let part = absolute.value, parent = dirname(part); parent !== part; part = parent, parent = dirname(parent)) {
+      let real
+      try { real = await realpath(parent) }
+      catch { continue }
+      if (!isInside(this.realRoot, real)) return false
+      try { await lstat(part) }
+      catch { return true }
+      return false
+    }
+    return false
   }
 
   async checked(path, context, read) {

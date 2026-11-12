@@ -424,6 +424,28 @@ test('a directory that another process swaps after the path check does not lead 
   assert.deepEqual(await repositoryRules(`${cwd}-old`), { name: 'AGENTS.md', text: RULES, truncated: false })
 })
 
+test('the errors of the read of a pi child do not tell whether a path out of the project exists', async t => {
+  const { directory, cwd } = await temporary(t)
+  await symlink(directory, join(cwd, 'parent-link'))
+  await symlink(join(directory, 'missing.txt'), join(cwd, 'broken-link'))
+  const api = { env: new ProjectReadEnv(cwd), agent: async () => ({}), models: { getModel: () => undefined } }
+  const failure = async path => {
+    try { await readTool.execute({ path }, api, context) }
+    catch (error) { return error.message }
+    assert.fail(path)
+  }
+  // An outside path that exists and one that does not give the same text, with no other path in it.
+  for (const [path, outside] of [['../secret.txt', join(directory, 'secret.txt')], ['../missing.txt', join(directory, 'missing.txt')],
+    [join(directory, 'secret.txt', 'x'), join(directory, 'secret.txt', 'x')], ['parent-link/missing.txt', join(cwd, 'parent-link', 'missing.txt')],
+    ['broken-link', join(cwd, 'broken-link')]])
+    assert.equal(await failure(path), message('error.pi.outside', outside), path)
+  // A missing path in the project keeps its error.
+  const missing = await failure('missing.txt')
+  assert.notEqual(missing, message('error.pi.outside', join(cwd, 'missing.txt')))
+  assert.match(missing, /ENOENT|no such file/)
+  assert.ok(!missing.includes(directory) || missing.includes(cwd))
+})
+
 const STEER = 'Also check the license.'
 /** Makes a turn of [kind] current, or no turn with `null`, as the tool calls of a turn see it. */
 const setCurrent = (service, kind) => service.state.change(state => { state.current = kind ? { id: kind, requestId: kind, cancelling: false, kind } : null })
