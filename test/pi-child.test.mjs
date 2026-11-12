@@ -481,6 +481,23 @@ test('the continuation for a message to a pi child starts before an older queued
   assert.ok(third.messages.includes('Second task.'))
 })
 
+test('a call for a give at the end of a give of the pi run service starts one more give', { timeout: 5000 }, async () => {
+  const pi = new PiRunService(null, null)
+  const work = { delivering: null, ended: false }
+  let gives = 0
+  pi.sendSteers = () => {
+    gives++
+    // The second reaction runs after the loop of the give looked at `again` for the last time. A steer that the state
+    // records then must get its own give.
+    if (gives === 1) Promise.resolve().then(() => {}).then(() => pi.deliverSteers('run', 'generation', work, null))
+    return Promise.resolve()
+  }
+  await pi.deliverSteers('run', 'generation', work, null)
+  await new Promise(resolve => setImmediate(resolve))
+  await work.delivering
+  assert.equal(gives, 2)
+})
+
 test('a pending message of a pi run arrives after a daemon restart', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd, directory } = project

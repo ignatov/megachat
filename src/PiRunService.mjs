@@ -262,20 +262,27 @@ export class PiRunService {
     finally { await watch.stop() }
   }
 
-  /** Gives the waiting messages of the user to the conversation, one at a time. A call during a give looks again at its end. */
+  /**
+   * Gives the waiting messages of the user to the conversation, one at a time. A call during a give looks again at its
+   * end. The last look at `again` and the clear of `delivering` are one synchronous step, so a later call starts a new
+   * give, as in `AcpRunService.deliverSteers`.
+   */
   deliverSteers(runId, generation, work, conversation) {
     if (work.delivering) {
       work.again = true
       return work.delivering
     }
     work.delivering = (async () => {
-      do {
-        work.again = false
-        await this.sendSteers(runId, generation, work, conversation)
-      } while (work.again && !work.ended)
+      try {
+        do {
+          work.again = false
+          await this.sendSteers(runId, generation, work, conversation)
+        } while (work.again && !work.ended)
+      }
+      finally { work.delivering = null }
     })().catch(error => {
       if (!this.closing) logFailure('log.child', error, runId)
-    }).finally(() => { work.delivering = null })
+    })
     return work.delivering
   }
 
