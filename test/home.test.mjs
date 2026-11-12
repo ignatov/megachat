@@ -160,15 +160,11 @@ function run(args, env) {
 test('a second product attaches to the shared daemon and a second daemon fails fast', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'megachat-shared-'))
   const home = join(root, 'home')
-  // One hook stops the daemon and then removes the directory. It runs also when the test fails or times out.
-  t.after(async () => {
-    try { await stopDaemon(home) }
-    finally { await rm(root, { force: true, recursive: true }) }
-  })
-  await sharedDaemon(home, { MEGACHAT_HOME: home, MEGACHAT_LEGACY_DIRS: '' })
+  await sharedDaemon(home, { MEGACHAT_HOME: home, MEGACHAT_LEGACY_DIRS: '' }, cleanStarts(t, { root, home }))
 })
 
-async function sharedDaemon(home, env) {
+/** [run] starts each process of the test, as `cleanStarts` gives it. */
+async function sharedDaemon(home, env, run) {
   const [first, second] = await Promise.all([run(['start'], env), run(['start'], env)])
   assert.equal(first.code, 0, first.output)
   assert.equal(second.code, 0, second.output)
@@ -194,6 +190,18 @@ function childProcesses(pid) {
     .map(line => line.trim().split(/\s+/).map(Number)).filter(([, parent]) => parent === pid).map(([child]) => child)
 }
 
+/** True when the process [pid] runs now as the daemon of [home] that `main.mjs` started. */
+function daemonOf(pid, home) {
+  try { return execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).includes(`${main} daemon ${home}`) }
+  catch { return false }
+}
+
+/** Waits until each process of [pids] ends, at most 5 seconds. Gives the processes that still run. */
+async function ended(pids) {
+  for (let attempt = 0; attempt < 250 && pids.some(alive); attempt++) await delay(20)
+  return pids.filter(alive)
+}
+
 /**
  * Stops each daemon that a test started, also after a timeout or a failed assertion. Call it from a `t.after` hook
  * before the removal of the directory of the test.
@@ -201,48 +209,66 @@ function childProcesses(pid) {
  * A `start` of [starts] that still runs can start a daemon after the removal of the directory. That daemon makes the
  * directory again and runs with no end. So the cleanup holds each such process with SIGSTOP, reads its child processes,
  * which are its daemons, and then kills it and them. A daemon has a start process as its parent until that process
- * ends. Then the cleanup stops the daemon of [home], and kills each process whose ID is in a file of [pidFiles].
+ * ends. Then the cleanup stops the daemon of [home]. At last, it kills each process whose ID is in a file of [pidFiles].
+ * Such a process can end long before the cleanup, and then another process can get its ID. So the cleanup kills it
+ * only while it still runs as the daemon of [home]. The cleanup selects each process by its ID only.
  */
-async function stopStarted({ starts, home, pidFiles }) {
-  const daemons = []
+async function stopStarted({ starts, home, pidFiles, stopOptions }) {
+  const kill = pid => { try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error } }
+  const children = []
   for (const start of starts) {
     if (start.child.exitCode !== null || start.child.signalCode !== null) continue
-    start.child.kill('SIGSTOP')
-    daemons.push(...childProcesses(start.child.pid))
+    if (process.platform !== 'win32') {
+      start.child.kill('SIGSTOP')
+      children.push(...childProcesses(start.child.pid))
+    }
     start.child.kill('SIGKILL')
     await start
   }
-  const kill = pid => { try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error } }
-  daemons.filter(alive).forEach(kill)
-  await stopDaemon(home)
-  for (const file of pidFiles) daemons.push(...(await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(Number))
-  daemons.filter(alive).forEach(kill)
-  for (let attempt = 0; attempt < 250 && daemons.some(alive); attempt++) await delay(20)
-  assert.deepEqual(daemons.filter(alive), [], 'A daemon of the test did not end')
+  children.filter(alive).forEach(kill)
+  const left = await ended(children)
+  await stopDaemon(home, stopOptions)
+  const listed = []
+  for (const file of pidFiles) listed.push(...(await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(Number))
+  const running = listed.filter(pid => daemonOf(pid, home))
+  running.forEach(kill)
+  left.push(...await ended(running))
+  assert.deepEqual(left, [], 'A daemon of the test did not end')
+}
+
+/**
+ * Gives a function that runs `main.mjs` as `run` does, and records each process. A `t.after` hook stops each daemon of
+ * the test with `stopStarted` and then removes [root]. The hook runs also when the test fails or times out.
+ * [stopOptions] go to `stopDaemon`.
+ */
+function cleanStarts(t, { root, home, pidFiles = [], stopOptions }) {
+  const starts = []
+  t.after(async () => {
+    try { await stopStarted({ starts, home, pidFiles, stopOptions }) }
+    finally { await rm(root, { force: true, recursive: true }) }
+  })
+  return (args, env) => {
+    const started = run(args, env)
+    starts.push(started)
+    return started
+  }
 }
 
 test('a start that loses the race stops its own daemon', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'megachat-race-'))
   const home = join(root, 'home')
   const slowPids = join(root, 'slow-daemons')
-  const starts = []
+  const start = cleanStarts(t, { root, home, pidFiles: [slowPids] })
   let slow
-  t.after(async () => {
-    try { await stopStarted({ starts, home, pidFiles: [slowPids] }) }
-    finally { await rm(root, { force: true, recursive: true }) }
-  })
   // The daemon of the first start blocks before it takes the lock. So the daemon of the second start wins.
-  const losing = run(['start', home], { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_TEST_SLOW_DAEMON: slowPids,
+  const losing = start(['start', home], { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_TEST_SLOW_DAEMON: slowPids,
     NODE_OPTIONS: `--import=${JSON.stringify(new URL('./slow-daemon.mjs', import.meta.url).href)}` })
-  starts.push(losing)
   for (let attempt = 0; attempt < 500 && !slow; attempt++) {
     slow = Number((await readFile(slowPids, 'utf8').catch(() => '')).trim()) || undefined
     if (!slow) await delay(20)
   }
   assert.ok(slow, 'The first start did not spawn its daemon')
-  const winningStart = run(['start', home], { MEGACHAT_LEGACY_DIRS: '' })
-  starts.push(winningStart)
-  const winning = await winningStart
+  const winning = await start(['start', home], { MEGACHAT_LEGACY_DIRS: '' })
   assert.equal(winning.code, 0, winning.output)
   const lost = await losing
   assert.equal(lost.code, 0, lost.output)
@@ -260,10 +286,7 @@ async function published(home) {
 test('a start without agent commands keeps the daemon, and a start with other commands replaces it', { timeout: 60000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'megachat-replace-'))
   const home = join(root, 'home')
-  t.after(async () => {
-    try { await stopDaemon(home) }
-    finally { await rm(root, { force: true, recursive: true }) }
-  })
+  const run = cleanStarts(t, { root, home })
   const start = async env => {
     const result = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_CLAUDE_ACP: undefined, MEGACHAT_CODEX_ACP: undefined, ...env })
     assert.equal(result.code, 0, result.output)
@@ -282,10 +305,7 @@ test('a start without agent commands keeps the daemon, and a start with other co
 test('a start that cannot open the state does not stop the running daemon', { timeout: 60000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'megachat-newer-'))
   const home = join(root, 'home')
-  t.after(async () => {
-    try { await stopDaemon(home) }
-    finally { await rm(root, { force: true, recursive: true }) }
-  })
+  const run = cleanStarts(t, { root, home })
   const env = { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_CODEX_ACP: undefined }
   const started = await run(['start', home], { ...env, MEGACHAT_CLAUDE_ACP: '/air/claude-a' })
   assert.equal(started.code, 0, started.output)
@@ -304,9 +324,10 @@ test('a start that cannot open the state does not stop the running daemon', { ti
 const slowDaemon = `--import=${JSON.stringify(new URL('./slow-daemon.mjs', import.meta.url).href)}`
 
 test('a start ends at once when its daemon ends with an error', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
-  const root = await temporary(t, 'megachat-failed-start-')
+  const root = await mkdtemp(join(tmpdir(), 'megachat-failed-start-'))
   const home = join(root, 'home')
   const pids = join(root, 'daemons')
+  const run = cleanStarts(t, { root, home, pidFiles: [pids] })
   const started = Date.now()
   const result = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '', NODE_OPTIONS: slowDaemon,
     MEGACHAT_TEST_SLOW_DAEMON: pids, MEGACHAT_TEST_SLOW_DAEMON_EXIT: '1' })
@@ -320,13 +341,11 @@ test('a start ends at once when its daemon ends with an error', { skip: process.
 test('a start waits for a daemon that needs more than 10 seconds for its start', { skip: process.platform === 'win32', timeout: 60000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'megachat-slow-start-'))
   const home = join(root, 'home')
-  t.after(async () => {
-    try { await stopDaemon(home, { startMs: 20000 }) }
-    finally { await rm(root, { force: true, recursive: true }) }
-  })
+  const pids = join(root, 'daemons')
+  const run = cleanStarts(t, { root, home, pidFiles: [pids], stopOptions: { startMs: 20000 } })
   const started = Date.now()
   const result = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '', NODE_OPTIONS: slowDaemon,
-    MEGACHAT_TEST_SLOW_DAEMON: join(root, 'daemons'), MEGACHAT_TEST_SLOW_DAEMON_MS: '11000' })
+    MEGACHAT_TEST_SLOW_DAEMON: pids, MEGACHAT_TEST_SLOW_DAEMON_MS: '11000' })
   assert.equal(result.code, 0, result.output)
   assert.ok(Date.now() - started >= 11000)
   assert.equal(alive((await published(home)).pid), true)
@@ -336,10 +355,7 @@ test('a start during the end of another daemon starts a daemon again, with a lim
   const root = await mkdtemp(join(tmpdir(), 'megachat-ending-'))
   const home = join(root, 'home')
   const pids = join(root, 'daemons')
-  t.after(async () => {
-    try { await stopDaemon(home) }
-    finally { await rm(root, { force: true, recursive: true }) }
-  })
+  const run = cleanStarts(t, { root, home, pidFiles: [pids] })
   // The test holds the lock without a connection file, as a daemon at its end does.
   const ending = await DaemonDirectory.acquire(home)
   const env = { MEGACHAT_LEGACY_DIRS: '', NODE_OPTIONS: slowDaemon, MEGACHAT_TEST_SLOW_DAEMON: pids, MEGACHAT_TEST_SLOW_DAEMON_MS: '0' }
