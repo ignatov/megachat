@@ -29,10 +29,16 @@ export async function ensurePrivateDirectory(directory) {
   if (process.platform !== 'win32') await chmod(directory, 0o700)
 }
 
+/**
+ * The longest wait of a read of the state for the lock of a writer, as the storage of Pi Durable waits. A daemon holds
+ * this lock for a moment while it makes or migrates `conversation.sqlite`, and a concurrent start reads the file then.
+ */
+const STATE_BUSY_TIMEOUT_MS = 5000
+
 /** Refuses state from a newer pi-durable schema before this build can migrate or write it. */
 export function assertSupportedState(path) {
   if (!existsSync(path)) return
-  const database = new DatabaseSync(path, { readOnly: true })
+  const database = new DatabaseSync(path, { readOnly: true, timeout: STATE_BUSY_TIMEOUT_MS })
   try {
     const table = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'durable_schema'").get()
     const version = table ? database.prepare('SELECT version FROM durable_schema WHERE singleton = 1').get()?.version ?? 0 : 0

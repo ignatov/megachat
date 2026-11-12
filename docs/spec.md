@@ -846,6 +846,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - An agent exit must mark its running task interrupted before it continues.
 - Before it opens the state, Megachat must read the Pi Durable schema version.
 - A version newer than this build supports must stop the start with "Megachat state was created by a newer Megachat build; update Megachat." It must not change the state.
+- The read of the version must wait up to 5 seconds for the write lock of another process, as the storage of Pi Durable waits. A daemon holds this lock for a moment while it makes or migrates the state, so a concurrent start must not fail on it.
 - A failed integrity check must leave the earlier state unchanged and start no daemon.
   [@test] ../test/home.test.mjs
 - A state of the last release must open with the new release, after a stop and after a kill of the daemon. The open

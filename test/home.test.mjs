@@ -117,6 +117,22 @@ test('the version guard refuses state from a newer schema', async t => {
   assert.equal(existsSync(join(home, 'conversation.sqlite')), false)
 })
 
+test('the version guard waits for the write lock of a daemon that makes the state, and does not fail on it', { timeout: 20000 }, async t => {
+  const root = await temporary(t, 'megachat-busy-')
+  const path = join(root, 'conversation.sqlite')
+  // Another process holds the lock that a daemon holds for a moment while it makes the state, and then ends it.
+  const writer = spawn(process.execPath, ['-e', `const { DatabaseSync } = require('node:sqlite')
+const database = new DatabaseSync(process.argv[1])
+database.exec('BEGIN EXCLUSIVE')
+console.log('locked')
+setTimeout(() => { database.exec('ROLLBACK'); database.close() }, 2000)`, path], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const [line] = await once(writer.stdout, 'data')
+  assert.equal(String(line).trim(), 'locked')
+  // Without the wait, the read fails at once with "database is locked".
+  assert.doesNotThrow(() => assertSupportedState(path))
+  await once(writer, 'exit')
+})
+
 test('user instructions follow the bundled rules as preferences', async t => {
   const root = await temporary(t, 'megachat-instructions-')
   const path = join(root, 'instructions.md')
