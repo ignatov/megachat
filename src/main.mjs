@@ -79,7 +79,8 @@ async function daemon() {
     assertSupportedState(join(directory, 'conversation.sqlite'))
     const configuration = new CentralConfigurationService()
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
-      undefined, undefined, { searchPath: join(directory, 'search.sqlite'), sessionsPath: join(directory, 'sessions.sqlite'), userInstructionsPath: join(directory, 'instructions.md'),
+      undefined, undefined, { searchPath: join(directory, 'search.sqlite'), sessionsPath: join(directory, 'sessions.sqlite'),
+        sessionIndex: { secrets: configuration.secrets }, userInstructionsPath: join(directory, 'instructions.md'),
         settingsPath: join(directory, 'settings.json'), workspacePath: join(directory, 'workspace'), stateDirectory: directory,
         spendPath: join(directory, 'spend.json'),
         accountCheck: () => checkAccounts(configuration, { cwd: join(directory, 'workspace') }) })
@@ -100,8 +101,9 @@ async function daemon() {
     // The daemon runs at most `children.parallel` children at a time, ACP and pi together, and one child in a checkout.
     // A pi run that was dispatched before a restart takes its place first, because Pi Durable continues it.
     const pool = new ChildPool({ limit: () => service.settings.entry('children.parallel').value })
-    // The transcripts of the child runs, which Air opens from the rows of the chat.
-    transcripts = new ChildTranscripts(join(directory, 'transcripts'))
+    // The transcripts of the child runs, which Air opens from the rows of the chat. The filter removes the exact key
+    // and base URL of each Central configuration that the daemon read.
+    transcripts = new ChildTranscripts(join(directory, 'transcripts'), { secrets: configuration.secrets })
     await transcripts.start(service.state)
     proceed()
     piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), pool, transcripts })

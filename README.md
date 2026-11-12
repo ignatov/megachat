@@ -356,7 +356,8 @@ Click the title of a running task in the Background Tasks tab. The IDE opens the
 file in `transcripts/` of the state directory. It holds the task, the messages of the child, each tool call by its name
 and title, each permission request, each message that you added with `agents_steer`, and the end of the run. Claude,
 Codex and pi children have one. The secret filter of the index of past sessions removes the text that looks like a
-key or a password, and a transcript stops at 1 MB with a note. The file goes away when the state drops its run. A
+key or a password. It also removes the exact key and base URL of Central that the daemon knows, which it keeps in its
+memory only. A transcript stops at 1 MB with a note. The file goes away when the state drops its run. A
 continuation of a task, for example after a restart or a message, is a new run with a new row and a file of its own.
 
 Air does not follow the file while it grows. The IDE shows the newer text after its next refresh of the files, for
@@ -472,8 +473,9 @@ Codex sessions then reads them live, as before.
 - **Secrets.** Before the index keeps a text, it replaces what looks like a secret with `[secret removed]`: API keys
   with well-known prefixes such as `sk-`, `ghp_` or `AKIA`, Bearer tokens, private keys, JWTs, assignments such as
   `password=...` (a value in quotes as a whole, so a passphrase with spaces goes too), the password of a URL such as
-  `https://user:password@host`, Basic authentication, and `curl -u user:password`. The name, the user and the host
-  stay. This is a best effort. A secret of another shape can stay in the index. A new build with a change of the
+  `https://user:password@host`, Basic authentication, `curl -u user:password`, and the path segment after `/wire/` of a
+  URL, where the base URL of Central holds its key. The name, the user and the host stay. The import also removes the
+  exact key and base URL of Central after the daemon read them. This is a best effort. A secret of another shape can stay in the index. A new build with a change of the
   filter makes the index again one time.
 - **The import.** The first pass runs in the background, the projects of an IDE first and the newest sessions first.
   The chat lists it as a background task with its progress. After the first pass, the main agent tells you the count of

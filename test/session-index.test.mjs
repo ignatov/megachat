@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import * as fsp from 'node:fs/promises'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, utimes, writeFile, appendFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { inspect } from 'node:util'
 import { basename, join } from 'node:path'
 import test from 'node:test'
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
@@ -15,9 +16,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { taskRows } from '../src/AcpBridge.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
-import { RANK_WINDOW } from '../src/SessionIndex.mjs'
+import { RANK_WINDOW, VERSION } from '../src/SessionIndex.mjs'
 import { sessionSources } from '../src/SessionSources.mjs'
-import { redactSecrets } from '../src/SessionText.mjs'
+import { KnownSecrets, redactSecrets } from '../src/SessionText.mjs'
 import { entryText } from '../src/MegachatSearchIndex.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
@@ -774,6 +775,105 @@ test('an index file of the version before the filter of URLs, Basic authenticati
   const session = await second.index.store.session('claude', project, 'one')
   const [entry] = (await second.index.store.entries(session.id)).entries
   assert.equal(entry.text, `juniper https://alice:${message('sessions.secret')}@git.example.com/repo`)
+})
+
+// Invented values in the shape of a gateway key: no known prefix, so only the pattern of `/wire/` or the exact value finds them.
+const WIRE_KEY = 'Qm7Tz2Lw9Xc4Vb8Nk1Rj6Hs3Fd5Gp0Ya2Ue'
+const OTHER_WIRE_KEY = 'Pk3Wq8Zr1Xn6Cm9Vt4Bs7Lh2Jd5Fg0Ka8Ty'
+
+test('the secret filter removes the path segment after /wire/ of a URL, whatever its shape, and keeps the rest of the URL', () => {
+  const marker = message('sessions.secret')
+  const replaced = [
+    [`ANTHROPIC_BASE_URL=http://127.0.0.1:41234/wire/${WIRE_KEY}`, `ANTHROPIC_BASE_URL=http://127.0.0.1:41234/wire/${marker}`],
+    [`https://gateway.example.test/api/wire/${WIRE_KEY}/anthropic/v1/messages`, `https://gateway.example.test/api/wire/${marker}/anthropic/v1/messages`],
+    [`POST http://127.0.0.1:9/wire/sk-test-${WIRE_KEY}/v1/messages?beta=true`, `POST http://127.0.0.1:9/wire/${marker}/v1/messages?beta=true`],
+    [`{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9/wire/${WIRE_KEY}/"}`, `{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9/wire/${marker}/"}`],
+    [`env: export X=1 BASE=HTTP://localhost:8080/Wire/${WIRE_KEY} done`, `env: export X=1 BASE=HTTP://localhost:8080/Wire/${marker} done`],
+  ]
+  for (const [text, expected] of replaced) {
+    assert.equal(redactSecrets(text), expected, text)
+    // A text that the filter changed already stays.
+    assert.equal(redactSecrets(expected), expected, expected)
+  }
+  const kept = [
+    'The wire/ directory holds the codec, see src/wire/Codec.kt and /wire/ of the docs.',
+    'https://github.com/google/wire',
+    'http://127.0.0.1:9/wire/',
+    'https://example.test/wireless/abc',
+  ]
+  for (const text of kept) assert.equal(redactSecrets(text), text)
+  for (const line of [`http://a/${'b/'.repeat(2000)}`, 'http://a/wire/'.repeat(500), `${'http://a'.repeat(1000)}/wire/x`, 'h://'.repeat(1000)]) {
+    const start = performance.now()
+    redactSecrets(line)
+    assert.ok(performance.now() - start < 50, line.slice(0, 10))
+  }
+})
+
+test('the secret filter removes each exact value that the daemon knows, also when no pattern matches, and shows the values nowhere', () => {
+  const marker = message('sessions.secret')
+  const known = new KnownSecrets()
+  const address = `http://127.0.0.1:41234/proxy/${WIRE_KEY}`
+  known.add(WIRE_KEY, address, 'short', undefined, 7)
+  // An address without `/wire/` and a key without a known prefix go only through the exact values.
+  assert.equal(redactSecrets(`base ${address} and key ${WIRE_KEY}.`, known), `base ${marker} and key ${marker}.`)
+  assert.equal(redactSecrets(`key ${WIRE_KEY}.`), `key ${WIRE_KEY}.`)
+  // A value shorter than 8 characters is ignored, so a common word stays.
+  assert.equal(redactSecrets('a short text', known), 'a short text')
+  // A key that changes keeps its earlier value, so an older output of a child loses it too.
+  known.add(OTHER_WIRE_KEY)
+  assert.equal(redactSecrets(`${WIRE_KEY} ${OTHER_WIRE_KEY}`, known), `${marker} ${marker}`)
+  // The values stay in a private field. An inspection, a JSON text and a text of the object hold none of them.
+  for (const shown of [inspect(known, { showHidden: true, depth: 10 }), JSON.stringify(known), String(known)]) assert.ok(!shown.includes(WIRE_KEY), shown)
+  // The newest 32 values stay.
+  const many = new KnownSecrets()
+  const values = Array.from({ length: 40 }, (_, index) => `value-${String(index).padStart(2, '0')}-xyz`)
+  many.add(...values)
+  assert.equal(redactSecrets(values[0], many), values[0])
+  assert.equal(redactSecrets(values[39], many), marker)
+  assert.equal(redactSecrets(values[8], many), marker)
+})
+
+test('the import of the session index removes the exact values that the daemon knows from each text and title', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const address = `http://127.0.0.1:41234/proxy/${WIRE_KEY}`
+  await claudeSession(home, project, 'printed', [
+    `${JSON.stringify({ type: 'custom-title', customTitle: `Check ${WIRE_KEY}`, sessionId: 'printed' })}\n`,
+    claudeLine('u1', 'user', `juniper the base is ${address} now`, project),
+  ])
+  const secrets = new KnownSecrets()
+  secrets.add(WIRE_KEY, address)
+  const { index } = await service(t, directories, fakeState({ workspaces: [project] }), { secrets })
+  await index.apply(ON)
+  await index.idle()
+  const session = await index.store.session('claude', project, 'printed')
+  const [entry] = (await index.store.entries(session.id)).entries
+  assert.equal(entry.text, `juniper the base is ${message('sessions.secret')} now`)
+  const [hit] = await hits(index, 'claude', project, 'juniper')
+  assert.equal(hit.session.title, `Check ${message('sessions.secret')}`)
+})
+
+test('an index file of the version before the filter of /wire/ is made again', async t => {
+  const directories = await fixture(t)
+  const { home, project, path } = directories
+  const url = `http://127.0.0.1:9/wire/${WIRE_KEY}/v1`
+  await claudeSession(home, project, 'one', [claudeLine('u1', 'user', `juniper ${url}`, project)])
+  const state = fakeState({ workspaces: [project] })
+  const first = await service(t, directories, state)
+  await first.index.apply(ON)
+  await first.index.idle()
+  await first.index.close()
+  // A file of the version 3 holds the text that the filter of that version kept.
+  assert.equal(VERSION, 4)
+  const raw = new DatabaseSync(path)
+  raw.exec(`UPDATE meta SET version = 3; UPDATE texts SET text = 'juniper ${url}'`)
+  raw.close()
+  const second = await service(t, directories, state)
+  await second.index.apply(ON)
+  await second.index.idle()
+  const session = await second.index.store.session('claude', project, 'one')
+  const [entry] = (await second.index.store.entries(session.id)).entries
+  assert.equal(entry.text, `juniper http://127.0.0.1:9/wire/${message('sessions.secret')}/v1`)
 })
 
 test('a title of a session goes through the secret filter and the limit of a title', async t => {

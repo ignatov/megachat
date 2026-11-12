@@ -28,8 +28,8 @@ export const transcriptPath = (directory, runId) => join(directory, `${runId}.tx
  * The transcripts of the child runs: one plain text file for each run in [directory], a private directory of the state
  * directory. Air opens the file from the row of the run in the chat. The file holds the task, the messages of the child,
  * its tool calls by name and title, its permission requests, each message of the user that a steer added to its turn,
- * and the end of the run. The secret filter of the session index applies to each text, and a file has at most [limit]
- * bytes.
+ * and the end of the run. The secret filter of the session index applies to each text, with the exact values of
+ * [secrets] (a `KnownSecrets`, such as the key of Central), and a file has at most [limit] bytes.
  *
  * A transcript never slows or fails a run: each write goes to a queue of its own, and the first failure of a file goes to
  * the log one time, without content. The run then goes on without its transcript. The file of a run goes away when the
@@ -37,9 +37,10 @@ export const transcriptPath = (directory, runId) => join(directory, `${runId}.tx
  * have.
  */
 export class ChildTranscripts {
-  constructor(directory, { limit = TRANSCRIPT_LIMIT } = {}) {
+  constructor(directory, { limit = TRANSCRIPT_LIMIT, secrets } = {}) {
     this.directory = directory
     this.limit = limit
+    this.secrets = secrets
     this.active = new Map()
     this.files = new Set()
     this.removing = Promise.resolve()
@@ -200,7 +201,7 @@ class ChildTranscript {
     // The count of the new lines at the end of the text so far, so a block starts after one empty line.
     const trailing = text.length - text.trimEnd().length
     this.newlines = trailing === text.length ? this.newlines + trailing : (text.match(/\n*$/)[0].length)
-    this.queue = this.queue.then(() => this.append(redactSecrets(text))).catch(error => {
+    this.queue = this.queue.then(() => this.append(redactSecrets(text, this.service.secrets))).catch(error => {
       // The first failure goes to the log without content, and the run goes on without its transcript.
       if (!this.stopped) logFailure('log.transcript', error, this.run.id)
       this.stopped = true

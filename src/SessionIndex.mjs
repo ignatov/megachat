@@ -5,9 +5,10 @@ import { indexedTitle } from './SessionText.mjs'
 /**
  * A change of the tables, of the parsers or of the secret filter needs a new version. A file of another version is
  * made again, so the filter of this build reads each kept text. The version 3 has the filter of the password of a
- * URL, of Basic authentication and of a passphrase in quotes.
+ * URL, of Basic authentication and of a passphrase in quotes. The version 4 has the filter of the key after `/wire/`
+ * in the path of a URL.
  */
-export const VERSION = 3
+export const VERSION = 4
 /**
  * The matches that bm25 ranks together: the matches with the highest entry IDs first, then older ones window by
  * window, as in the conversation index. bm25 costs up to about 50 µs for each match of a common term, so the window is
@@ -83,8 +84,10 @@ const sessionInfo = row => ({ sessionId: row.session_id, title: row.title ?? und
  * FTS5 index. Megachat can delete it at each time and import the files again.
  */
 export class SessionIndex {
-  static async open(path) {
+  /** [secrets] is an optional `KnownSecrets`: the filter of each title removes its exact values too. */
+  static async open(path, { secrets } = {}) {
     const index = new SessionIndex(path)
+    index.secrets = secrets
     await index.#open()
     return index
   }
@@ -176,7 +179,7 @@ export class SessionIndex {
       await tx.run('INSERT INTO scopes (agent, cwd) VALUES (?, ?) ON CONFLICT (agent, cwd) DO NOTHING', file.agent, session.cwd)
       session.scope = (await tx.get('SELECT id FROM scopes WHERE agent = ? AND cwd = ?', file.agent, session.cwd)).id
       // Each title of a session file goes through the secret filter and the limit here, before the store keeps it.
-      const named = meta.title === undefined ? undefined : indexedTitle(meta.title)
+      const named = meta.title === undefined ? undefined : indexedTitle(meta.title, this.secrets)
       let title = named !== undefined && meta.titleRank >= session.titleRank && named !== session.title
         ? { text: named, rank: meta.titleRank } : undefined
       const { id: fileId } = await tx.get(`INSERT INTO files (path, agent, session, cwd, size, mtime_ms, ino, offset, state, tail)

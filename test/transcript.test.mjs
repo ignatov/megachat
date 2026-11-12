@@ -17,6 +17,7 @@ import { terminalStates } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { PiRunService } from '../src/PiRunService.mjs'
+import { KnownSecrets } from '../src/SessionText.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 import { call, fakeModels, MAIN } from './parallel-models.mjs'
 
@@ -142,6 +143,33 @@ test('the transcript names each permission request of the child', { timeout: 150
   const text = untimed(await transcriptOf(opened, run.id))
   assert.ok(text.includes(message('transcript.permission', 'time', 'Write a file')))
   assert.ok(text.indexOf('Write a file') < text.indexOf(ENDED))
+})
+
+test('a transcript removes the exact values that the daemon knows and the key after /wire/ from each text', { timeout: 15000 }, async t => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-transcript-secrets-')))
+  t.after(() => rm(directory, { force: true, recursive: true, maxRetries: 5 }))
+  // Invented values: a key without a known prefix and a base URL that holds it.
+  const key = 'Qm7Tz2Lw9Xc4Vb8Nk1Rj6Hs3Fd5Gp0Ya2Ue'
+  const address = `http://127.0.0.1:41234/proxy/${key}`
+  const secrets = new KnownSecrets()
+  secrets.add(key, address)
+  const transcripts = new ChildTranscripts(join(directory, 'transcripts'), { secrets })
+  const run = { id: '00000000-0000-4000-8000-000000000001', agent: 'claude', cwd: directory, title: 'Print the environment', prompt: 'env' }
+  const transcript = transcripts.begin(run)
+  transcript.prompt(`Use ${address}.`)
+  // A message in parts: the key comes in two chunks.
+  transcript.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `ANTHROPIC_API_KEY=${key.slice(0, 10)}` } })
+  transcript.update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `${key.slice(10)}\nANTHROPIC_BASE_URL=${address}\n\n` } })
+  transcript.update({ sessionUpdate: 'tool_call', toolCallId: 't1', title: `curl http://127.0.0.1:9/wire/Pk3Wq8Zr1Xn6Cm9Vt4Bs7Lh2Jd5Fg0Ka8Ty/v1/models`, kind: 'execute' })
+  transcript.permission(`Run curl ${address}`)
+  transcript.steer(`The key is ${key}`)
+  await transcript.end('completed')
+  const text = await readFile(transcriptPath(join(directory, 'transcripts'), run.id), 'utf8')
+  const marker = message('sessions.secret')
+  for (const part of [`Use ${marker}.`, `ANTHROPIC_API_KEY=${marker}`, `ANTHROPIC_BASE_URL=${marker}`, `curl http://127.0.0.1:9/wire/${marker}/v1/models`,
+    `Run curl ${marker}`, `The key is ${marker}`]) assert.ok(text.includes(part), part)
+  for (const secret of [key, 'Pk3Wq8Zr1Xn6Cm9Vt4Bs7Lh2Jd5Fg0Ka8Ty', 'proxy/']) assert.ok(!text.includes(secret), secret)
+  await transcripts.close()
 })
 
 test('a transcript stops at its limit with a note', { timeout: 15000 }, async t => {

@@ -46,11 +46,12 @@ const nameOf = path => basename(path).replace(/\.jsonl(?:\.zst)?$/, '')
  * `agents_running`: it reads the metadata and the tail of each session file, also outside the listed directories. The
  * index of the message text stays limited to the listed directories. One watch of each provider root serves both.
  * [catalog] gives the options of the live table, such as its own file system, clock and timers for a test.
+ * [secrets] is an optional `KnownSecrets`: the filter of each text and title of the import removes its exact values too.
  */
 export class SessionIndexService {
   constructor({ path, state, home, environment, sources = sessionSources({ home, environment }), fs = fileSystem, watch = watchFiles,
-    clock = Date, debounceMs = 2000, catalog = {} } = {}) {
-    Object.assign(this, { path, state, sources, fs, watch, clock, debounceMs, catalogOptions: catalog })
+    clock = Date, debounceMs = 2000, catalog = {}, secrets } = {}) {
+    Object.assign(this, { path, state, sources, fs, watch, clock, debounceMs, catalogOptions: catalog, secrets })
     this.on = false
     this.days = 0
     this.pending = { full: false, paths: new Set() }
@@ -97,7 +98,7 @@ export class SessionIndexService {
   async #start() {
     this.lifetime = new AbortController()
     try {
-      this.index = await SessionIndex.open(this.path)
+      this.index = await SessionIndex.open(this.path, { secrets: this.secrets })
       const meta = await this.index.meta()
       this.firstPassAt = meta.firstPassAt ?? undefined
       this.announce = meta.announce === 1
@@ -506,7 +507,7 @@ export class SessionIndexService {
         meta.sessionId ??= found.sessionId
         meta.startedAt ??= found.startedAt
         if (found.title !== undefined && !(meta.titleRank > found.titleRank)) Object.assign(meta, { title: found.title, titleRank: found.titleRank })
-        if (parsed.entry) entries.push({ ...parsed.entry, ...indexedText(parsed.entry.text) })
+        if (parsed.entry) entries.push({ ...parsed.entry, ...indexedText(parsed.entry.text, this.secrets) })
       }
       meta.sessionId ??= nameOf(path)
       partial.tail = compressed ? null : await this.#tail(path, batch.end)

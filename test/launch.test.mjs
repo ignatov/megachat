@@ -5,11 +5,14 @@ import { existsSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
+import { inspect } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from '../src/CentralConfigurationService.mjs'
 import { daemonBuild, needsReplacement } from '../src/MegachatBuild.mjs'
+import { message } from '../src/messages.mjs'
+import { redactSecrets } from '../src/SessionText.mjs'
 import { sourceBuildId } from '../src/sourceBuildId.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
@@ -137,6 +140,34 @@ test('the environment of a Claude child has the Central configuration and no bac
   await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'https://example.com/wire/test' } }))
   t.mock.method(process.stderr, 'write', () => true)
   await assert.rejects(configuration.childEnvironment(), { code: 'central' })
+})
+
+test('the Central configuration gives the secret filter its exact key and base URL, also after a refresh, and keeps them in the memory only', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-secrets-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  // Invented values. The key file changes, as a refreshed configuration does.
+  const keys = ['Qm7Tz2Lw9Xc4Vb8Nk1Rj6Hs3Fd5Gp0Ya2Ue', 'Pk3Wq8Zr1Xn6Cm9Vt4Bs7Lh2Jd5Fg0Ka8Ty']
+  const keyFile = join(directory, 'key')
+  const settings = join(directory, 'settings.json')
+  const central = join(directory, 'central')
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: `cat '${keyFile}'`, env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:9/wire/${keys[0]}` } }))
+  await writeFile(keyFile, `${keys[0]}\n`)
+  await writeFile(central, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ anthropic: { apiKey: 'Zx5Cv8Bn2Mq7Wl4Rt9Ys1Hd6Gf3Kj0Pa', baseUrl: `http://127.0.0.1:9/wire/${keys[1]}/` } })}'\n`, { mode: 0o755 })
+  const configuration = new CentralConfigurationService({ settings, central, claude: '/air/claude', environment: { PATH: '/usr/bin', HOME: directory } })
+  const marker = message('sessions.secret')
+  const shown = text => redactSecrets(text, configuration.secrets)
+  // Before a read, the filter knows no value. A key without a known prefix then stays when no pattern finds it.
+  assert.equal(shown(`key ${keys[0]}`), `key ${keys[0]}`)
+  await configuration.childEnvironment()
+  assert.equal(shown(`key ${keys[0]}, base http://127.0.0.1:9/wire/${keys[0]}, path /wire/${keys[0]}/v1`), `key ${marker}, base ${marker}, path /wire/${marker}/v1`)
+  await writeFile(keyFile, `${keys[1]}\n`)
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: `cat '${keyFile}'`, env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:9/wire/${keys[1]}` } }))
+  await configuration.childEnvironment()
+  // The configuration of the main agent adds its values too.
+  await configuration.pi()
+  assert.equal(shown(`${keys[0]} ${keys[1]} Zx5Cv8Bn2Mq7Wl4Rt9Ys1Hd6Gf3Kj0Pa http://127.0.0.1:9/wire/${keys[1]}/`), `${marker} ${marker} ${marker} ${marker}`)
+  assert.ok(!inspect(configuration, { showHidden: true, depth: 10 }).includes(keys[1]))
+  assert.ok(!JSON.stringify(configuration).includes(keys[1]))
 })
 
 test('a child agent gets the file mask of the user, and the daemon keeps the mask 077 for its own files', { timeout: 60000 }, async t => {

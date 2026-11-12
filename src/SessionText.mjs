@@ -26,6 +26,11 @@ function basicCredentials(value) {
  * list is a best effort: a secret of another shape stays in the text.
  */
 const SECRET_PATTERNS = [
+  // The key of a gateway in the path of its base URL, as JetBrains Central gives it: `scheme://host/.../wire/<key>/...`.
+  // The segment after `/wire/` goes, whatever its shape, and the rest of the URL stays. The path has at most 32
+  // segments before `/wire/`, so a long URL takes a linear time. A text that the filter changed already stays.
+  { pattern: /\b([a-z][a-z0-9+.-]{0,31}:\/\/[^\s/?#"'`<>\\]+(?:\/[^\s/?#"'`<>\\]*){0,32}?\/wire\/)([^\s/?#"'`<>\\]+)/gi, keep: true,
+    accept: (secret, marker) => !marker.startsWith(secret) },
   { pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g },
   { pattern: /\bsk-[A-Za-z0-9_-]{16,}/g },
   { pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g },
@@ -59,12 +64,52 @@ const QUOTED_ASSIGNMENT = new RegExp(String.raw`\b(${SECRET_NAME})(?:(\\?")([^"\
  */
 const ASSIGNMENT = new RegExp(String.raw`\b(${SECRET_NAME}\\?["']?)((?=[^\s"'\`,;&\\]*[A-Za-z])[^\s"'\`,;&\\]{8,})`, 'gi')
 
-/** Replaces each text that looks like a secret with a marker. */
-export function redactSecrets(text) {
+/** The values that a [KnownSecrets] keeps. A key that changed stays for a time, because a child can still show it. */
+const KNOWN_SECRET_LIMIT = 32
+/** The shortest value that a [KnownSecrets] keeps, so a short value cannot remove a common word from a text. */
+const KNOWN_SECRET_MINIMUM = 8
+
+/**
+ * The exact secret values that this process knows at run time, such as the key of JetBrains Central and the base URL
+ * that holds it. The filter removes each occurrence of a value, also when no pattern matches its shape. The values stay
+ * in a private field of the memory only: no method gives them, and an inspection or a JSON text of the object shows
+ * none of them. The newest values stay, at most [KNOWN_SECRET_LIMIT], so a key that changes while the daemon runs keeps
+ * its earlier value too.
+ */
+export class KnownSecrets {
+  #values = []
+  #longestFirst = []
+
+  /** Adds [values]. A value that is not a text or that is shorter than [KNOWN_SECRET_MINIMUM] characters is ignored. */
+  add(...values) {
+    for (const value of values) {
+      if (typeof value !== 'string' || value.length < KNOWN_SECRET_MINIMUM) continue
+      const index = this.#values.indexOf(value)
+      if (index >= 0) this.#values.splice(index, 1)
+      this.#values.unshift(value)
+    }
+    this.#values.length = Math.min(this.#values.length, KNOWN_SECRET_LIMIT)
+    // A longer value goes first, so an address goes as a whole and not only its key.
+    this.#longestFirst = [...this.#values].sort((first, second) => second.length - first.length)
+  }
+
+  /** Replaces each occurrence of a known value in [text] with [marker]. */
+  redact(text, marker) {
+    let result = text
+    for (const value of this.#longestFirst) if (result.includes(value)) result = result.replaceAll(value, marker)
+    return result
+  }
+}
+
+/**
+ * Replaces each text that looks like a secret with a marker. [known] is an optional [KnownSecrets]: each of its exact
+ * values goes first.
+ */
+export function redactSecrets(text, known) {
   const marker = message('sessions.secret')
-  let result = text
+  let result = known ? known.redact(text, marker) : text
   for (const { pattern, keep, accept } of SECRET_PATTERNS) {
-    result = result.replace(pattern, (match, kept, secret) => !keep ? marker : accept && !accept(secret) ? match : `${kept}${marker}`)
+    result = result.replace(pattern, (match, kept, secret) => !keep ? marker : accept && !accept(secret, marker) ? match : `${kept}${marker}`)
   }
   result = result.replace(QUOTED_ASSIGNMENT, (match, name, double, doubleValue, single, singleValue) => {
     const value = doubleValue ?? singleValue
@@ -77,10 +122,10 @@ export function redactSecrets(text) {
 /**
  * The text of an entry as the session index keeps it: without secrets, and cut to about 2 KB. `clipped` tells that the
  * index lost a part of the text. The filter reads twice the limit first, so a secret across the limit is not cut in
- * two before the filter sees it.
+ * two before the filter sees it. [known] is an optional [KnownSecrets].
  */
-export function indexedText(text) {
-  const clean = redactSecrets(text.length > 2 * ENTRY_TEXT_LIMIT ? text.slice(0, 2 * ENTRY_TEXT_LIMIT) : text)
+export function indexedText(text, known) {
+  const clean = redactSecrets(text.length > 2 * ENTRY_TEXT_LIMIT ? text.slice(0, 2 * ENTRY_TEXT_LIMIT) : text, known)
   const clipped = text.length > ENTRY_TEXT_LIMIT || clean.length > ENTRY_TEXT_LIMIT
   let kept = clipped ? clean.slice(0, ENTRY_TEXT_LIMIT) : clean
   // The cut must not leave the first half of a character at the end.
@@ -90,10 +135,11 @@ export function indexedText(text) {
 
 /**
  * A title as the session index keeps it: without secrets, and cut to [TITLE_LIMIT] characters. A title of a session
- * file, such as a custom title of Claude Code or a thread name of Codex, can be long and can hold a secret.
+ * file, such as a custom title of Claude Code or a thread name of Codex, can be long and can hold a secret. [known] is an
+ * optional [KnownSecrets].
  */
-export function indexedTitle(title) {
-  let kept = redactSecrets(title.slice(0, 2 * ENTRY_TEXT_LIMIT)).slice(0, TITLE_LIMIT)
+export function indexedTitle(title, known) {
+  let kept = redactSecrets(title.slice(0, 2 * ENTRY_TEXT_LIMIT), known).slice(0, TITLE_LIMIT)
   if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1)
   return kept
 }

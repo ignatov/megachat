@@ -230,6 +230,13 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   a restart must continue its transcript with a note.
 - The secret filter of the session index must apply to each text. A part of a message must wait for the end of its
   paragraph, at most 16,000 characters, so the filter sees a secret that comes in two parts.
+- The filter of a transcript must also remove each exact value that the daemon knows at run time, also when no pattern
+  matches its shape: the key and the base URL of each Central configuration that the daemon read, for the main agent
+  and for a Claude child, and the path segment after `/wire/` of that URL. The address goes as a whole. The values must
+  stay in the memory of the daemon only: in no file, log, error message or command line. Each read of a configuration
+  must add its values, and the newest 32 values must stay, so a key that changes while the daemon runs keeps its
+  earlier value. The import of the session index must use the same values for each text and title. An import before
+  the first read of a configuration has only the patterns. A value shorter than 8 characters must be ignored.
 - A transcript must have at most 1,000,000 bytes. At the limit, it must end with a note and get no more text.
 - A failure to write a transcript must go to the log one time for the run, without content. The run must go on
   without its transcript. No transcript text may go to the log.
@@ -237,6 +244,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   state does not have.
 - Megachat must send no `async_task_progress`: with a file, Air shows the file and not the progress.
   [@test] ../test/transcript.test.mjs
+  [@test] ../test/launch.test.mjs
+  [@test] ../test/session-index.test.mjs
 - A completed main reply must arrive before the prompt response.
 - History replay must include the earlier user messages.
 - A prompt may hold the blocks `text` and `resource_link`, as ACP requires of each agent. The main agent must get each
@@ -563,6 +572,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - An entry with the entry ID of an entry in the index, such as a copy in a fork, must be in the index one time.
 - The index must keep at most about 2 KB of the text of each entry, tool calls and tool results included.
 - Before the index keeps a text, it must replace each text that looks like a secret with a marker: an API key with a well-known prefix, a Bearer token, a private key block, a JWT, and an assignment such as `password=` with a long value, also in a JSON text with escaped quotes such as the arguments of a tool call. This is a best effort: a secret of another shape can stay in the index.
+- The filter must replace the path segment after `/wire/` in a URL with a scheme, whatever its shape, because the base URL of JetBrains Central holds the key there: `http://127.0.0.1:<port>/wire/<key>`. The rest of the URL must stay. A path such as `src/wire/Codec.kt` without a scheme, and a URL that ends with `/wire/` or that has no segment `wire`, must stay. A text that the filter changed already must stay as it is.
 - The filter must also replace the password in the user information of a URL (`https://user:password@host`), the text after `Basic` that is the base64 text of `user:password`, the password of the option `-u` or `--user` of `curl`, and the whole value in quotes of such an assignment, so a passphrase with spaces goes as a whole. The text around a secret must stay: the name, the quotes, the user and the host. An email address, an `ssh` remote such as `git@github.com:owner/repo.git`, a URL with a user and no password, a word after `Basic` such as `Basic usage`, and a sentence with the word `password` and no value in quotes must stay as they are.
 - A change of the filter must change the index `VERSION`, so the next start makes the index again from the session files, and no text that an earlier filter kept stays.
 - Each title of a session, from the session file or from the first prompt, must go through the same filter, and the index must keep at most 200 characters of it.

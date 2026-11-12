@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import { logFailure, MegachatError, requireCondition } from './messages.mjs'
+import { KnownSecrets } from './SessionText.mjs'
 import { DEFAULT_CLAUDE_MODEL, modelRef } from './Settings.mjs'
 
 const execute = promisify(execFile)
@@ -54,6 +55,11 @@ export class CentralConfigurationService {
     this.claude = claude
     this.settings = settings
     this.environment = environment
+    /**
+     * The exact key and base URL of each Central configuration that this service read. The secret filter of the
+     * transcripts and of the session index removes them. They stay in the memory only.
+     */
+    this.secrets = new KnownSecrets()
   }
 
   async pi(signal) {
@@ -65,6 +71,7 @@ export class CentralConfigurationService {
       })
       const configuration = JSON.parse(result.stdout).anthropic
       this.validate(configuration)
+      this.remember(configuration)
       return configuration
     }
     catch (error) {
@@ -80,6 +87,19 @@ export class CentralConfigurationService {
     const url = new URL(configuration.baseUrl)
     requireCondition(url.protocol === 'http:' && url.hostname === '127.0.0.1' && !url.search && !url.hash, 'central')
     requireCondition(url.pathname.startsWith('/wire/'), 'central')
+  }
+
+  /**
+   * Gives the secret filter the exact values of a valid configuration: the key, the base URL, and the path segment
+   * after `/wire/`, which holds the key of Central. A configuration can change while the daemon runs, so each read adds
+   * its values, and the earlier values stay.
+   */
+  remember({ baseUrl, apiKey }) {
+    const segment = new URL(baseUrl).pathname.slice('/wire/'.length).split('/')[0]
+    let decoded
+    try { decoded = decodeURIComponent(segment) }
+    catch { decoded = segment }
+    this.secrets.add(apiKey, apiKey.trim(), baseUrl, baseUrl.replace(/\/+$/, ''), segment, decoded)
   }
 
   models() {
@@ -106,6 +126,7 @@ export class CentralConfigurationService {
       const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: 10000, maxBuffer: 64000 })
       const apiKey = result.stdout.trim()
       this.validate({ baseUrl, apiKey })
+      this.remember({ baseUrl, apiKey })
       return {
         ...this.baseEnvironment(), ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey, CLAUDE_CODE_EXECUTABLE: this.claude,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
