@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -151,7 +151,10 @@ function run(args, env) {
   let output = ''
   child.stdout.on('data', chunk => { output += chunk })
   child.stderr.on('data', chunk => { output += chunk })
-  return once(child, 'exit').then(([code]) => ({ code, output }))
+  const result = once(child, 'exit').then(([code]) => ({ code, output }))
+  // The cleanup of a test stops the process when the test ends before the process.
+  result.child = child
+  return result
 }
 
 test('a second product attaches to the shared daemon and a second daemon fails fast', { timeout: 30000 }, async t => {
@@ -185,27 +188,61 @@ function alive(pid) {
   catch (error) { return error.code === 'EPERM' }
 }
 
+/** The process IDs of the child processes of the process [pid]. */
+function childProcesses(pid) {
+  return execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n')
+    .map(line => line.trim().split(/\s+/).map(Number)).filter(([, parent]) => parent === pid).map(([child]) => child)
+}
+
+/**
+ * Stops each daemon that a test started, also after a timeout or a failed assertion. Call it from a `t.after` hook
+ * before the removal of the directory of the test.
+ *
+ * A `start` of [starts] that still runs can start a daemon after the removal of the directory. That daemon makes the
+ * directory again and runs with no end. So the cleanup holds each such process with SIGSTOP, reads its child processes,
+ * which are its daemons, and then kills it and them. A daemon has a start process as its parent until that process
+ * ends. Then the cleanup stops the daemon of [home], and kills each process whose ID is in a file of [pidFiles].
+ */
+async function stopStarted({ starts, home, pidFiles }) {
+  const daemons = []
+  for (const start of starts) {
+    if (start.child.exitCode !== null || start.child.signalCode !== null) continue
+    start.child.kill('SIGSTOP')
+    daemons.push(...childProcesses(start.child.pid))
+    start.child.kill('SIGKILL')
+    await start
+  }
+  const kill = pid => { try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error } }
+  daemons.filter(alive).forEach(kill)
+  await stopDaemon(home)
+  for (const file of pidFiles) daemons.push(...(await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(Number))
+  daemons.filter(alive).forEach(kill)
+  for (let attempt = 0; attempt < 250 && daemons.some(alive); attempt++) await delay(20)
+  assert.deepEqual(daemons.filter(alive), [], 'A daemon of the test did not end')
+}
+
 test('a start that loses the race stops its own daemon', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'megachat-race-'))
   const home = join(root, 'home')
   const slowPids = join(root, 'slow-daemons')
+  const starts = []
   let slow
   t.after(async () => {
-    try {
-      if (slow && alive(slow)) process.kill(slow, 'SIGKILL')
-      await stopDaemon(home)
-    }
+    try { await stopStarted({ starts, home, pidFiles: [slowPids] }) }
     finally { await rm(root, { force: true, recursive: true }) }
   })
   // The daemon of the first start blocks before it takes the lock. So the daemon of the second start wins.
   const losing = run(['start', home], { MEGACHAT_LEGACY_DIRS: '', MEGACHAT_TEST_SLOW_DAEMON: slowPids,
     NODE_OPTIONS: `--import=${JSON.stringify(new URL('./slow-daemon.mjs', import.meta.url).href)}` })
+  starts.push(losing)
   for (let attempt = 0; attempt < 500 && !slow; attempt++) {
     slow = Number((await readFile(slowPids, 'utf8').catch(() => '')).trim()) || undefined
     if (!slow) await delay(20)
   }
   assert.ok(slow, 'The first start did not spawn its daemon')
-  const winning = await run(['start', home], { MEGACHAT_LEGACY_DIRS: '' })
+  const winningStart = run(['start', home], { MEGACHAT_LEGACY_DIRS: '' })
+  starts.push(winningStart)
+  const winning = await winningStart
   assert.equal(winning.code, 0, winning.output)
   const lost = await losing
   assert.equal(lost.code, 0, lost.output)
