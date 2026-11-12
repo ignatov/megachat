@@ -4,6 +4,7 @@ import { defineDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
 import { rmdir } from 'node:fs/promises'
 import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
+import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
 export const maxAutomaticResumes = 2
@@ -84,6 +85,16 @@ function recordServiceSession(state, run) {
   state.serviceSessions[serviceSessionKey(run)] = {
     agent: run.agent ?? 'claude', cwd: run.cwd, providerSessionId: run.providerSessionId, recordedAt: Date.now(),
   }
+}
+
+/**
+ * Removes the prompt suggestion of the `ghost` mode. The proposal of the gate goes with it, so the next turn can have a
+ * suggestion again. The removal changes no counter.
+ */
+function clearPromptSuggestion(initiative) {
+  if (!initiative.promptSuggestion) return
+  initiative.promptSuggestion = null
+  initiative.suggestion = null
 }
 
 function digest(value) {
@@ -209,9 +220,13 @@ export function findSteer(state, steerId) {
 
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
-  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots, suggestions = false } = {}) {
+  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots, suggestions = 'off',
+    promptSuggestionLifetimeMs = PROMPT_SUGGESTION_LIFETIME_MS } = {}) {
+    // The mode of the suggestions: `off`, `reply` or `ghost`. The service changes it when the setting changes.
+    this.suggestionMode = suggestions
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
-    this.eventSuffix = suggestions ? '.suggest' : ''
+    this.eventSuffix = suggestions === 'off' ? '' : '.suggest'
+    this.promptSuggestionLifetimeMs = promptSuggestionLifetimeMs
     this.workspace = workspace
     this.repositoryOptions = { stateDirectory, home, roots: projectRoots }
     this.home = home
@@ -225,6 +240,8 @@ export class MegachatState {
     await this.change(state => {
       requireCondition(state.schema === 1, 'schema')
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {} }
+      // The prompt suggestion of the `ghost` mode. A state of an earlier build has none.
+      state.initiative.promptSuggestion ??= null
       // Megachat up to v0.3.0 watched the files of each project. `pending` kept each change that waited for its event
       // turn. This build has no such turn, so it drops these changes, and they start no turn. The two fields stay as
       // empty objects, because a daemon of v0.3.0 can open this state again, and it reads them.
@@ -333,9 +350,16 @@ export class MegachatState {
     })
   }
 
-  async submit(requestId, text) {
+  /**
+   * Admits a prompt of the user. A live prompt suggestion ends with the start of the turn. [acceptedPromptSuggestionId]
+   * names the suggestion that the user accepted in the client: the same ID records `accepted` without a model call.
+   * Each other prompt records `ignored`, which changes no counter.
+   */
+  async submit(requestId, text, acceptedPromptSuggestionId) {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
     requireCondition(typeof text === 'string' && text.length > 0 && text.length <= 100000)
+    requireCondition(acceptedPromptSuggestionId === undefined
+      || typeof acceptedPromptSuggestionId === 'string' && acceptedPromptSuggestionId.length <= 200)
     const hash = digest(text)
     return this.change(async (state, tx) => {
       const old = Object.hasOwn(state.inputs, requestId) ? state.inputs[requestId] : null
@@ -345,6 +369,7 @@ export class MegachatState {
       }
       requireCondition(state.current === null, 'busy')
       retain(state)
+      this.endPromptSuggestion(state, requestId, acceptedPromptSuggestionId)
       const mainRunId = randomUUID()
       // The root keeps each request ID forever. A dropped input must start a new turn, so each admission has its own ID.
       const submissionId = await this.root.submit(tx, { type: 'input', content: text, requestId: `input:${mainRunId}` })
@@ -355,12 +380,53 @@ export class MegachatState {
     })
   }
 
+  /**
+   * Records the decision on a prompt suggestion at the start of the turn of a user prompt, in the transaction of the
+   * admission. A suggestion after its `expiresAt` goes without a record.
+   */
+  endPromptSuggestion(state, requestId, acceptedId) {
+    const initiative = state.initiative
+    const live = initiative.promptSuggestion
+    if (!live) return
+    if (Date.parse(live.expiresAt) > Date.now()) {
+      const decision = acceptedId === live.id ? 'accepted' : 'ignored'
+      if (decision === 'accepted') initiative.declines = 0
+      initiative.decisions[`input:${requestId}`] = { digest: digest({ decision, suggestionId: live.id }),
+        result: { decision, suggestionId: live.id, declines: initiative.declines, silenced: initiative.silenced }, decidedAt: Date.now() }
+    }
+    clearPromptSuggestion(initiative)
+  }
+
+  /**
+   * Records a proposal of the main agent. The gate allows it when the user did not ask for silence, after fewer than
+   * three declines, and while no other proposal is live.
+   * In the `ghost` mode the text becomes the prompt suggestion of the current turn, on one line. The gate then reads
+   * only the prompt suggestion, so a proposal of the `reply` mode that waits for its feedback does not stop it. A turn
+   * that admitted a child task is a delegation acknowledgment, and it gets no suggestion.
+   */
   async proposal(requestId, text) {
     requireCondition(typeof text === 'string' && text.trim().length > 0 && text.length <= 4000)
-    return this.initiativeDecision(requestId, { text }, initiative => {
-      const allowed = !initiative.silenced && initiative.declines < 3 && initiative.suggestion === null
-      if (allowed) initiative.suggestion = text
-      return { allowed, suggestion: allowed ? text : null, declines: initiative.declines, silenced: initiative.silenced }
+    const ghost = this.suggestionMode === 'ghost'
+    const shown = ghost ? text.replace(/\s+/g, ' ').trim() : text
+    return this.initiativeDecision(requestId, { text }, (initiative, state) => {
+      const free = ghost ? initiative.promptSuggestion === null && state.current !== null
+        && !Object.values(state.runs).some(run => run.mainRunId === state.current.id) : initiative.suggestion === null
+      const allowed = !initiative.silenced && initiative.declines < 3 && free
+      if (allowed) initiative.suggestion = shown
+      if (allowed && ghost) {
+        initiative.promptSuggestion = { id: `suggestion-${randomUUID()}`, turnId: state.current.requestId, text: shown,
+          expiresAt: new Date(Date.now() + this.promptSuggestionLifetimeMs).toISOString() }
+      }
+      return { allowed, suggestion: allowed ? shown : null, declines: initiative.declines, silenced: initiative.silenced }
+    })
+  }
+
+  /** Withdraws the prompt suggestion [id] at its `expiresAt` or at a cancel of the user. Tells whether it was live. */
+  async withdrawPromptSuggestion(id) {
+    return this.change(state => {
+      if (!id || state.initiative.promptSuggestion?.id !== id) return false
+      clearPromptSuggestion(state.initiative)
+      return true
     })
   }
 
@@ -374,6 +440,7 @@ export class MegachatState {
       }
       if (decision === 'resume') initiative.silenced = false
       initiative.suggestion = null
+      initiative.promptSuggestion = null
       return { allowed: !initiative.silenced && initiative.declines < 3, declines: initiative.declines, silenced: initiative.silenced }
     })
   }
@@ -388,7 +455,7 @@ export class MegachatState {
         return plain(previous.result)
       }
       retain(state)
-      const result = apply(initiative)
+      const result = apply(initiative, state)
       initiative.decisions[requestId] = { digest: hash, result, decidedAt: Date.now() }
       return plain(result)
     })
@@ -415,6 +482,7 @@ export class MegachatState {
       const summary = state.sessionIndex?.summary
       if (state.current || !summary) return null
       retain(state)
+      clearPromptSuggestion(state.initiative)
       const requestId = `sessions:${digest(summary)}`
       const mainRunId = randomUUID()
       const submissionId = await this.root.submit(tx, {
@@ -447,6 +515,7 @@ export class MegachatState {
         && (run.reportAfter ?? 0) <= now)
       if (runs.length === 0) return null
       retain(state)
+      clearPromptSuggestion(state.initiative)
       // A continuation reports the task of the user, not its own prompt: the report of a steered task is the only one.
       const results = runs.map(run => ({ runId: run.id, cwd: run.cwd, prompt: run.task ?? run.prompt,
         ...(run.title === undefined ? {} : { title: run.title }), status: run.status, output: run.output, truncated: run.truncated, error: run.error ?? null,
@@ -478,6 +547,11 @@ export class MegachatState {
       const input = state.inputs[state.current.requestId]
       if (state.current.cancelling) status = 'cancelled'
       input.status = status
+      // Only a completed turn keeps its prompt suggestion. A delegation acknowledgment gets none, also when the main
+      // agent admitted the child after the proposal.
+      const suggestion = state.initiative.promptSuggestion
+      if (suggestion?.turnId === state.current.requestId && (status !== 'completed'
+        || Object.values(state.runs).some(run => run.mainRunId === mainRunId))) clearPromptSuggestion(state.initiative)
       if (status === 'interrupted') {
         // The state keeps only the reason code. The detail of the reason can hold the text of a provider.
         if (typeof reason === 'string') input.reason = reason.slice(0, 64)

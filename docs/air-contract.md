@@ -26,6 +26,8 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | `workspaces` | Air | Megachat asks for the open projects with `_workspaces/list`. |
 | `persistentSession` | Megachat, always | Air sends no `session/cancel` and no `session/close` when it releases the runtime. Air loads the session again on each attach. Air sends `clientMessageId` with each prompt. |
 | `asyncTasks` | Megachat, when Air sent it | Air lists the background tasks of the session. |
+| `promptSuggestion` | Air | Air can show a prompt suggestion in the empty prompt input. Megachat sends the suggestions of the mode `ghost` of `reply.suggestions`. |
+| `promptSuggestion` | Megachat, when Air sent it | Air reads the prompt suggestions of the session. |
 
 ## The requests
 
@@ -48,11 +50,56 @@ one attach can send 5,000 requests. Nobody measured that time in Air. `docs/road
 
 - Air sends `clientMessageId` in `_meta.jetbrains.air` of `session/prompt`. Megachat uses it as the request ID of the
   input. A repeated ID returns the first admission, so a retry of Air admits the message once.
-- `session/cancel` cancels the current main task and each child that it owns.
+- `session/cancel` cancels the current main task and each child that it owns. While no turn runs, it withdraws the
+  prompt suggestion that the view showed.
+- Air sends `acceptedPromptSuggestionId` in `_meta.jetbrains.air` of `session/prompt` when the user accepted a prompt
+  suggestion. The value is the `id` of the suggestion. Megachat then records `accepted` without a model call. A prompt
+  without the field, while a suggestion is live, records `ignored`. `ignored` does not count as a decline.
 - Megachat accepts the content blocks `text` and `resource_link` in `session/prompt`. This is the base protocol: ACP
   requires these two types of each agent, and Megachat announces no other prompt capability. The main agent gets each
   link as the Markdown link `[name](uri)` on a line of its own, in the order of the blocks. Megachat refuses each other
   block type. The input of the main agent has at most 100,000 characters, with the links.
+
+## The prompt suggestion
+
+In the mode `ghost` of the setting `reply.suggestions`, the main agent gives one next step as a prompt of the user.
+Megachat sends it only to a client that sent the capability `promptSuggestion`. The carrier is a hidden
+`session_info_update` without a title. A client that does not know the extension ignores it by the rules of ACP.
+`promptSuggestionUpdate` in `src/Suggestions.mjs` is the only code that builds it.
+
+```json
+{
+  "sessionId": "megachat-<UUID>",
+  "update": {
+    "sessionUpdate": "session_info_update",
+    "_meta": { "jetbrains": { "air": { "promptSuggestion": {
+      "version": 1,
+      "id": "suggestion-<UUID>",
+      "turnId": "<request ID of the finished turn>",
+      "text": "Run the tests and fix the failures",
+      "expiresAt": "2026-11-12T12:00:00.000Z"
+    } } } }
+  }
+}
+```
+
+| Field | Value |
+|---|---|
+| `version` | The version of the payload, 1. A change that an old client cannot read gets a new version. |
+| `id` | The ID of the suggestion. The accepted prompt names it in `acceptedPromptSuggestionId`. |
+| `turnId` | The request ID of the turn that made the suggestion: the `clientMessageId` of the prompt, or the ID of an automatic turn. |
+| `text` | One line in the language of the user, about 80 characters at most. `null` withdraws the suggestion with this `id`. |
+| `expiresAt` | The UTC time after which the suggestion is old: one hour after the proposal. |
+
+- Megachat sends the suggestion after the last `agent_message_chunk` of its turn and before the response of
+  `session/prompt`. A suggestion of an automatic turn arrives without a prompt of the view.
+- Each turn has at most one suggestion. A delegation acknowledgment, a stopped turn and a failed turn have none.
+- Megachat withdraws a sent suggestion at the start of the next turn, at a `session/cancel` while no turn runs, and at
+  `expiresAt`. The withdrawal has the same `id` and the same fields, with `text: null`.
+- `session/new` and `session/load` send a live suggestion again after the replay and the title. They send no old one.
+- A suggestion is not permission. Megachat starts the work only when the prompt arrives.
+- Air shows `text` as grey text in the empty prompt input of that session. Air does not show it while the input has
+  text or while a turn runs. Which key accepts the text is a matter of Air.
 
 ## The background tasks
 

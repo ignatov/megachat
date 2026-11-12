@@ -348,3 +348,27 @@ test('a state that v0.2.0 left at a stop opens with this code, and each old reco
 test('a state that v0.2.0 left at a kill opens with this code, and the dispatched runs and the pending permission recover', { timeout: 60000 }, async t => {
   await upgrade(t, 'kill')
 })
+
+test('a settings.json of v0.3.0 with reply.suggestions true or false opens with this code as the mode reply or off', { timeout: 60000 }, async t => {
+  const directories = await copyFixture(t, 'kill')
+  const path = join(directories.state, 'settings.json')
+  // v0.3.0 stored the setting as a boolean.
+  for (const [stored, mode] of [[true, 'reply'], [false, 'off']]) {
+    const text = `${JSON.stringify({ schema: 1, onboarding: 'done', values: { 'reply.suggestions': stored } }, null, 2)}\n`
+    await writeFile(path, text, { mode: 0o600 })
+    const { service } = await open(directories)
+    try {
+      assert.equal(service.suggestions, mode)
+      assert.equal(service.extension().tools.some(tool => tool.name === 'agents_suggest'), mode === 'reply')
+      assert.deepEqual(service.settings.entry('reply.suggestions'), { key: 'reply.suggestions', value: mode, source: 'setting',
+        default: 'off', variable: 'MEGACHAT_SUGGESTIONS', stored })
+      // The state of v0.2.0 keeps its proposal of the mode reply, and it has no prompt suggestion.
+      const { initiative } = await service.state.snapshot()
+      assert.equal(initiative.suggestion, 'Add a test for the parser.')
+      assert.equal(initiative.promptSuggestion, null)
+    }
+    finally { await service.close() }
+    // The open does not write the file.
+    assert.equal(await readFile(path, 'utf8'), text)
+  }
+})

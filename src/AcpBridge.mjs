@@ -5,6 +5,7 @@ import { VERSION } from './MegachatBuild.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
 import { serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { replyText } from './ReplyStream.mjs'
+import { livePromptSuggestion, PROMPT_SUGGESTION_CAPABILITY, promptSuggestionUpdate } from './Suggestions.mjs'
 
 /** A short row title: the first prompt line without Markdown markers. */
 export function taskTitle(prompt) {
@@ -59,11 +60,12 @@ export class AcpBridge {
         this.nativeTurns = capabilities.includes('asyncTasks')
         this.serviceSessions = capabilities.includes('serviceSessions')
         this.workspaces = capabilities.includes('workspaces')
+        this.promptSuggestions = capabilities.includes(PROMPT_SUGGESTION_CAPABILITY)
         return {
           protocolVersion: 1, agentInfo: { name: 'air-megachat', title: message('title'), version: VERSION },
           agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } }, authMethods: [],
           _meta: { jetbrains: { air: { version: 1, capabilities: ['persistentSession',
-            ...(this.nativeTurns ? ['asyncTasks'] : [])] } } },
+            ...(this.nativeTurns ? ['asyncTasks'] : []), ...(this.promptSuggestions ? [PROMPT_SUGGESTION_CAPABILITY] : [])] } } },
         }
       })
       .onRequest(methods.agent.session.new, ctx => this.attach(ctx, false))
@@ -113,6 +115,12 @@ class AcpBridgeSession {
     this.nativeTurns = capabilities.nativeTurns
     this.serviceSessions = capabilities.serviceSessions
     this.workspaces = capabilities.workspaces
+    this.promptSuggestions = capabilities.promptSuggestions
+    // The prompt suggestion that this view sent last, and the last state of the daemon. The view sends a suggestion
+    // only after its attach, so a suggestion never is a part of the replay.
+    this.shownSuggestion = null
+    this.lastState = null
+    this.ready = false
     this.recordedChildren = new Set()
     this.replayIndex = 0
     this.abort = new AbortController()
@@ -138,16 +146,24 @@ class AcpBridgeSession {
     if (this.promptInFlight && !this.promptRunId) { this.cancelPending = true; return }
     const mainRunId = this.promptRunId ?? this.currentRunId
     if (mainRunId) await this.daemon.json('/cancel', { mainRunId })
+    // A cancel while no turn runs removes the shown prompt suggestion. A daemon of an earlier build has no route for it.
+    else if (this.shownSuggestion) {
+      await this.daemon.json('/prompt-suggestion/withdraw', { id: this.shownSuggestion.id })
+        .catch(error => { if (!(error instanceof MegachatError)) throw error })
+    }
   }
 
   async prompt(ctx) {
     requireCondition(ctx.params.sessionId === this.sessionId)
     const text = promptText(ctx.params.prompt)
     requireCondition(!this.promptInFlight, 'busy')
+    const air = ctx.params._meta?.jetbrains?.air
     this.promptInFlight = true
     try {
       const receipt = await this.daemon.json('/input', {
-        requestId: ctx.params._meta?.jetbrains?.air?.clientMessageId ?? randomUUID(), text,
+        requestId: air?.clientMessageId ?? randomUUID(), text,
+        // The client sends this ID when the user accepted the prompt suggestion. The daemon then records `accepted`.
+        ...(typeof air?.acceptedPromptSuggestionId === 'string' ? { acceptedPromptSuggestionId: air.acceptedPromptSuggestionId } : {}),
       })
       this.promptRunId = receipt.mainRunId
       // A stop can arrive before the daemon admits the input. Then the turn had no ID yet.
@@ -192,6 +208,8 @@ class AcpBridgeSession {
     this.reply = null
     this.lastReplyTask = 0
     this.replayIndex = 0
+    this.shownSuggestion = null
+    this.ready = false
     let resolveReady
     let rejectReady
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
@@ -225,6 +243,9 @@ class AcpBridgeSession {
     await ready
     open()
     await this.notify({ sessionUpdate: 'session_info_update', title: message('title') })
+    // A live prompt suggestion goes out again after the replay. An old one does not.
+    this.ready = true
+    await this.enqueue(() => abort.signal.aborted ? undefined : this.suggest(this.lastState))
     return loading ? {} : { sessionId: this.sessionId }
   }
 
@@ -317,6 +338,7 @@ class AcpBridgeSession {
   /** Marks each delegated session in the state as a service session, also the session of a dropped run. */
   async tasks(state) {
     this.currentRunId = state.current?.id ?? null
+    this.lastState = state
     if (this.serviceSessions) {
       for (const [address, session] of Object.entries(state.serviceSessions ?? serviceSessionsOf(state.runs))) {
         if (this.recordedChildren.has(address)) continue
@@ -340,6 +362,26 @@ class AcpBridgeSession {
       }).catch(() => {})
     }
     if (this.nativeTurns) await this.childRows(state)
+    if (this.ready) await this.suggest(state)
+  }
+
+  /**
+   * Sends the prompt suggestion of the daemon state to a client with the capability `promptSuggestion`. The update
+   * follows the last reply chunk of its turn: the view first sends each reply entry that it did not send. A suggestion
+   * that stops being live, at the next turn, at a cancel or at its `expiresAt`, gets a withdrawal with the same ID.
+   */
+  async suggest(state) {
+    if (!this.promptSuggestions || !state) return
+    const live = livePromptSuggestion(state)
+    if (this.shownSuggestion && this.shownSuggestion.id !== live?.id) {
+      const withdrawn = this.shownSuggestion
+      this.shownSuggestion = null
+      await this.notify(promptSuggestionUpdate(withdrawn, true))
+    }
+    if (!live || this.shownSuggestion) return
+    await this.conversation(await this.daemon.json('/conversation'), false)
+    this.shownSuggestion = live
+    await this.notify(promptSuggestionUpdate(live))
   }
 
   /** Lists unfinished child runs as background tasks; the coordinator's own tool calls never reach the chat. */

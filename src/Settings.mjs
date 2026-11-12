@@ -15,8 +15,16 @@ export const KEEPALIVE_VARIABLE = 'MEGACHAT_KEEPALIVE'
 /** The time after the last turn, in hours, in which keep-alive requests go out. */
 export const KEEPALIVE_HOURS_VARIABLE = 'MEGACHAT_KEEPALIVE_HOURS'
 export const DEFAULT_KEEPALIVE_HOURS = 6
-/** `1` lets the main agent offer a next step by itself, `0` stops it. */
+/**
+ * The mode of the next-step suggestions: `off`, `reply` or `ghost`. The values `0` and `1` of earlier builds give `off`
+ * and `reply`.
+ */
 export const SUGGESTIONS_VARIABLE = 'MEGACHAT_SUGGESTIONS'
+/**
+ * The modes of the next-step suggestions. `reply` puts the proposal into the reply text. `ghost` sends it to the
+ * prompt input of a client that has the capability `promptSuggestion`.
+ */
+export const SUGGESTION_MODES = ['off', 'reply', 'ghost']
 export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'
 /** The model of a pi child: small and cheap, for a task that only reads files. */
 export const DEFAULT_PI_MODEL = 'anthropic/claude-haiku-5-5'
@@ -35,6 +43,16 @@ const toBoolean = value => typeof value === 'boolean' ? value
     : /^(on|true|yes|1)$/i.test(value.trim()) ? true : /^(off|false|no|0)$/i.test(value.trim()) ? false : undefined
 const toNumber = value => typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value.trim()) : NaN
 const choice = values => value => typeof value === 'string' && values.includes(value.trim()) ? value.trim() : undefined
+/**
+ * The mode of the suggestions for a stored or a given value. `settings.json` of v0.3.0 holds `true` or `false`, and the
+ * tool of v0.3.0 took the words of a boolean. So these values give `reply` and `off`.
+ */
+export const suggestionMode = value => {
+  const mode = choice(SUGGESTION_MODES)(typeof value === 'string' ? value.toLowerCase() : value)
+  if (mode !== undefined) return mode
+  const on = toBoolean(value)
+  return on === undefined ? undefined : on ? 'reply' : 'off'
+}
 
 /** Splits `provider/modelId` at the first slash, because a model ID of some providers holds a slash. */
 export function modelRef(value) {
@@ -88,9 +106,9 @@ export const SETTINGS = [
       return /^[1-9]\d{0,8}$/.test(text) ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 1, maximum: 999999999 }) },
-  { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: false, applies: 'nextTurn',
-    fromEnvironment: text => text === '1' ? true : text === '0' ? false : undefined, validate: toBoolean,
-    allowed: () => ({ values: [true, false] }) },
+  { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: 'off', applies: 'nextTurn',
+    fromEnvironment: text => text === '1' ? 'reply' : text === '0' ? 'off' : choice(SUGGESTION_MODES)(text.toLowerCase()),
+    validate: suggestionMode, allowed: () => ({ values: SUGGESTION_MODES }) },
   { key: 'reply.language', default: 'auto', applies: 'nextTurn',
     validate: value => typeof value !== 'string' ? undefined : /^auto$/i.test(value.trim()) ? 'auto'
       : /^\p{L}[\p{L} ()-]{0,39}$/u.test(value.trim()) ? value.trim() : undefined,

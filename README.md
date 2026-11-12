@@ -187,7 +187,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `keepAlive.hours` | `6` | `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out, 0 to 168 hours. |
 | `cache.ttl` | `1h` | `MEGACHAT_CACHE_TTL` | The lifetime of the prompt cache: `1h` or `5m`. |
 | `compaction.tokens` | `100000` | `MEGACHAT_COMPACT_TOKENS` | The size of the model context above which the conversation gets a summary. |
-| `reply.suggestions` | `false` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. |
+| `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and you send it with one key; a client without the support shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
@@ -358,7 +358,7 @@ The session text is data for the agent, not instructions.
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
-| `src/Suggestions.mjs` | The variable `MEGACHAT_SUGGESTIONS`, which lets the main agent offer a next step by itself. |
+| `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |
 | `src/SessionIndexService.mjs`, `src/SessionIndex.mjs`, `src/SessionText.mjs` | The index of past sessions: the consent, the import passes, the file `sessions.sqlite`, and the secret filter. |

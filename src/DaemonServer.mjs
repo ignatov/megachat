@@ -117,7 +117,12 @@ export class DaemonServer {
         send({ cwd })
         return
       }
-      case '/input': send(await this.service.submit(body.requestId, body.text)); return
+      case '/input': send(await this.service.submit(body.requestId, body.text, body.acceptedPromptSuggestionId)); return
+      case '/prompt-suggestion/withdraw': {
+        requireCondition(typeof body.id === 'string' && body.id.length <= 200)
+        send({ withdrawn: await this.service.withdrawPromptSuggestion(body.id) })
+        return
+      }
       case '/permission': await this.service.state.respondPermission(body.id, body.decision); send({ accepted: true }); return
       case '/cancel': {
         // A client from before the turn ID sends no ID. Then the stop is for the current turn, as before.

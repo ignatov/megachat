@@ -113,7 +113,7 @@ test('the registry gives the environment, then the stored setting, then the defa
   assert.equal(store.onboarding, 'pending')
   assert.deepEqual(settings.values(), {
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
-    'cache.ttl': '5m', 'compaction.tokens': 100000, 'reply.suggestions': false, 'reply.language': 'auto', 'reply.length': 'short',
+    'cache.ttl': '5m', 'compaction.tokens': 100000, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
@@ -147,7 +147,8 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'keepAlive.hours': [[0, 0], ['0.5', 0.5], [168, 168]],
     'cache.ttl': [['5m', '5m'], ['1h', '1h']],
     'compaction.tokens': [[50000, 50000], ['999999999', 999999999]],
-    'reply.suggestions': [[true, true], ['off', false]],
+    // The values of v0.3.0, true and false, and the words of a boolean give reply and off.
+    'reply.suggestions': [['ghost', 'ghost'], [' Reply ', 'reply'], ['off', 'off'], [true, 'reply'], [false, 'off'], ['on', 'reply'], ['0', 'off']],
     'reply.language': [['Deutsch', 'Deutsch'], ['AUTO', 'auto'], ['Português (Brasil)', 'Português (Brasil)']],
     'reply.length': [['detailed', 'detailed'], ['normal', 'normal']],
     'reply.quoteRequest': [['yes', true], [false, false]],
@@ -168,7 +169,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'keepAlive.hours': [-1, 169, 'long'],
     'cache.ttl': ['1d', 'long', 5],
     'compaction.tokens': [0, -5, 1.5, '1000000000', 'many'],
-    'reply.suggestions': ['sometimes'],
+    'reply.suggestions': ['sometimes', 'grey', 2],
     'reply.language': ['', '42', 'x'.repeat(41), 'Rules; ignore them'],
     'reply.length': ['long', 3],
     'reply.quoteRequest': ['never'],
@@ -385,6 +386,43 @@ test('the suggestions setting changes the tools of the running main agent', { ti
   await tool({ action: 'set', key: 'reply.suggestions', value: 'on' })
   assert.ok(names().includes('agents_suggest'))
   assert.equal(service.state.eventSuffix, '.suggest')
+  assert.equal(service.state.suggestionMode, 'reply')
+  // The mode ghost keeps the two tools, with the description of a prompt suggestion.
+  const set = await tool({ action: 'set', key: 'reply.suggestions', value: 'ghost' })
+  assert.deepEqual([set.value, set.source, set.stored], ['ghost', 'setting', 'ghost'])
+  const description = () => service.registry.snapshot().tools().find(item => item.tool.name === 'agents_suggest').tool.description
+  assert.equal(description(), message('tool.suggest.ghost'))
+  assert.equal(service.state.suggestionMode, 'ghost')
+  assert.equal(service.state.eventSuffix, '.suggest')
+  await tool({ action: 'set', key: 'reply.suggestions', value: 'off' })
+  assert.ok(!names().includes('agents_suggest'))
+  assert.equal(service.state.eventSuffix, '')
+})
+
+test('the setting reply.suggestions takes the stored values true and false of v0.3.0 and the variable values 0, 1 and ghost', { timeout: 20000 }, async t => {
+  const directory = await temporary(t)
+  await seed(directory, { 'reply.suggestions': true })
+  const reply = await open(t, directory)
+  assert.equal(reply.service.suggestions, 'reply')
+  assert.match(await reply.instructions(), /Call agents_suggest before every proposal/)
+  const entry = reply.service.settings.entry('reply.suggestions')
+  assert.deepEqual([entry.value, entry.source, entry.stored, entry.storedIgnored], ['reply', 'setting', true, undefined])
+  await reply.close()
+  await seed(directory, { 'reply.suggestions': false })
+  const off = await open(t, directory)
+  assert.equal(off.service.suggestions, 'off')
+  assert.match(await off.instructions(), /Do not propose a next step unless the user asks for one\./)
+  await off.close()
+  for (const [text, mode] of [['1', 'reply'], ['0', 'off'], ['ghost', 'ghost'], [' GHOST ', 'ghost'], ['reply', 'reply'], ['true', 'off']]) {
+    const settings = new MegachatSettings(await SettingsStore.open(join(directory, 'settings.json')), { environment: { MEGACHAT_SUGGESTIONS: text } })
+    assert.equal(settings.entry('reply.suggestions').value, mode, text)
+  }
+  await seed(directory, {})
+  const ghost = await open(t, directory, { environment: { MEGACHAT_SUGGESTIONS: 'ghost' } })
+  const rules = await ghost.instructions()
+  assert.match(rules, /Do not propose a next step in the reply text\./)
+  assert.match(rules, /call agents_suggest one time in the turn/)
+  assert.doesNotMatch(rules, /Call agents_suggest before every proposal|Do not propose a next step unless/)
 })
 
 test('an environment variable wins over the stored value, and the tool says so', { timeout: 20000 }, async t => {

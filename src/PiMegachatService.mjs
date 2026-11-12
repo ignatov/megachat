@@ -13,7 +13,7 @@ import { directoriesOf } from './ProjectDirectories.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
-import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore } from './Settings.mjs'
+import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore, suggestionMode } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { SessionIndexService } from './SessionIndexService.mjs'
@@ -86,7 +86,7 @@ function settingsRules(values, onboarding, rules, notice) {
     message(`instructions.length.${values['reply.length']}`),
     language === 'auto' ? message('instructions.language.auto') : message('instructions.language', language),
     ...(values['reply.quoteRequest'] ? [message('instructions.quoteRequest')] : []),
-    values['reply.suggestions'] ? rules.suggestions.trimEnd() : message('instructions.noSuggestions'),
+    { off: message('instructions.noSuggestions'), reply: rules.suggestions.trimEnd(), ghost: rules.ghost.trimEnd() }[values['reply.suggestions']],
     message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
@@ -133,14 +133,17 @@ export class PiMegachatService {
    * `settings.json`, for a test. The daemon passes none of them. [clock] gives the time of the daily spend, for a test.
    * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`. [processTable] replaces the
    * process table of the platform for the tool `agents_running`, and [clock] also gives the age of its view, for a test.
+   * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, promptSuggestionLifetimeMs } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
     const { windowMs, retention, enabled } = keepAliveOptions
     const overrides = Object.fromEntries(Object.entries({
-      'coordinator.model': model && `${model.provider}/${model.modelId}`, 'compaction.tokens': limit, 'reply.suggestions': suggestions,
+      'coordinator.model': model && `${model.provider}/${model.modelId}`, 'compaction.tokens': limit,
+      // A test can give the mode as a boolean, as for the stored value of v0.3.0.
+      'reply.suggestions': suggestions === undefined ? undefined : suggestionMode(suggestions),
       'keepAlive.enabled': enabled, 'keepAlive.hours': windowMs === undefined ? undefined : windowMs / 3600000,
       'cache.ttl': retention === undefined ? undefined : retention === 'short' ? '5m' : '1h',
     }).filter(([, value]) => value !== undefined))
@@ -148,6 +151,7 @@ export class PiMegachatService {
     const values = settings.values()
     // The rules of the user come from the file at the start of the daemon only.
     const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
+      ghost: await resource('instructions-suggestions-ghost.md'),
       onboarding: await resource('instructions-onboarding.md'), user: await readUserInstructions(userInstructionsPath) }
     const live = { harness: harnessSettings(values, models) }
     const registry = createRegistry()
@@ -162,7 +166,7 @@ export class PiMegachatService {
     const agent = agentOf(values, rules)
     const root = await harness.root(context, { agent: { ...agent, maxTurns: 20 } })
     await root.configure(agent, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'] })
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'], promptSuggestionLifetimeMs })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
@@ -220,11 +224,13 @@ export class PiMegachatService {
     this.model = modelRef(values['coordinator.model'])
     this.thinkingLevel = values['coordinator.thinking']
     this.cacheRetention = CACHE_RETENTION[values['cache.ttl']]
+    // The mode of the suggestions: `off`, `reply` or `ghost`.
     this.suggestions = values['reply.suggestions']
+    this.state.suggestionMode = this.suggestions
     // The warning about the spend is a line of the rules, so it changes only between two turns, as each setting does.
     this.notice = this.spend.notice(values['budget.dailyUsd'])
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
-    this.state.eventSuffix = this.suggestions ? '.suggest' : ''
+    this.state.eventSuffix = this.suggestions === 'off' ? '' : '.suggest'
     const ttlSeconds = this.models.getModel(this.model.provider, this.model.modelId)?.promptCache?.[this.cacheRetention]
       ?? CACHE_LIFETIME_SECONDS[this.cacheRetention]
     const keepAlive = values['keepAlive.enabled'] ? { ttlMs: ttlSeconds * 1000, windowMs: values['keepAlive.hours'] * 3600000,
@@ -341,9 +347,10 @@ export class PiMegachatService {
   }
 
   extension() {
-    const tool = (name, parameters, execute) => defineTool({
-      name: `agents_${name}`, description: message(`tool.${name}`), parameters, replay: 'safe', execute,
+    const tool = (name, parameters, execute, description = `tool.${name}`) => defineTool({
+      name: `agents_${name}`, description: message(description), parameters, replay: 'safe', execute,
     })
+    const ghost = this.suggestions === 'ghost'
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
@@ -358,7 +365,7 @@ export class PiMegachatService {
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
           cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
         return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces: directoriesOf(state), runs,
-          ...(this.suggestions ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
+          ...(this.suggestions !== 'off' ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
         value: opt(union([str({ maxLength: 2000 }), num(), bool(), arr(str({ maxLength: 200 }), { maxItems: 50 })])),
@@ -384,10 +391,13 @@ export class PiMegachatService {
       // The tool reads the processes only. The children do not get it: their MCP server has the history tools only.
       tool('running', obj({ agent: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })), state: opt(str({ maxLength: 20 })),
         limit: opt(int({ minimum: 1, maximum: 200 })), cursor: opt(str({ maxLength: 64 })) }), async args => result(await this.running.query(args))),
-      // The suggestion tools exist only with `MEGACHAT_SUGGESTIONS=1`. The stored suggestion state stays without them.
-      ...(this.suggestions ? [
-        tool('suggest', obj({ proposal: str() }), async (args, api) =>
-          result(await this.state.proposal(`tool:${api.taskId}:suggest`, args.proposal))),
+      // The suggestion tools exist only in the modes `reply` and `ghost`. The stored suggestion state stays without them.
+      // In the `ghost` mode the result tells the agent that the client shows the text, so the reply does not repeat it.
+      ...(this.suggestions !== 'off' ? [
+        tool('suggest', obj({ proposal: str() }), async (args, api) => {
+          const decision = await this.state.proposal(`tool:${api.taskId}:suggest`, args.proposal)
+          return result(ghost && decision.allowed ? { ...decision, note: message('suggest.ghost.note') } : decision)
+        }, ghost ? 'tool.suggest.ghost' : 'tool.suggest'),
         tool('feedback', obj({ decision: str() }), async (args, api) =>
           result(await this.state.feedback(`tool:${api.taskId}:feedback`, args.decision))),
       ] : []),
@@ -525,7 +535,7 @@ export class PiMegachatService {
         if (running) this.keepAlive?.turnStarted()
         else this.keepAlive?.turnEnded()
       }
-      if (snapshot.current) return
+      if (snapshot.current) { this.watchPromptSuggestion(snapshot); return }
       const now = Date.now()
       const unreported = Object.values(snapshot.runs).filter(run => terminalStates.has(run.status) && !run.reported)
       const resultsPending = unreported.some(run => (run.reportAfter ?? 0) <= now)
@@ -538,6 +548,7 @@ export class PiMegachatService {
         }, Math.min(...waiting) - now)
         this.reportTimer.unref()
       }
+      this.watchPromptSuggestion(snapshot)
       const sessionsPending = Boolean(snapshot.sessionIndex?.summary)
       if (!resultsPending && !sessionsPending) return
       this.eventPump = this.eventPump.then(async () => {
@@ -558,7 +569,25 @@ export class PiMegachatService {
     await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
   }
 
-  async submit(requestId, text) {
+  /** Withdraws the prompt suggestion at its `expiresAt`. One timer watches the live suggestion. */
+  watchPromptSuggestion(snapshot) {
+    const suggestion = snapshot.initiative?.promptSuggestion
+    if (suggestion?.id === this.expiry?.id) return
+    clearTimeout(this.expiry?.timer)
+    this.expiry = undefined
+    if (!suggestion || this.lifetime.signal.aborted) return
+    const timer = setTimeout(() => this.state.withdrawPromptSuggestion(suggestion.id).catch(() => {}),
+      Math.max(0, Date.parse(suggestion.expiresAt) - Date.now()))
+    timer.unref()
+    this.expiry = { id: suggestion.id, timer }
+  }
+
+  /** Withdraws the prompt suggestion [id] at a cancel of the user while no turn runs. Tells whether it was live. */
+  async withdrawPromptSuggestion(id) {
+    return this.state.withdrawPromptSuggestion(id)
+  }
+
+  async submit(requestId, text, acceptedPromptSuggestionId) {
     this.pendingUserInputs++
     try {
       const interrupted = await this.state.interruptAutomaticTurn()
@@ -567,7 +596,7 @@ export class PiMegachatService {
         await waitForState(this.state, state => !state.current ? true : undefined,
           { signal: this.lifetime.signal, timeoutMs: 60000 })
       }
-      const receipt = await this.state.submit(requestId, text)
+      const receipt = await this.state.submit(requestId, text, acceptedPromptSuggestionId)
       if (receipt.status === 'running') this.follow(receipt)
       return receipt
     }
@@ -679,6 +708,7 @@ export class PiMegachatService {
   async close() {
     this.lifetime.abort()
     clearTimeout(this.reportTimer)
+    clearTimeout(this.expiry?.timer)
     await this.keepAlive?.close()
     await Promise.allSettled(this.retired)
     await this.eventWatch?.stop()

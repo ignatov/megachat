@@ -189,8 +189,25 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The log of the daemon must get one line with the time from the start of a model request to its first text. The line must hold no content of the conversation.
   [@test] ../test/stream.test.mjs
 - By default, Megachat must not offer a next step by itself. It may offer one when the user asks.
-- By default, the main agent must have no suggestion rules and no `agents_suggest` and `agents_feedback` tools. The stored proposal decisions must stay.
-- `MEGACHAT_SUGGESTIONS=1` must give the suggestion rules and the two tools back. A daemon restart applies a changed value.
+- The setting `reply.suggestions` must have the modes `off` (the default), `reply` and `ghost`. `MEGACHAT_SUGGESTIONS=0`, `1` and `ghost` must select `off`, `reply` and `ghost`.
+- The stored values `false` and `true` of v0.3.0 must give `off` and `reply`, and the open must not change the file.
+- In the mode `off`, the main agent must have no suggestion rules and no `agents_suggest` and `agents_feedback` tools. The stored proposal decisions must stay.
+- The mode `reply` must give the suggestion rules of `resources/instructions-suggestions.md` and the two tools, as the value `true` did. A daemon restart applies a changed value.
+  [@test] ../test/suggestions.test.mjs
+  [@test] ../test/settings.test.mjs
+  [@test] ../test/upgrade.test.mjs
+- The mode `ghost` must give the rules of `resources/instructions-suggestions-ghost.md` and the two tools. The rules must forbid a proposal in the reply text. They must ask for at most one call of `agents_suggest` in a turn, with one short prompt in the voice and the language of the user, and for no call when no next step is clearly useful.
+- In the mode `ghost`, `agents_suggest` must keep the gate of the mode `reply`: no silence, fewer than three declines, and no live prompt suggestion. A proposal of the mode `reply` that waits for its feedback must not stop it. The text must become one line.
+- The allowed text must become the prompt suggestion of the turn, and the tool result must tell the agent not to repeat it in the reply. A second call in the same turn must get `allowed=false` and change nothing.
+- A turn that admits a child task is a delegation acknowledgment. It must get no prompt suggestion, also when the main agent admits the child after the proposal. A turn that the user stopped or that failed must keep no prompt suggestion.
+- A turn of a child result or of the summary of the past sessions must send a prompt suggestion only when the main agent calls `agents_suggest`. The rules must allow that only when the result leaves a clear next action for the user.
+- Megachat must send a prompt suggestion only to a client that sent the Air capability `promptSuggestion`. It must send that capability back to such a client. A client without the capability must get no suggestion update and no proposal text. The mode `ghost` must not fall back to the mode `reply`.
+- The bridge must send the prompt suggestion after the last `agent_message_chunk` of its turn and before the end of the turn, as the payload of `docs/air-contract.md` with the version 1.
+- A prompt suggestion must end at the start of the next turn, of the user or automatic, at a `session/cancel` while no turn runs, and at its `expiresAt`. The lifetime is `PROMPT_SUGGESTION_LIFETIME_MS` of `src/Suggestions.mjs`: one hour, the lifetime of the default prompt cache. A sent suggestion that ends must get a withdrawal: the same ID with `text: null`.
+- `session/load` and `session/new` must send a live prompt suggestion again after the replay and the title. They must send no old suggestion.
+- A prompt with `_meta.jetbrains.air.acceptedPromptSuggestionId` equal to the ID of the live suggestion must record `accepted` without a model call, and reset the count of the declines. Each other prompt while a suggestion is live must record `ignored`. `ignored` must change no counter.
+- `agents_feedback(decision="silence")` must stop each later prompt suggestion.
+- A prompt suggestion is not permission. Megachat must start the work only when the prompt of the user arrives.
   [@test] ../test/suggestions.test.mjs
 - Megachat must keep its settings in `settings.json` in the state directory, apart from the conversation. A daemon restart and a compaction must not lose a setting.
 - The file must have the mode 0600. The daemon must write it to a temporary file and rename that file, so a crash cannot leave a partial file.
@@ -240,7 +257,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - An agent that refuses the session with the ACP error `authRequired` must give the status `failed` with the login `missing`. An agent that does not start, a failed Central configuration, a refused session and the time limit must give `failed`. Each failure must give the problem and what to fix, from the resources and not from the agent.
 - The setup must run the check at its end and show the result. The rules of the main agent must run the check when a child fails with a login error.
   [@test] ../test/accounts.test.mjs
-- With `MEGACHAT_SUGGESTIONS=1`, Megachat may offer one useful next step after work ends.
+- In the modes `reply` and `ghost`, Megachat may offer one useful next step after work ends.
 - After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.
 - Proposal decisions must survive a daemon restart.
