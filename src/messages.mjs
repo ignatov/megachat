@@ -12,8 +12,8 @@ export function message(key, ...args) {
 }
 
 export class MegachatError extends Error {
-  constructor(code) {
-    super(message(`error.${code}`))
+  constructor(code, ...args) {
+    super(message(`error.${code}`, ...args))
     this.code = code
   }
 }

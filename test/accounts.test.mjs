@@ -45,6 +45,8 @@ test('the check reports an agent that starts, an agent without a login, and clos
   ])
   // The session of the check got the options of a child, and no prompt went out.
   assert.deepEqual(JSON.parse(await readFile(join(root, 'claude', 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: true })
+  // The check has no project, so it loads no settings file.
+  assert.deepEqual(JSON.parse(await readFile(join(root, 'claude', 'claude-options.json'), 'utf8')).settingSources, [])
   assert.ok(!(await readdir(join(root, 'claude'))).includes('dispatches'))
   assert.ok(await stopped(Number(await readFile(join(root, 'claude', 'agent.pid'), 'utf8'))))
 })

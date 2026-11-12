@@ -11,6 +11,7 @@ import { MemoryStorage } from '@earendil-works/pi-durable'
 import { AcpRunService } from '../src/AcpRunService.mjs'
 import { message } from '../src/messages.mjs'
 import { terminalStates } from '../src/MegachatState.mjs'
+import { RULES_LIMIT } from '../src/PiChild.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -20,7 +21,7 @@ const call = (name, args) => fauxAssistantMessage(fauxToolCall(name, args), { st
  * A service with `settings.json` in a temporary directory, a run service with the fake agent, and the rules paragraph
  * of the daemon. `turn` gives the replies of the model in their order, and `Answer.` follows them.
  */
-async function fixture(t, values) {
+async function fixture(t, values, configuration) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-children-')))
   t.after(() => rm(directory, { force: true, recursive: true }))
   const settingsPath = join(directory, 'settings.json')
@@ -37,7 +38,10 @@ async function fixture(t, values) {
     { settingsPath, keepAlive: { enabled: false } })
   await service.state.addWorkspace(cwd)
   const launched = []
-  const children = new AcpRunService(service.state, { childLaunch: async agent => { launched.push(agent); return { env: process.env } } },
+  const children = new AcpRunService(service.state, { childLaunch: async agent => {
+    launched.push(agent)
+    return configuration ? configuration.childLaunch(agent) : { env: process.env }
+  } },
     { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], childRules: () => service.childRules() })
   await children.start()
   await service.resume()
@@ -101,4 +105,70 @@ test('a turn of a child result or of the sessions summary cannot change a settin
     await service.state.change(state => { state.current = null })
   }
   assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')).values, {})
+})
+
+test('a Claude child loads the project settings, and its options hold no key and no base URL', { timeout: 20000 }, async t => {
+  const env = { ...process.env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test-key', ANTHROPIC_API_KEY: 'test-key' }
+  const { cwd, turn } = await fixture(t, undefined, { childLaunch: async () => ({ env }) })
+  // A project env without ANTHROPIC_BASE_URL does not move the key of Megachat, so the run starts.
+  await mkdir(join(cwd, '.claude'))
+  await writeFile(join(cwd, '.claude', 'settings.json'), JSON.stringify({ env: { ANTHROPIC_API_KEY: 'project-key', DEBUG: '1' } }))
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  const options = JSON.parse(await readFile(join(cwd, 'claude-options.json'), 'utf8'))
+  assert.deepEqual(options.settingSources, ['project'])
+  // The SDK puts session settings in the command line of Claude, and the base URL of Central holds the key. So the
+  // options hold neither. The key and the base URL go only in the environment of the agent.
+  assert.equal(options.settings, undefined)
+  assert.doesNotMatch(JSON.stringify(options), /test-key|wire/)
+})
+
+test('a project ANTHROPIC_BASE_URL refuses a Claude child before the start of the agent, and the message has no value', { timeout: 20000 }, async t => {
+  const { cwd, launched, turn } = await fixture(t)
+  await mkdir(join(cwd, '.claude'))
+  const settings = join(cwd, '.claude', 'settings.json')
+  await writeFile(settings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/project' } }))
+  t.mock.method(process.stderr, 'write', () => true)
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  const [run] = Object.values(state.runs)
+  assert.equal(run.status, 'interrupted')
+  assert.equal(run.error, message('error.projectBaseUrl', settings))
+  assert.doesNotMatch(run.error, /127\.0\.0\.1/)
+  // No adapter started: the run service asked for no launch, and the fake agent wrote no file.
+  assert.deepEqual(launched, [])
+  await assert.rejects(readFile(join(cwd, 'session-request.json'), 'utf8'), { code: 'ENOENT' })
+  // Claude Code ignores a settings file that is not valid, so the check does too.
+  await writeFile(settings, '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9/wire/project"},}')
+  const next = await turn('second', call('agents_spawn', { cwd, prompt: 'second task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(Object.values(next.runs).map(item => item.status), ['interrupted', 'completed'])
+})
+
+test('a Claude child gets AGENTS.md in its prompt only when the directory has no CLAUDE.md', { timeout: 20000 }, async t => {
+  const { cwd, turn, prompts } = await fixture(t)
+  const agents = 'Run npm test after each change.'
+  await writeFile(join(cwd, 'AGENTS.md'), `${agents}\n`)
+  await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  const block = `${message('child.claude.rules', 'AGENTS.md')}\n<repository_rules file="AGENTS.md">\n${agents}\n</repository_rules>`
+  assert.deepEqual((await prompts())[0].slice(1), [block, 'first task'])
+  // Claude Code loads a CLAUDE.md by itself, with its imports, so the prompt holds no block. This covers .claude/CLAUDE.md too.
+  await mkdir(join(cwd, '.claude'))
+  await writeFile(join(cwd, '.claude', 'CLAUDE.md'), '@../AGENTS.md\n')
+  await turn('second', call('agents_spawn', { cwd, prompt: 'second task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual((await prompts())[1].slice(1), ['second task'])
+  await rm(join(cwd, '.claude'), { recursive: true })
+  await writeFile(join(cwd, 'CLAUDE.md'), '@AGENTS.md\n')
+  await turn('third', call('agents_spawn', { cwd, prompt: 'third task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual((await prompts())[2].slice(1), ['third task'])
+  // A long AGENTS.md gives its start and the note of the limit.
+  await rm(join(cwd, 'CLAUDE.md'))
+  await writeFile(join(cwd, 'AGENTS.md'), 'x'.repeat(RULES_LIMIT + 10))
+  await turn('fourth', call('agents_spawn', { cwd, prompt: 'fourth task' }), fauxAssistantMessage('Started.'))
+  assert.ok((await prompts())[3][1].endsWith(`</repository_rules>\n${message('child.claude.rulesTruncated', RULES_LIMIT)}`))
+})
+
+test('a Codex child gets no AGENTS.md block, because Codex reads AGENTS.md by itself', { timeout: 20000 }, async t => {
+  const { cwd, turn, prompts } = await fixture(t, { 'children.agent': 'codex' })
+  await writeFile(join(cwd, 'AGENTS.md'), 'Run npm test after each change.\n')
+  await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual((await prompts())[0].slice(1), ['first task'])
 })

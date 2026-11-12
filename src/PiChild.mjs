@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, defineExtension, GenerationTask, hook } from '@earendil-works/pi-durable'
 import { createReadTool } from '@earendil-works/pi-durable/tools'
@@ -11,6 +13,8 @@ export const CHILD_TURNS = 20
 /** The repository rules that a pi child gets, at most this count of bytes. */
 export const RULES_LIMIT = 32000
 const RULES_FILES = ['AGENTS.md', 'CLAUDE.md']
+/** The files of the project rules that Claude Code loads by itself. A symbolic link counts when its target exists. */
+const CLAUDE_FILES = ['CLAUDE.md', '.claude/CLAUDE.md']
 const context = BACKGROUND_CONTEXT
 
 /**
@@ -45,12 +49,13 @@ export async function childEnvironment(target, context) {
 }
 
 /**
- * The rules of the repository in [cwd] for a pi child: `AGENTS.md`, else `CLAUDE.md`, at most `RULES_LIMIT` bytes. The
- * read goes through [env], as for the tool `read`. So a file whose real path is out of the directory, a file that is not
- * a regular file, such as a FIFO, and a path that changes during the open do not count.
+ * The rules of the repository in [cwd]: the first file of [names] that has text, at most `RULES_LIMIT` bytes. For a pi
+ * child, [names] is `AGENTS.md`, else `CLAUDE.md`. The read goes through [env], as for the tool `read`. So a file whose
+ * real path is out of the directory, a file that is not a regular file, such as a FIFO, and a path that changes during
+ * the open do not count.
  */
-export async function repositoryRules(cwd, env = new ProjectReadEnv(cwd)) {
-  for (const name of RULES_FILES) {
+export async function repositoryRules(cwd, env = new ProjectReadEnv(cwd), names = RULES_FILES) {
+  for (const name of names) {
     const opened = await env.openBinaryReader(name, undefined, context)
     if (!opened.ok) continue
     try {
@@ -72,9 +77,27 @@ export async function repositoryRules(cwd, env = new ProjectReadEnv(cwd)) {
 export async function childInstructions(cwd) {
   const rules = await repositoryRules(cwd).catch(() => undefined)
   return [message('child.pi.instructions', cwd),
-    ...(rules ? [`${message('child.pi.rules', rules.name)}\n<repository_rules file="${rules.name}">\n${rules.text}\n</repository_rules>`
-      + (rules.truncated ? `\n${message('child.pi.rulesTruncated', RULES_LIMIT)}` : '')] : []),
+    ...(rules ? [rulesBlock(rules, message('child.pi.rules', rules.name), message('child.pi.rulesTruncated', RULES_LIMIT))] : []),
   ].join('\n\n')
+}
+
+/**
+ * The rules of the repository in [cwd] for a Claude child, as a prompt block, else `undefined`. Claude Code loads
+ * `CLAUDE.md` with its imports by itself, but it never reads `AGENTS.md`. So the block holds `AGENTS.md` only when
+ * the directory has none of `CLAUDE_FILES`. The read of `AGENTS.md` is the read of the rules of a pi child.
+ */
+export async function claudeChildRules(cwd) {
+  for (const name of CLAUDE_FILES) {
+    if (await stat(join(cwd, name)).then(() => true, () => false)) return undefined
+  }
+  const rules = await repositoryRules(cwd, undefined, ['AGENTS.md'])
+  return rules && rulesBlock(rules, message('child.claude.rules', rules.name), message('child.claude.rulesTruncated', RULES_LIMIT))
+}
+
+/** The rules of the repository as data of their own: the [intro] line, the text, and the [truncated] line when it applies. */
+function rulesBlock(rules, intro, truncated) {
+  return `${intro}\n<repository_rules file="${rules.name}">\n${rules.text}\n</repository_rules>`
+    + (rules.truncated ? `\n${truncated}` : '')
 }
 
 /**

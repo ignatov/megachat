@@ -46,6 +46,8 @@ agent({ name: 'fake-claude' })
     await writeFile(join(process.cwd(), 'session-request.json'), JSON.stringify({
       operation: 'new', claudeOptions: !!ctx.params._meta?.claudeCode,
     }))
+    // The options of a Claude session, so a test can read the settings sources and the session settings.
+    if (ctx.params._meta?.claudeCode) await writeFile(join(process.cwd(), 'claude-options.json'), JSON.stringify(ctx.params._meta.claudeCode.options))
     await writeFile(join(process.cwd(), 'agent.pid'), String(process.pid))
     return { sessionId: 'fake-session' }
   })

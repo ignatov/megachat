@@ -207,6 +207,15 @@ says that you approved it. Else it says in its result that the step is necessary
 `deny`, the child does not do the step, also when the task asks for it. A change of a `children.*` setting applies to the
 next child, also in the turn that made it.
 
+A Claude child works as Claude Code works in its project. It loads the project settings: `CLAUDE.md` with its imports,
+`.claude/settings.json` with its permissions, hooks and `env`, the MCP servers of `.mcp.json`, and the skills of
+`.claude/skills`. So a project hook runs in the child without a question, with the environment of the child. The child
+does not load `.claude/settings.local.json` or your files in `~/.claude`: not your `CLAUDE.md`, your settings, your
+skills or your plugins. When the `env` of `.claude/settings.json` sets `ANTHROPIC_BASE_URL`, Megachat does not start the
+Claude child, because the child would send the key of Megachat to that address. The failure names the file. Claude Code
+does not read `AGENTS.md`. When the project has an `AGENTS.md` and no `CLAUDE.md`, the daemon adds `AGENTS.md` to the
+prompt of the child, at most 32 KB. A Codex child reads `AGENTS.md` by itself.
+
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.
 The scan follows no symbolic link and reads no file. You choose the repositories, and the agent adds them to the known

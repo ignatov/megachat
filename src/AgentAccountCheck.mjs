@@ -46,6 +46,7 @@ async function checkAgent(configuration, agent, { cwd, timeoutMs, launch: overri
         protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: VERSION }, clientCapabilities: {},
       })
       step = 'session'
+      // The check has no project, so Claude loads no settings file. A child loads the project settings.
       await connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [],
         ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: launch.model, settingSources: [], promptSuggestions: false, maxTurns: 1 } } } } : {}) })
       return 'started'

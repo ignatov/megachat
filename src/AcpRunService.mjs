@@ -1,14 +1,32 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
+import { resolveSettings } from '@anthropic-ai/claude-agent-sdk'
 import { waitForState } from './waitForState.mjs'
 import { ChildSlot } from './ChildSlot.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
+import { claudeChildRules } from './PiChild.mjs'
+
+/**
+ * Refuses a Claude child in [cwd] when its project settings set `ANTHROPIC_BASE_URL` in `env`. Claude Code applies the
+ * `env` of the project settings after the environment of the child, so the requests of the child, with the key of
+ * Megachat, would go to the gateway of the project. `resolveSettings` of the SDK reads the files as Claude Code does:
+ * only `.claude/settings.json` of [cwd], and no file that is not valid. This is a guard against an accident, not against
+ * a hostile project: a project hook runs in the environment of the child and can read the key. The message names the
+ * file and the variable, and never the value.
+ */
+async function refuseProjectBaseUrl(cwd) {
+  const resolved = await resolveSettings({ cwd, settingSources: ['project'] }).catch(() => undefined)
+  const source = resolved?.sources.find(entry => entry.source === 'project'
+    && Object.hasOwn(entry.settings?.env ?? {}, 'ANTHROPIC_BASE_URL'))
+  if (source) throw new MegachatError('projectBaseUrl', source.path ?? join(cwd, '.claude', 'settings.json'))
+}
 
 /** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
 const STEER_METHOD = '_session/steering'
@@ -143,6 +161,7 @@ export class AcpRunService {
     try {
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation })) return
       const agent = run.agent ?? 'claude'
+      if (agent === 'claude') await refuseProjectBaseUrl(run.cwd)
       const configured = await this.configuration.childLaunch(agent)
       const launch = { ...configured, ...Object.fromEntries(Object.entries(this.launch).filter(([, value]) => value !== undefined)) }
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
@@ -198,7 +217,11 @@ export class AcpRunService {
       const steering = initialized._meta?.steering?.supported === true
       const params = {
         cwd: run.cwd, mcpServers: this.historyServer ? [this.historyServer] : [],
-        ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: launch.model, settingSources: [],
+        // A Claude child loads the project settings, as Claude Code does in the project: `CLAUDE.md` with its imports,
+        // the permissions, the hooks, the MCP servers and the skills. It loads no local settings and no file of the user.
+        // The options hold no session settings: the SDK puts them in the command line of Claude, and the base URL of
+        // Central holds the key. `refuseProjectBaseUrl` guards the base URL.
+        ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: launch.model, settingSources: ['project'],
           promptSuggestions: false, maxTurns: 30 } } } } : {}),
       }
       let sessionId
@@ -228,10 +251,13 @@ export class AcpRunService {
       // A message of the user from before the dispatch goes in the prompt. A later one goes through the steering request.
       const added = ((await this.state.snapshot()).runs[run.id].steers ?? []).filter(item => item.delivery === 'fallback')
       const rules = this.childRules?.()
+      // Claude Code never reads `AGENTS.md`. Without a `CLAUDE.md`, the prompt holds it, as the instructions of a pi child do.
+      const repository = agent === 'claude' ? await claudeChildRules(run.cwd).catch(() => undefined) : undefined
       const prompting = ctx.request(methods.agent.session.prompt, {
         sessionId, prompt: [
           ...(this.historyServer ? [{ type: 'text', text: message('history.instructions') }] : []),
           ...(rules ? [{ type: 'text', text: rules }] : []),
+          ...(repository ? [{ type: 'text', text: repository }] : []),
           // A continuation quotes its task in the same block as its prompt. The first prompt can be lost.
           { type: 'text', text: run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}` },
           ...(added.length ? [{ type: 'text', text: steerBlock(added) }] : []),
