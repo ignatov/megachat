@@ -3,6 +3,7 @@ import test from 'node:test'
 import { Watch } from '@earendil-works/chord'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { DaemonClient } from '../src/DaemonClient.mjs'
+import { MegachatError, message } from '../src/messages.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 
 test('a large retained conversation stays connected while idle', { timeout: 10000 }, async t => {
@@ -32,6 +33,25 @@ test('a large retained conversation stays connected while idle', { timeout: 1000
   await heartbeat.promise
   abort.abort()
   await watching.catch(error => assert.equal(error.name, 'AbortError'))
+})
+
+test('an event line above 32 MB ends the watch with the code of the event limit', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('x'.repeat(32 * 1024 * 1024 + 1)))
+  const daemon = new DaemonClient({ port: 1, token: 'a'.repeat(64) })
+  await assert.rejects(daemon.watch(() => assert.fail('no event')), { code: 'eventLimit', message: message('error.eventLimit', 32) })
+})
+
+// The list of the codes in the client of v0.2.0 and v0.3.0 also has no code of a limit. So a bridge of each build gets
+// `invalid` for each of these codes, as it got for `limit`.
+test('the client gives each code of a limit to the bridge as invalid, as it gave the code limit', { timeout: 10000 }, async t => {
+  const codes = [['limit', 30], ['turnChildLimit', 8], ['unfinishedLimit', 8], ['permissionLimit', 32], ['projectLimit', 100],
+    ['steerLimit', 16], ['viewLimit', 32], ['eventLimit', 32], ['outputLimit', 1], ['busy']]
+  let refusal
+  const server = new DaemonServer({ submit: async () => { throw new MegachatError(...refusal) } })
+  const daemon = new DaemonClient(await server.listen())
+  t.after(() => server.close())
+  for (refusal of codes)
+    await assert.rejects(daemon.json('/input', { requestId: refusal[0], text: 'Work' }), { code: refusal[0] === 'busy' ? 'busy' : 'invalid' })
 })
 
 test('waiting for a long task keeps the response open and returns valid JSON', { timeout: 10000 }, async t => {

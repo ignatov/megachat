@@ -9,7 +9,7 @@ import { waitForState } from './waitForState.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
-import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
+import { logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
 import { CLAUDE_PERMISSION_MODES, modelRef } from './Settings.mjs'
@@ -45,6 +45,8 @@ const withoutBypass = request => Array.isArray(request?.options)
 
 /** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
 const STEER_METHOD = '_session/steering'
+/** The limit of the error output of a child agent, in MB. Above it, Megachat stops the run. */
+const MAX_STDERR_MB = 1
 /** The updates that show work of the model, with the part of a step that each one streams. */
 const workParts = new Map([['agent_message_chunk', 'message'], ['agent_thought_chunk', 'thought'], ['tool_call', 'tool'],
   ['tool_call_update', 'tool'], ['plan', 'plan']])
@@ -179,9 +181,11 @@ export class AcpRunService {
     let connection
     let updates = Promise.resolve()
     let dispatched = false
-    let limited = false
+    // The text of the first limit that the run reached, or null.
+    let limited = null
     let waitingPermissions = 0
-    const limit = () => { limited = true; this.kill(child) }
+    const limit = text => { limited ??= text; this.kill(child) }
+    const timeLimit = () => limit(message('error.limit', minutesOf(this.launch.deadlineMs)))
     try {
       // The time of the start shows which children ran at the same time.
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, startedAt: Date.now() })) return
@@ -207,10 +211,10 @@ export class AcpRunService {
       let stderrBytes = 0
       child.stderr.on('data', chunk => {
         stderrBytes += chunk.length
-        if (stderrBytes > 1024 * 1024) limit()
+        if (stderrBytes > MAX_STDERR_MB * 1024 * 1024) limit(message('error.outputLimit', MAX_STDERR_MB))
       })
       await this.state.transition(run.id, ['launching'], { pid: child.pid })
-      timer = setTimeout(limit, this.launch.deadlineMs)
+      timer = setTimeout(timeLimit, this.launch.deadlineMs)
       connection = client({ name: 'air-megachat' })
         .onNotification(methods.client.session.update, ({ params }) => {
           if (!dispatched && params.update.sessionUpdate !== 'config_option_update') return
@@ -236,7 +240,7 @@ export class AcpRunService {
           finally {
             // An agent can ask for more than one permission at a time. The deadline starts again only when no
             // request waits, and only while the run is alive: after its end, nothing clears a new timer.
-            if (--waitingPermissions === 0 && !work.lifetime.signal.aborted) timer = setTimeout(limit, this.launch.deadlineMs)
+            if (--waitingPermissions === 0 && !work.lifetime.signal.aborted) timer = setTimeout(timeLimit, this.launch.deadlineMs)
           }
         })
         .connect(countWork(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), work))
@@ -345,7 +349,7 @@ export class AcpRunService {
       await this.state.transition(run.id, ['launching', 'ready', 'dispatched', 'running', 'approval'], {
         status: current.cancelRequested ? 'cancelled' : 'interrupted',
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message
-          : message(limited ? 'error.limit' : 'error.interrupted'),
+          : limited ?? message('error.interrupted'),
         autoResume: !limited && !(error instanceof MegachatError),
         ...(this.closing ? { plannedStop: true } : {}),
       })

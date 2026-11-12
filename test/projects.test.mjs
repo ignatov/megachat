@@ -12,7 +12,7 @@ import { AcpRunService } from '../src/AcpRunService.mjs'
 import { message } from '../src/messages.mjs'
 import { terminalStates } from '../src/MegachatState.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { resolveRepository } from '../src/ProjectDirectories.mjs'
+import { KNOWN_PROJECTS_LIMIT, resolveRepository } from '../src/ProjectDirectories.mjs'
 import { SessionHistoryService } from '../src/SessionHistoryService.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -123,6 +123,26 @@ test('a task in the workspace of Megachat and a refusal of a directory that is n
   assert.equal(removed.removed, directories.repository)
   assert.ok(!removed.workspaces.some(directory => directory.cwd === directories.repository))
   assert.ok(String(refused).includes(message('error.workspace')))
+})
+
+test('the main agent gets the limit of one turn, of the unfinished tasks and of the known repositories as their own refusals', { timeout: 20000 }, async t => {
+  const directories = await tree(t)
+  const opened = await open(t, directories)
+  const workspace = join(directories.stateDirectory, 'workspace')
+  const spawn = index => ['agents_spawn', { cwd: workspace, prompt: `Task ${index}` }]
+  // No run service starts the runs, so each run stays unfinished.
+  const results = await turn(opened, 'eight', ...Array.from({ length: 9 }, (_, index) => spawn(index)))
+  assert.ok(results.slice(0, 8).every(result => result.status === 'admitted'))
+  assert.ok(String(results[8]).includes(message('error.turnChildLimit', 8)))
+  const [unfinished] = await turn(opened, 'unfinished', spawn(9))
+  assert.ok(String(unfinished).includes(message('error.unfinishedLimit', 8)))
+  await opened.service.state.change(state => {
+    state.projects = Array.from({ length: KNOWN_PROJECTS_LIMIT }, (_, index) => join(directories.home, 'src', `known-${index}`))
+  })
+  const [full] = await turn(opened, 'full', ['agents_projects', { action: 'add', cwd: directories.repository }])
+  assert.ok(String(full).includes(message('error.projectLimit', 100)))
+  assert.match(message('error.projectLimit', KNOWN_PROJECTS_LIMIT), /^The list of the known repositories has 100 repositories, and it can hold at most 100\./)
+  assert.equal((await opened.service.state.snapshot()).projects.length, KNOWN_PROJECTS_LIMIT)
 })
 
 test('a known repository is an existing directory in the home directory or in an allowed root', async t => {

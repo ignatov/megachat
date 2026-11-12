@@ -9,7 +9,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { findSteer, maxSteers, MegachatState, permissionOpen } from '../src/MegachatState.mjs'
+import { findSteer, maxChildRunsPerTask, maxPermissionsPerRun, maxSteers, maxUnfinishedRuns, MegachatState, permissionOpen } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -266,7 +266,7 @@ test('a cancelled or limited run is not continued and cancellation follows a con
   await state.transition(cancelled.id, ['admitted'], { status: 'ready', generation: 'old', providerSessionId: 'one' })
   await state.transition(cancelled.id, ['ready'], { status: 'dispatched' })
   const limited = await state.admitChild('limited', { cwd: '/workspace', prompt: 'Too long' })
-  await state.transition(limited.id, ['admitted'], { status: 'interrupted', error: message('error.limit'), autoResume: false })
+  await state.transition(limited.id, ['admitted'], { status: 'interrupted', error: message('error.limit', 30), autoResume: false })
   const resumed = await state.admitChild('resumed', { cwd: '/workspace', prompt: 'Continue me' })
   await state.transition(resumed.id, ['admitted'], { status: 'ready', generation: 'old', providerSessionId: 'two' })
   await state.transition(resumed.id, ['ready'], { status: 'dispatched' })
@@ -576,6 +576,32 @@ async function reportedRuns(state, count, prefix = 'run', permissions = () => 0)
   return runs
 }
 
+// Each limit has its own code and a text with its number, so the main agent sees the real reason of a refusal.
+test('a refusal for eight runs of one task, for eight unfinished runs and for 32 permissions of a run names that limit', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  assert.deepEqual([maxChildRunsPerTask, maxUnfinishedRuns, maxPermissionsPerRun], [8, 8, 32])
+  await state.submit('main', 'Work')
+  const runs = []
+  for (let index = 0; index < 8; index++) runs.push(await state.admitChild(`run-${index}`, { cwd: '/workspace', prompt: `Task ${index}` }))
+  // The limit of the task comes first, also when the unfinished runs are at their limit too.
+  await assert.rejects(state.admitChild('ninth', { cwd: '/workspace', prompt: 'Task 8' }),
+    { code: 'turnChildLimit', message: message('error.turnChildLimit', 8) })
+  assert.match(message('error.turnChildLimit', 8), /^This turn started 8 child runs already, and one turn can start at most 8\./)
+  await nextTurn(state, 'next')
+  await assert.rejects(state.admitChild('unfinished', { cwd: '/workspace', prompt: 'Task 9' }),
+    { code: 'unfinishedLimit', message: message('error.unfinishedLimit', 8) })
+  assert.match(message('error.unfinishedLimit', 8), /^Megachat has 8 unfinished child tasks.*agents_cancel/)
+  // An ended run frees a place.
+  await state.transition(runs[0].id, ['admitted'], { status: 'running', generation: 'process' })
+  for (let index = 0; index < 32; index++) await state.requestPermission(runs[0].id, 'process', permissionRequest)
+  await assert.rejects(state.requestPermission(runs[0].id, 'process', permissionRequest),
+    { code: 'permissionLimit', message: message('error.permissionLimit', 32) })
+  assert.match(message('error.permissionLimit', 32), /^This child run made 32 permission requests already, and one run can make at most 32\./)
+  await state.transition(runs[0].id, ['running', 'approval'], { status: 'completed' })
+  assert.equal((await state.admitChild('unfinished', { cwd: '/workspace', prompt: 'Task 9' })).status, 'admitted')
+})
+
 test('the daemon admits input 1001 and drops the oldest settled inputs', { timeout: 30000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))
@@ -787,7 +813,8 @@ test('a steer message is recorded before the send, once for a repeated call, and
   const next = (await state.snapshot()).runs[(await state.snapshot()).runs[run.id].resumedBy]
   assert.equal(next.steers.length, 1)
   for (let index = 1; index < maxSteers; index++) await state.steer(`tool:${index + 1}:steer`, args)
-  await assert.rejects(state.steer('one-too-many', args), { code: 'steerLimit' })
+  await assert.rejects(state.steer('one-too-many', args), { code: 'steerLimit', message: message('error.steerLimit', maxSteers) })
+  assert.match(message('error.steerLimit', maxSteers), /16 added messages/)
   await state.transition(next.id, ['admitted'], { status: 'cancelled' })
   await assert.rejects(state.steer('ended', args), { code: 'childIdle' })
   // Only a turn of the user can steer.

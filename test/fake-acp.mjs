@@ -98,7 +98,9 @@ async function answerPrompt(ctx) {
   // Each prompt with all of its blocks, so a test can read the blocks that the daemon adds before the task.
   await appendFile(join(process.cwd(), 'prompts'), `${JSON.stringify(ctx.params.prompt.map(block => block.text))}\n`)
   if (text === 'crash') process.exit(1)
-  if (text === 'wait') {
+  // The prompt `noisy` writes more error output than a child may write, then waits as `wait` does.
+  if (text === 'noisy') process.stderr.write('x'.repeat(1024 * 1024 + 1))
+  if (text === 'wait' || text === 'noisy') {
     if (!cancelled) await new Promise(resolve => { cancel = resolve })
     return { stopReason: 'cancelled' }
   }

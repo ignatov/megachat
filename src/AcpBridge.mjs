@@ -94,6 +94,9 @@ function promptText(prompt) {
   return prompt.map(block => block.type === 'text' ? block.text : `[${block.name}](${block.uri})`).join('\n')
 }
 
+/** The limit of the open views of one ACP connection. */
+const MAX_VIEWS = 32
+
 /**
  * Routes ACP views to one daemon conversation. Each view owns its transcript projection. [transcripts] is the directory
  * of the transcripts of the child runs in the state directory of the daemon. Without it, a row names no file.
@@ -142,7 +145,7 @@ export class AcpBridge {
     const id = loading ? ctx.params.sessionId : `megachat-${randomUUID()}`
     requireCondition(id === 'megachat' || /^megachat-[a-f0-9-]{36}$/.test(id), 'missing')
     this.views.get(id)?.close()
-    requireCondition(this.views.has(id) || this.views.size < 32, 'limit')
+    requireCondition(this.views.has(id) || this.views.size < MAX_VIEWS, 'viewLimit', MAX_VIEWS)
     const view = new AcpBridgeSession(this.daemon, this.connection, id, this)
     this.views.set(id, view)
     try { return await view.attach(ctx, loading) }

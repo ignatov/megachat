@@ -15,7 +15,7 @@ import { ChildPool, directoryKey, overlaps } from '../src/ChildPool.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { terminalStates } from '../src/MegachatState.mjs'
-import { message } from '../src/messages.mjs'
+import { message, minutesOf } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { PiRunService } from '../src/PiRunService.mjs'
 import { waitForState } from '../src/waitForState.mjs'
@@ -240,6 +240,15 @@ test('with children.parallel 1, a task in another directory waits for the runnin
   assert.deepEqual(await dispatches(cwd.b), ['hello'])
 })
 
+test('a child that writes more than 1 MB of error output stops with the text of the output limit, without a continuation', { timeout: 30000 }, async t => {
+  const { cwd, service } = await open(t)
+  const [noisy] = await admit(service, { cwd: cwd.a, prompt: 'noisy' })
+  const state = await until(service, value => terminalStates.has(value.runs[noisy.id].status))
+  assert.deepEqual([state.runs[noisy.id].status, state.runs[noisy.id].error, state.runs[noisy.id].autoResume, state.runs[noisy.id].resumedBy],
+    ['interrupted', message('error.outputLimit', 1), false, undefined])
+  assert.match(state.runs[noisy.id].error, /^The child agent wrote more than 1 MB of error output/)
+})
+
 test('the deadline ends one run while another run waits for a permission, and the waiting run keeps its request', { timeout: 30000 }, async t => {
   const { cwd, service, children } = await open(t)
   const [waiting] = await admit(service, { cwd: cwd.a, prompt: 'approval' })
@@ -248,7 +257,9 @@ test('the deadline ends one run while another run waits for a permission, and th
   children.launch.deadlineMs = 300
   const [limited] = await admit(service, { cwd: cwd.b, prompt: 'wait' })
   let state = await until(service, value => terminalStates.has(value.runs[limited.id].status))
-  assert.deepEqual([state.runs[limited.id].status, state.runs[limited.id].error, state.runs[limited.id].autoResume], ['interrupted', message('error.limit'), false])
+  assert.deepEqual([state.runs[limited.id].status, state.runs[limited.id].error, state.runs[limited.id].autoResume], ['interrupted', message('error.limit', minutesOf(300)), false])
+  // The text names the time limit and not the output limit.
+  assert.match(state.runs[limited.id].error, /time limit of 0\.005 minutes/)
   await new Promise(resolve => setTimeout(resolve, 400))
   state = await service.state.snapshot()
   assert.equal(state.runs[waiting.id].status, 'approval')

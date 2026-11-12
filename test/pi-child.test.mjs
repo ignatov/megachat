@@ -14,7 +14,7 @@ import { taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
 import { ChildPool } from '../src/ChildPool.mjs'
 import { serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
-import { message } from '../src/messages.mjs'
+import { message, minutesOf } from '../src/messages.mjs'
 import { childEnvironment, readTool, repositoryRules } from '../src/PiChild.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { PiRunService } from '../src/PiRunService.mjs'
@@ -250,7 +250,7 @@ test('the deadline stops a pi child without a continuation, and the main convers
   })
   let state = await turn('spawn')
   const [run] = Object.values(state.runs)
-  assert.deepEqual([run.status, run.error, run.autoResume, run.resumedBy], ['interrupted', message('error.limit'), false, undefined])
+  assert.deepEqual([run.status, run.error, run.autoResume, run.resumedBy], ['interrupted', message('error.limit', minutesOf(300)), false, undefined])
   assert.equal(Object.keys(state.runs).length, 1)
   main.push(fauxAssistantMessage('Still here.'))
   state = await turn('hello', 'Hello')
@@ -300,7 +300,7 @@ test('a cancel, the deadline and a daemon stop end a pi run whose start waits', 
 
   const limited = await start({ deadlineMs: 300, main: [fauxAssistantMessage('It ran out of time.')] })
   const ended = (await finished(limited.service)).runs[limited.run.id]
-  assert.deepEqual([ended.status, ended.error, ended.autoResume, ended.resumedBy], ['interrupted', message('error.limit'), false, undefined])
+  assert.deepEqual([ended.status, ended.error, ended.autoResume, ended.resumedBy], ['interrupted', message('error.limit', minutesOf(300)), false, undefined])
 
   const stopped = await start()
   await stopped.pi.close()

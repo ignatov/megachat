@@ -515,6 +515,17 @@ test('a second load of a session ID during the attach replaces the first view wi
   assert.equal(daemon.open.size, 0)
 })
 
+test('a connection with 32 open views refuses a new view with the text of the view limit', { timeout: 10000 }, async () => {
+  const daemon = stubDaemon()
+  const bridge = stubBridge(daemon)
+  const create = { params: { cwd: '/project' } }
+  for (let index = 0; index < 32; index++) await bridge.attach(create, false)
+  await assert.rejects(bridge.attach(create, false), { code: 'viewLimit', message: message('error.viewLimit', 32) })
+  assert.match(message('error.viewLimit', 32), /^This connection has 32 open Megachat chats, and it can have at most 32\./)
+  assert.equal(bridge.views.size, 32)
+  bridge.close()
+})
+
 test('a prompt gives each resource_link block to the main agent as a Markdown link, and refuses an image', { timeout: 10000 }, async t => {
   const { daemon, cwd, fake } = await fixture(t)
   fake.setResponses([fauxAssistantMessage('Read.')])

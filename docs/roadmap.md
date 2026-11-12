@@ -38,9 +38,6 @@ The later work on Megachat, in the order of the work. Each item gives its reason
    until an IDE opens Megachat. So the timer of the morning report does not run, and no report comes until then.
 8. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
    Air does not know. Today each attach sends one `_session/service/record` for each address, up to 5,000.
-9. **A refusal text of its own for each limit of work in progress.** Today `error.limit` names a time or output
-   limit also for eight child runs of one main task, eight unfinished tasks, and 32 permissions of one run. So the
-   model does not see the real reason.
 10. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
     hook that makes a permission request in the state, as an ACP child asks for a permission. These tools need a
     sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.

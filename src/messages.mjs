@@ -18,8 +18,14 @@ export class MegachatError extends Error {
   }
 }
 
-export function requireCondition(condition, code = 'invalid') {
-  if (!condition) throw new MegachatError(code)
+/** Refuses a request with the code [code] when [condition] is false. [args] fill the text of the code. */
+export function requireCondition(condition, code = 'invalid', ...args) {
+  if (!condition) throw new MegachatError(code, ...args)
+}
+
+/** The duration [ms] in minutes for a text, with at most two significant digits. */
+export function minutesOf(ms) {
+  return String(Number((ms / 60000).toPrecision(2)))
 }
 
 /**

@@ -4,7 +4,7 @@ import { ConversationBusy, ConversationIdle } from '@earendil-works/pi-durable'
 import { steerBlock } from './AcpRunService.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { maxAutomaticResumes, MegachatDoc, terminalStates } from './MegachatState.mjs'
-import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
+import { logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
 import { PiChildDoc } from './PiChild.mjs'
 
 const context = BACKGROUND_CONTEXT
@@ -152,7 +152,7 @@ export class PiRunService {
         // and the run ends as for an error. The dispatch is one commit, so it gets no such end.
         const launch = new AbortController()
         const stopped = new Promise((_, reject) => launch.signal.addEventListener('abort',
-          () => reject(limited ? new MegachatError('limit') : new Error('stopped')), { once: true }))
+          () => reject(limited ? new MegachatError('limit', minutesOf(this.deadlineMs)) : new Error('stopped')), { once: true }))
         stopped.catch(() => {})
         const step = promise => Promise.race([promise, stopped])
         work.lifetime.signal.addEventListener('abort', () => launch.abort(), { once: true })
@@ -202,7 +202,7 @@ export class PiRunService {
       const status = current.cancelRequested ? 'cancelled' : settled.status === 'done' ? 'completed'
         : restarted || limited || repeatableReasons.has(reason) ? 'interrupted' : 'failed'
       const error = status === 'failed' ? message('error.pi.stopped', reason)
-        : status === 'interrupted' && !restarted ? message(limited ? 'error.limit' : 'error.interrupted') : undefined
+        : status === 'interrupted' && !restarted ? (limited ? message('error.limit', minutesOf(this.deadlineMs)) : message('error.interrupted')) : undefined
       // A continuation carries a withdrawn message. Without one, the report tells the main agent to send it again.
       const continued = restarted || status === 'interrupted' && !limited && (current.resumeAttempt ?? 0) < maxAutomaticResumes
       const unhandled = error !== undefined && !continued && work.withdrawn > 0

@@ -808,12 +808,23 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The state must keep only the text that a child agent wrote. An open of the state must drop the stored updates of an earlier build.
 - Permission waits must suspend the child execution deadline.
 - The deadline must start again only when no permission request of the child waits.
+- An ACP child that writes more than 1 MB of error output must stop. Its run must become interrupted with no continuation.
+- Each limit of the work must have a refusal code and a text of its own. The text must give the number of the limit
+  from the constant in the code, and it must tell the main agent what it can do. The limits are eight child runs of
+  one main task (`turnChildLimit`), eight unfinished child tasks (`unfinishedLimit`), 32 permission requests of one
+  run (`permissionLimit`), 100 known repositories (`projectLimit`), 16 messages of the user for one task
+  (`steerLimit`), 32 views of one ACP connection (`viewLimit`), and 32 MB for one event line of the daemon stream
+  (`eventLimit`). The error of a run at its deadline must give the deadline in minutes. The error of a run above the
+  limit of the error output must name that limit. The client of the daemon must give each of these codes to the
+  bridge as `invalid`, as it gives each other code that is not in its list, so a bridge and a daemon of different
+  builds keep their behavior.
   [@test] ../test/integration.test.mjs
   [@test] ../test/state.test.mjs
   [@test] ../test/recovery.test.mjs
   [@test] ../test/transport.test.mjs
   [@test] ../test/launch.test.mjs
   [@test] ../test/parallel.test.mjs
+  [@test] ../test/projects.test.mjs
 - A Claude child must work as Claude Code works in the directory of its run. It must start with `settingSources: ["project"]`, so it loads `CLAUDE.md` with its `@` imports, `.claude/settings.json` of the directory of the run with its permissions, hooks and `env`, the MCP servers of `.mcp.json`, and the skills of `.claude/skills`. A project hook and a project MCP server then run without a question, and a project hook runs with the environment of the child, the key of Megachat included. It must not load `.claude/settings.local.json`, a `.claude/settings.json` of a parent directory, and no file of the user: not `~/.claude/CLAUDE.md`, not `~/.claude/settings.json`, and not the skills, the plugins and the MCP servers of the user. The adapter of Claude Code reads the permission mode and the model from each settings file all the same. The settings `children.permissionMode` and `children.claudeModel` control them.
 - The options of a Claude child must hold no session settings. The SDK puts them in the command line of the Claude process, which each local user can read, and the base URL of Central holds the key. The key and the base URL must go only in the environment of the agent.
 - Claude Code applies the `env` of the project settings after the environment of the child. So before the launch of a Claude child, Megachat must read the project settings as Claude Code reads them, with `resolveSettings` of the SDK. When their `env` sets `ANTHROPIC_BASE_URL`, Megachat must refuse the run before it starts the agent, because the child would send its requests and the key of Megachat to that address. The failure of the run must name the file and the variable, and never the value. A project key or another variable must not refuse a run: it does not move the key of Megachat. A settings file that is not valid must not refuse a run, because Claude Code ignores it. When the read of the settings fails, the run must go on, and the log of the daemon must say that the guard did not run, with no content of the settings. This is a guard against an accident, not against a hostile project, because a project hook can read the key.

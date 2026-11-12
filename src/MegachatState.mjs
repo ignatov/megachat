@@ -43,6 +43,12 @@ export function lastUserTurnEnd(state) {
 export const maxAutomaticResumes = 2
 /** The limit of the messages that the user adds to one task, for its first run and each continuation together. */
 export const maxSteers = 16
+/** The limit of the child runs that one main task creates. */
+export const maxChildRunsPerTask = 8
+/** The limit of the unfinished child runs, queued runs included. */
+export const maxUnfinishedRuns = 8
+/** The limit of the permission requests of one child run. */
+export const maxPermissionsPerRun = 32
 const sentStates = new Set(['dispatched', 'running', 'approval'])
 /**
  * The reasons of Pi Durable for a turn without an answer that can go away: an error of the model, and a stop of the
@@ -360,7 +366,7 @@ export class MegachatState {
     return this.change(state => {
       requireCondition(!automaticKinds.has(state.current?.kind), 'proposalOnly')
       if (!state.projects.includes(cwd)) {
-        requireCondition(state.projects.length < KNOWN_PROJECTS_LIMIT, 'limit')
+        requireCondition(state.projects.length < KNOWN_PROJECTS_LIMIT, 'projectLimit', KNOWN_PROJECTS_LIMIT)
         state.projects.push(cwd)
       }
       if (requestId) state.projectCreations[requestId] = { path, cwd, createdAt: state.projectCreations[requestId]?.createdAt ?? Date.now() }
@@ -764,8 +770,10 @@ export class MegachatState {
       requireCondition(state.current && !state.current.cancelling, 'inactive')
       requireCondition(!automaticKinds.has(state.current.kind), 'proposalOnly')
       requireCondition(isDirectoryOf(state, args.cwd), 'workspace')
-      requireCondition(Object.values(state.runs).filter(run => run.mainRunId === state.current.id).length < 8, 'limit')
-      requireCondition(Object.values(state.runs).filter(run => !terminalStates.has(run.status)).length < 8, 'limit')
+      requireCondition(Object.values(state.runs).filter(run => run.mainRunId === state.current.id).length < maxChildRunsPerTask,
+        'turnChildLimit', maxChildRunsPerTask)
+      requireCondition(Object.values(state.runs).filter(run => !terminalStates.has(run.status)).length < maxUnfinishedRuns,
+        'unfinishedLimit', maxUnfinishedRuns)
       const previous = args.childSessionId && Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
       // A run without the field is from before the choice of the agent, so it is a Claude run.
       const agent = previous ? previous.agent ?? 'claude' : args.agent ?? defaultAgent
@@ -830,7 +838,7 @@ export class MegachatState {
       requireCondition(isDirectoryOf(state, run.cwd), 'workspace')
       requireCondition(!terminalStates.has(run.status), 'childIdle')
       requireCondition(!run.cancelRequested, 'inactive')
-      requireCondition(steerCount(state, run) < maxSteers, 'steerLimit')
+      requireCondition(steerCount(state, run) < maxSteers, 'steerLimit', maxSteers)
       const queued = !sentStates.has(run.status)
       const item = { id: randomUUID(), requestId, digest: hash, text: args.prompt, mode: args.mode, createdAt: Date.now(),
         delivery: queued ? 'fallback' : 'pending', outcome: queued ? 'queued' : null }
@@ -934,7 +942,8 @@ export class MegachatState {
       const run = state.runs[runId]
       requireCondition(run && run.generation === generation && !run.cancelRequested && !terminalStates.has(run.status), 'stale')
       requireCondition(JSON.stringify(request).length <= 32000 && Array.isArray(request.options) && request.options.length > 0)
-      requireCondition(Object.values(state.permissions).filter(value => value.runId === runId).length < 32, 'limit')
+      requireCondition(Object.values(state.permissions).filter(value => value.runId === runId).length < maxPermissionsPerRun,
+        'permissionLimit', maxPermissionsPerRun)
       retain(state)
       const id = randomUUID()
       // Each text of the tool call can hold a text of the child. The ID of the tool call and the options stay, so the

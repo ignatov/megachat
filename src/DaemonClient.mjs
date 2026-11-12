@@ -2,6 +2,9 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { MegachatError, requireCondition } from './messages.mjs'
 
+/** The limit of one event line of the daemon stream, in MB. */
+const MAX_EVENT_MB = 32
+
 export class DaemonClient {
   static async connect(directory) {
     let text
@@ -45,7 +48,7 @@ export class DaemonClient {
     const decoder = new TextDecoder()
     for await (const chunk of response.body) {
       buffer += decoder.decode(chunk, { stream: true })
-      requireCondition(buffer.length <= 32 * 1024 * 1024, 'limit')
+      requireCondition(buffer.length <= MAX_EVENT_MB * 1024 * 1024, 'eventLimit', MAX_EVENT_MB)
       let end
       while ((end = buffer.indexOf('\n')) >= 0) {
         const event = JSON.parse(buffer.slice(0, end))
