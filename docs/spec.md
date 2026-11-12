@@ -90,7 +90,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   that streamed at the answer are no new part: the Codex adapter can send them after its answer.
 - The answer `failed`, an error, no answer in 20 seconds, an agent without steering, and the mode `interrupt` must use
   the fallback: `session/cancel`, and after the end of the prompt a continuation in the same provider session. Its
-  prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`.
+  prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`. After
+  one message used the fallback, each other waiting message of the run must go to the same stop without a steering
+  request.
 - While a permission request of the run waits for the user, the fallback must wait until the user answered each
   request of the run. A steer must not change a permission request. The chat must keep the task of the run with its ID
   and its phase.

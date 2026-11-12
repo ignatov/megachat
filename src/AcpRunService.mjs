@@ -319,7 +319,9 @@ export class AcpRunService {
       const run = snapshot.runs[runId]
       if (work.ended || run.generation !== generation || run.steerRestart || run.cancelRequested || terminalStates.has(run.status)) return
       const item = run.steers?.find(value => value.delivery === 'pending' && !work.steered.has(value.id))
-      if (item && steering && item.mode === 'queue') {
+      // After one message failed over, the stop takes each other message. A request would only delay the stop.
+      const stopping = [...work.steered.values()].some(entry => entry.state === 'fallback')
+      if (item && steering && item.mode === 'queue' && !stopping) {
         work.steered.set(item.id, { state: 'sent' })
         await this.state.updateSteer(runId, generation, item.id, { sentAt: Date.now() })
         const outcome = await this.requestSteer(ctx, sessionId, item.text)

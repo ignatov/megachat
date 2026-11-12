@@ -1126,19 +1126,29 @@ test('a steer keeps a permission request pending, and a steer of a queued run ch
   assert.equal(state.runs[second.id].prompt, 'second')
 })
 
-test('without steering, a steer stops the turn only after the user answered each of two open permission requests', { timeout: 15000 }, async t => {
-  // The second turn of the user stays in its model request, so the state accepts the steer without the wait of the
-  // tool. The end of the test ends that turn before the close of the service.
+/**
+ * Starts a turn of the user that stays in its model request until the end of the test, so the state accepts a steer
+ * without the wait of the tool. Call it before `fixture`: the end of the test then ends the turn before the close of the
+ * service. Gives the function that starts the turn.
+ */
+function heldTurn(t) {
   const hold = Promise.withResolvers()
   t.after(() => hold.resolve())
+  return async (service, fake) => {
+    fake.setResponses([async () => { await hold.promise; return fauxAssistantMessage('Steered.') },
+      fauxAssistantMessage('The child finished.'), fauxAssistantMessage('The child finished again.')])
+    await service.submit('held', 'Add more')
+    await waitForState(service.state, state => state.current?.requestId === 'held' ? true : undefined)
+  }
+}
+
+test('without steering, a steer stops the turn only after the user answered each of two open permission requests', { timeout: 15000 }, async t => {
+  const holdTurn = heldTurn(t)
   const { daemon, fake, service } = await fixture(t, 'approvals', 'claude', { env: { FAKE_ACP_STEERING: 'off' } })
   const pending = state => Object.values(state.permissions).filter(permission => permission.status === 'pending')
   await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
   const [first, second] = await waitForState(service.state, state => pending(state).length === 2 ? pending(state) : undefined)
-  fake.setResponses([async () => { await hold.promise; return fauxAssistantMessage('Steered.') },
-    fauxAssistantMessage('The child finished.'), fauxAssistantMessage('The child finished again.')])
-  await service.submit('more', 'Add more')
-  await waitForState(service.state, state => state.current?.requestId === 'more' ? true : undefined)
+  await holdTurn(service, fake)
   const [run] = Object.values((await service.state.snapshot()).runs)
   await service.state.steer('stop', { childSessionId: run.childSessionId, prompt: 'Use the other branch', mode: 'queue' })
   await daemon.json('/permission', { id: first.id, decision: 'yes' })
@@ -1149,6 +1159,30 @@ test('without steering, a steer stops the turn only after the user answered each
   assert.deepEqual([state.permissions[first.id].status, state.permissions[second.id].status], ['answered', 'answered'])
   const next = Object.values(state.runs).find(value => value.resumeOf === run.id)
   assert.deepEqual(next.steers.map(item => item.text), ['Use the other branch'])
+})
+
+test('after one message fails over to the stop, the other waiting messages go to the stop without a steering request', { timeout: 15000 }, async t => {
+  const holdTurn = heldTurn(t)
+  const { cwd, daemon, fake, service, children } = await fixture(t, 'steer', 'claude', { env: { FAKE_ACP_STEERING: 'hang' } })
+  children.steerTimeoutMs = 1000
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  await holdTurn(service, fake)
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  for (const text of ['First message', 'Second message']) {
+    await service.state.steer(text, { childSessionId: run.childSessionId, prompt: text, mode: 'queue' })
+  }
+  const state = await waitForState(service.state, state => Object.values(state.runs).some(value => value.resumeOf === run.id
+    && value.status === 'completed') ? state : undefined)
+  // The agent gave no answer to the first request. A request for the second message would add one more time limit.
+  assert.equal((await steerings(cwd)).length, 1)
+  const next = Object.values(state.runs).find(value => value.resumeOf === run.id)
+  assert.deepEqual(next.steers.map(item => [item.text, item.repeat]), [['First message', true], ['Second message', false]])
+  assert.deepEqual(state.runs[run.id].steers.map(item => item.outcome), ['restarted', 'restarted'])
 })
 
 test('a turn of a project event or of a child result cannot steer, and a follow-up to a working child names agents_steer', { timeout: 15000 }, async t => {
