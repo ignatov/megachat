@@ -282,6 +282,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   default must be 50. `nextCursor` must continue after the last row of the page, and `truncated` must be true when more
   rows exist. `agent`, `project` and `state` must select the rows. `project` must select each working directory that
   is that directory or in it.
+- The cursor must name the scan time of its view. Megachat must keep the view of the last page with a next cursor for
+  1 minute, one view only, and the next pages of that cursor must come from it, so a change of the activity or of the
+  state moves no row across the cursor. When that view is gone, the page must come from a new view after the last row
+  of the cursor, and `incomplete` must say that a session can be missing or come two times.
 - Megachat must keep the view of the processes for 5 seconds, so two calls in that time make one `ps` call. `scannedAt`
   must give the time of the view. Megachat must get the working directory once for each process, and again for a PID
   with another start time.

@@ -8,7 +8,7 @@ import { MemoryStorage } from '@earendil-works/pi-durable'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { parseOpenFiles, parseProcesses, processTable } from '../src/ProcessTable.mjs'
-import { ACTIVE_CPU_PERCENT, RunningAgents, SNAPSHOT_TTL_MS } from '../src/RunningAgents.mjs'
+import { ACTIVE_CPU_PERCENT, PAGE_VIEW_MS, RunningAgents, SNAPSHOT_TTL_MS } from '../src/RunningAgents.mjs'
 
 // Each command line of the fake table holds this marker, so a test can prove that no argument reaches the output.
 const SECRET = 'sk-marker-0123456789'
@@ -193,6 +193,31 @@ test('the list is bounded: limit, nextCursor and truncated page through 500 sess
   await assert.rejects(running.query({ cursor: 'not a cursor' }), { code: 'invalid' })
   await assert.rejects(running.query({ agent: 'junie' }), { code: 'invalid' })
   await assert.rejects(running.query({ state: 'stuck' }), { code: 'invalid' })
+})
+
+test('the pages of one cursor come from the view of the first page for 1 minute, so a change of the activity moves no row across the cursor', async () => {
+  const clock = fakeClock()
+  let load = 0
+  const table = fakeTable(() => [proc(1, 0, '/sbin/launchd'), proc(2, 1, '/Applications/iTerm.app/Contents/MacOS/iTerm2', { name: 'iTerm2' }),
+    proc(10, 2, 'claude', { cpu: load }), proc(11, 2, 'claude'), proc(12, 2, 'claude')], { 10: '/work', 11: '/work', 12: '/work' })
+  const running = new RunningAgents(fakeState(), { table, clock, daemonPid: DAEMON })
+  const first = await running.query({ limit: 1 })
+  assert.deepEqual(first.sessions.map(row => row.pid), [12])
+  // After the view of 5 seconds, process 10 at the end of the list becomes active, so a new view puts it first.
+  clock.time += SNAPSHOT_TTL_MS
+  load = 40
+  assert.deepEqual((await running.query()).sessions.map(row => row.pid), [10, 12, 11])
+  const second = await running.query({ limit: 1, cursor: first.nextCursor })
+  const third = await running.query({ limit: 1, cursor: second.nextCursor })
+  assert.deepEqual([second, third].map(page => [page.sessions.map(row => row.pid), page.scannedAt]), [[[11], first.scannedAt], [[10], first.scannedAt]])
+  assert.equal(third.nextCursor, null)
+  assert.ok(![first, second, third].some(page => page.incomplete.includes(message('running.incomplete.view'))))
+  // After 1 minute, the view of the cursor is gone: the page comes from a new view, and incomplete says so.
+  clock.time += PAGE_VIEW_MS
+  const late = await running.query({ limit: 1, cursor: first.nextCursor })
+  assert.deepEqual(late.sessions.map(row => row.pid), [11])
+  assert.equal(late.scannedAt, new Date(clock.time).toISOString())
+  assert.ok(late.incomplete.includes(message('running.incomplete.view')))
 })
 
 test('two calls in 5 seconds make one ps call, and a later call makes a new one', async () => {

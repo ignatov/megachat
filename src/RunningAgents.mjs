@@ -10,6 +10,11 @@ import { ACTIVE_MS, OPEN_STEPS, sessionStatus } from './SessionStatus.mjs'
 /** Some calls in one turn share one view, so they make one `ps` call. `scannedAt` gives the age of the view. */
 export const SNAPSHOT_TTL_MS = 5000
 /**
+ * The time that Megachat keeps the view of a page with a next cursor, so the next pages come from the same view. The
+ * activity and the state of a row change between two views, and so does its place in the order.
+ */
+export const PAGE_VIEW_MS = 60000
+/**
  * A session with at least this CPU load, with its helpers, in percent of one core, is active. On the Mac of the author,
  * 31 idle sessions of Claude Code, Codex and OpenCode had at most 4.8 percent in 186 samples. A session that ran a
  * tool had 32 to 78 percent. A session that waits for the model uses little CPU, so a log write is the other sign of
@@ -20,7 +25,8 @@ export const RUNNING_LIMIT = 50
 export const RUNNING_MAX_LIMIT = 200
 export const STATES = ['orphan', 'active', 'idle']
 const systemClock = { now: () => Date.now() }
-const CURSOR = /^([0-2])\.(\d{1,15})\.(\d{1,10})(?:\.(\d{1,3}))?$/
+/** The scan time of the view, then the sort key of the last row of the page. */
+const CURSOR = /^(\d{1,15})\.([0-2])\.(\d{1,15})\.(\d{1,10})(?:\.(\d{1,3}))?$/
 
 /** A row without a log sorts by the start time of its process. `slot` orders the sessions of one process. */
 const sortKey = row => [STATES.indexOf(row.state), row.lastActivityAt ?? row.startedAt, row.pid, row.slot]
@@ -181,30 +187,36 @@ export class RunningAgents {
 
   /**
    * One page of the sessions. [project] selects the sessions with the working directory in that directory. The cursor
-   * is the sort key of the last row of the page, so a page stays in place when a session starts or ends between calls.
+   * names the scan time of the view and the sort key of the last row of the page. Megachat keeps the view of the last
+   * page with a next cursor for 1 minute, so the next pages come from the same view, and a change of the activity
+   * moves no row across the cursor. When that view is gone, the page comes from a new view after the sort key, and
+   * `incomplete` says so.
    */
   async query({ agent, project, state, limit = RUNNING_LIMIT, cursor } = {}) {
     requireCondition(agent === undefined || AGENTS.includes(agent))
     requireCondition(state === undefined || STATES.includes(state))
     requireCondition(Number.isSafeInteger(limit) && limit >= 1 && limit <= RUNNING_MAX_LIMIT)
     requireCondition(project === undefined || typeof project === 'string' && /^(\/|~(\/|$))/.test(project.trim()) && project.length <= 4096)
-    const after = cursor === undefined ? undefined : CURSOR.exec(cursor)?.slice(1).map(part => part === undefined ? 0 : Number(part))
-    requireCondition(cursor === undefined || after)
+    const parsed = cursor === undefined ? undefined : CURSOR.exec(cursor)?.slice(1).map(part => part === undefined ? 0 : Number(part))
+    requireCondition(cursor === undefined || parsed)
+    const [pagedAt, ...after] = parsed ?? []
     const directory = project === undefined ? undefined : await realDirectory(project)
-    const view = await this.view()
+    const kept = parsed && this.paged?.scannedAt === pagedAt && this.clock.now() - pagedAt < PAGE_VIEW_MS && this.paged.logs === Boolean(this.logs())
+    const view = kept ? this.paged : await this.view()
     const matching = view.rows.filter(row => (agent === undefined || row.agent === agent) && (state === undefined || row.state === state)
       && (directory === undefined || row.cwd !== null && (row.cwd === directory || row.cwd.startsWith(directory.endsWith(sep) ? directory : directory + sep))))
-    const rest = after ? matching.filter(row => compare(sortKey(row), after) > 0) : matching
+    const rest = parsed ? matching.filter(row => compare(sortKey(row), after) > 0) : matching
     const page = rest.slice(0, limit)
     const more = rest.length > limit
+    if (more) this.paged = view
     return {
       sessions: page.map(row => ({
         agent: row.agent, sessionId: row.sessionId, title: row.title, cwd: row.cwd, state: row.state, status: row.status,
         startedAt: iso(row.startedAt), lastActivityAt: iso(row.lastActivityAt), pid: row.pid, parent: row.parent,
       })),
-      nextCursor: more ? sortKey(page.at(-1)).join('.') : null, truncated: more,
+      nextCursor: more ? [view.scannedAt, ...sortKey(page.at(-1))].join('.') : null, truncated: more,
       scannedAt: iso(view.scannedAt),
-      incomplete: [...view.incomplete, ...(view.logs ? [] : [message('running.incomplete.logs')]),
+      incomplete: [...(parsed && !kept ? [message('running.incomplete.view')] : []), ...view.incomplete, ...(view.logs ? [] : [message('running.incomplete.logs')]),
         ...(matching.some(row => row.agent === 'opencode') ? [message('running.incomplete.opencode')] : [])],
     }
   }
