@@ -14,13 +14,14 @@ import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux'
+import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { AcpBridge } from '../src/AcpBridge.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
-import { PiMegachatService } from '../src/PiMegachatService.mjs'
+import { keepAliveMessages, PiMegachatService } from '../src/PiMegachatService.mjs'
 import { isNoteMessage, NOTE_CHECK_MS, NOTE_KIND, NOTE_LINES, noteText, PERMISSION_NOTE_MS, planNotes } from '../src/SessionNotes.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 import { fakeClock } from './fake-clock.mjs'
@@ -248,12 +249,14 @@ test('a note waits for the end of a turn, lands after the reply, and the main ag
   const sent = requests.at(-1)
   const index = sent.findIndex(model => model.role === 'assistant' && model.content.some(block => block.text?.startsWith('Megachat note:')))
   assert.ok(index > 0 && sent[index + 1].role === 'user')
-  // A keep-alive request holds the note as a turn sends it, and the note does not stand for the last model request.
+  // A keep-alive request holds the note as a turn sends it, and then its own user message. The note does not stand for
+  // the last model request.
   view.rows = [row(11, 'stuck', now - 20 * MINUTE)]
   await service.sessionNotes.check()
   assert.equal((await notes()).length, 2)
   await service.ping()
-  assert.ok(isNoteMessage(requests.at(-1).at(-1)))
+  assert.ok(isNoteMessage(requests.at(-1).at(-2)))
+  assert.equal(requests.at(-1).at(-1).role, 'user')
   const { messages } = await service.root.context(BACKGROUND_CONTEXT)
   assert.ok(isNoteMessage(messages.at(-1)))
   assert.equal(await service.lastMessageTime(), messages.findLast(model => !isNoteMessage(model)).timestamp)
@@ -366,4 +369,48 @@ test('a daemon of v0.3.0 opens a state with a note and its records, and this bui
   await again.advance(3 * NOTE_CHECK_MS)
   assert.equal(again.service.settings.values()['sessions.notes'], 'on')
   assert.deepEqual(await again.notes(), [text])
+})
+
+/**
+ * The request body that the Anthropic provider of pi-ai builds for [messages], for Claude Opus 5.5. The hook of the
+ * payload stops the request before it leaves the process, so the test needs no network and no key.
+ */
+async function anthropicPayload(messages) {
+  const provider = anthropicProvider()
+  const models = createModels()
+  models.setProvider({ ...provider, auth: { apiKey: { name: 'test', resolve: async () => ({ auth: { baseUrl: 'http://127.0.0.1:9', apiKey: 'test-key' }, source: 'test' }) } } })
+  let payload
+  const answer = await models.completeSimple(models.getModel('anthropic', 'claude-opus-5-5'), { messages }, { reasoning: 'low', maxTokens: 1,
+    onPayload: params => { payload = structuredClone(params); throw new Error('The test stops the request here.') } })
+  assert.equal(answer.stopReason, 'error')
+  assert.ok(payload, 'The provider built a request body')
+  return payload
+}
+
+test('the Anthropic request of a turn and of a keep-alive gets a note as a plain text message of the assistant, and each request ends with a user message', async t => {
+  // A real run through Central on 2026-11-12 with Claude Opus 5.5 answered a turn after a note, read the cached prefix,
+  // and refused a keep-alive request that ended with a message of the assistant: "This model does not support assistant
+  // message prefill". This test pins the shape of the body that the provider gets.
+  const view = fakeView([])
+  const { service, notes } = await open(t, { view, settings: ON })
+  await service.submit('first', 'Hello')
+  await waitForState(service.state, state => state.inputs.first?.status === 'completed' ? true : undefined)
+  view.rows = [row(10, 'stuck', Date.parse(NOON) - 20 * MINUTE)]
+  await service.sessionNotes.check()
+  const [text] = await notes()
+  const { messages } = await service.root.context(BACKGROUND_CONTEXT)
+  const turns = body => body.messages.filter(item => item.role !== 'system')
+  // The next turn: the context and a new message of the user.
+  const turn = turns(await anthropicPayload([...messages, { role: 'user', content: 'What now?', timestamp: Date.now() }]))
+  assert.deepEqual(turn.map(item => item.role), ['user', 'assistant', 'assistant', 'user'])
+  assert.deepEqual(turn[2].content, [{ type: 'text', text }])
+  // A keep-alive request: the context ends with the note, and the user message of the keep-alive follows it.
+  assert.equal(turns(await anthropicPayload(messages)).at(-1).role, 'assistant')
+  const ping = turns(await anthropicPayload(keepAliveMessages(messages)))
+  assert.deepEqual(ping.map(item => item.role), ['user', 'assistant', 'assistant', 'user'])
+  assert.deepEqual(ping[2].content, [{ type: 'text', text }])
+  assert.equal(ping[3].content.map(block => block.text).join(''), message('keepalive.prompt'))
+  // A context that ends with a message of the user needs no keep-alive message.
+  const asked = [...messages, { role: 'user', content: 'What now?', timestamp: Date.now() }]
+  assert.equal(keepAliveMessages(asked).length, asked.length)
 })

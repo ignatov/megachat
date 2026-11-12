@@ -140,6 +140,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The idle daemon must act at 5/6 of the cache lifetime after the last model request. It must not act while a turn runs. A turn must stop a keep-alive request that runs.
 - When the model context is above the limit of a summary at that time, the daemon must write the summary, and it must send no keep-alive request.
 - When the model context is between 20,000 tokens and that limit, the daemon must send a keep-alive request. The request must hold the model context as a turn sends it, and it must ask for one output token. The conversation must not get its reply.
+- An idle context ends with a message of the assistant: the last reply, or a note about the waiting sessions. Claude Opus 5.5 refuses a request that ends with a message of the assistant ("This model does not support assistant message prefill"). So when the context does not end with a message of the user, the keep-alive request must end with a short user message of its own after the context, from `keepalive.prompt` in the resources. The conversation must not get that message. It comes after the cached prefix, so the request still reads the context from the cache. A real run through Central on 2026-11-12 showed the refusal without that message, and a cache read of the whole context with it.
 - After a keep-alive request, the daemon must act again at 5/6 of the cache lifetime. The keep-alive requests must stop 6 hours after the last turn. `MEGACHAT_KEEPALIVE_HOURS` may replace this time.
 - The daemon must send no keep-alive request when the cache lifetime is over, and after a keep-alive request that failed.
 - After a restart, the time of the last message of the model context must stand for the time of the last model request.
@@ -617,7 +618,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   empty, so the note never lands inside a run. Else the note must wait for the next check, and its records must not
   change.
 - A note must not be a turn: it must make no input, must not end the idle time of the working day, must start no window
-  of keep-alive requests, and must end no prompt suggestion. A keep-alive request must hold a note as a turn sends it.
+  of keep-alive requests, and must end no prompt suggestion. A keep-alive request must hold a note as a turn sends it,
+  and then its own user message.
   After a restart, a note must not stand for the last model request, because it is none.
 - While the conversation sleeps (`isSleeping`), no note must go out. The records must still follow the states. A session
   that still waits when the conversation wakes, at the start of the working day or at a turn of the user, must get its
@@ -631,6 +633,11 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A daemon of v0.3.0 must open a state with a note and its records. It shows the note as a reply, sends it to the model
   as a message of the assistant, and keeps the records, because it keeps each field of the state that it does not know.
   It keeps `sessions.notes` in `settings.json`. This build must then send no second note for the same wait.
+- A turn after a note, a keep-alive request with a note at its end, and a summary request must reach the Anthropic
+  provider of pi-ai with a body whose last message other than a system message is a message of the user. The note must
+  reach it as a message of the assistant with one text block and no thinking block. A real run through Central on
+  2026-11-12 with Claude Opus 5.5 answered each of these requests without an error, and the turn after the note read the
+  cached prefix.
   [@test] ../test/session-notes.test.mjs
   [@test] ../test/session-logs.test.mjs
   [@test] ../test/settings.test.mjs

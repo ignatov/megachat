@@ -142,6 +142,16 @@ function transcript(messages) {
   return parts.join('\n\n')
 }
 
+/**
+ * The messages of a keep-alive request: the model context, and a short user message of the keep-alive when the context
+ * does not end with a user message. The conversation does not get that message.
+ */
+export function keepAliveMessages(messages) {
+  const last = messages.findLast(model => model.role !== 'system')
+  return last === undefined || last.role === 'user' ? [...messages]
+    : [...messages, { role: 'user', content: [{ type: 'text', text: message('keepalive.prompt') }], timestamp: Date.now() }]
+}
+
 export class PiMegachatService {
   /**
    * An explicit [model], `compactTokens`, `suggestions` or `keepAlive` setting wins over the environment and over
@@ -590,11 +600,15 @@ export class PiMegachatService {
   /**
    * Sends the model context as the main agent sends it, for one output token. The request reads the prompt cache, and
    * that starts the lifetime of the cache again. The conversation does not get the reply. Returns the usage.
+   * An idle context ends with a message of the assistant: the last reply, or a note of Megachat. Claude Opus 5.5 refuses
+   * such a request ("This model does not support assistant message prefill"). So a short user message of the keep-alive
+   * follows the context. It comes after the cached prefix, so the request still reads the whole context from the cache.
    */
   async ping(signal) {
     const model = this.models.getModel(this.model.provider, this.model.modelId)
     const { messages } = await this.root.context(context)
-    const answer = await this.models.completeSimple(model, { messages: [...messages] }, {
+    const request = keepAliveMessages(messages)
+    const answer = await this.models.completeSimple(model, { messages: request }, {
       timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: this.cacheRetention, maxTokens: 1, signal,
       // Pi Durable sends no reasoning option for the level `off`, so the keep-alive request does the same.
       ...(this.thinkingLevel === 'off' ? {} : { reasoning: this.thinkingLevel }),

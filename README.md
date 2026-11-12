@@ -159,7 +159,9 @@ cache, the next request writes the whole context again, which is slow and costs 
 
 - Above the limit of a summary, it writes the summary. Your next message then starts from a small context.
 - Between 20,000 tokens and that limit, it sends a keep-alive request. The request reads the context from the cache
-  for one output token, and the cache lives another hour. The conversation does not get the reply. For a context of
+  for one output token, and the cache lives another hour. The conversation does not get the reply. Claude Opus 5.5
+  refuses a request that ends with a message of the assistant, so the request ends with a short message of its own
+  after the context, and the conversation does not get that message either. For a context of
   100,000 tokens, one request costs about $0.02 at the list price of Claude Opus 5.5.
 
 The keep-alive requests stop 6 hours after the last turn. The settings `cache.ttl`, `keepAlive.hours` and

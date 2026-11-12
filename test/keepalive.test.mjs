@@ -9,6 +9,7 @@ import { fauxProvider, fauxAssistantMessage } from '@earendil-works/pi-ai/provid
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
+import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { CACHE_TTL_VARIABLE, KEEPALIVE_HOURS_VARIABLE, KEEPALIVE_VARIABLE, keepAliveSettings, PromptCacheKeepAlive } from '../src/PromptCacheKeepAlive.mjs'
 import { fakeClock } from './fake-clock.mjs'
@@ -187,7 +188,7 @@ async function serviceFixture(t, { keepAlive, compactTokens } = {}) {
   const requests = []
   fake.setResponses(Array(100).fill(async (context, options) => {
     const summary = context.messages.some(model => model.role === 'system' && text(model.content).startsWith('You summarize'))
-    requests.push({ kind: summary ? 'summary' : options.maxTokens === 1 ? 'ping' : 'turn', options, messages: context.messages.length })
+    requests.push({ kind: summary ? 'summary' : options.maxTokens === 1 ? 'ping' : 'turn', options, messages: context.messages.length, last: context.messages.at(-1) })
     return fauxAssistantMessage(summary ? 'SUMMARY-OF-OLD-PART' : 'Answer.')
   }))
   const models = createModels()
@@ -244,7 +245,10 @@ test('a keep-alive request of the daemon reads the cached context for one output
   // The request has the session and the thinking level of the turns, so it reads their cache.
   assert.equal(ping.options.sessionId, requests[1].options.sessionId)
   assert.equal(ping.options.reasoning, requests[1].options.reasoning)
-  assert.equal(ping.messages, before)
+  // The context ends with the last reply. Claude Opus 5.5 refuses a request that ends with a message of the assistant, so
+  // the request ends with the short user message of the keep-alive.
+  assert.equal(ping.messages, before + 1)
+  assert.deepEqual([ping.last.role, text(ping.last.content)], ['user', message('keepalive.prompt')])
   const [, context, cacheRead, cacheWrite] = lines.find(line => line.includes('kept the prompt cache warm'))
     .match(/context (\d+), input \d+, cache read (\d+), cache write (\d+),/).map(Number)
   assert.ok(context > 10000)
