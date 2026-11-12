@@ -87,11 +87,11 @@ async function temporary(t) {
  * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one slot. The
  * main agent uses the free model, and [values] go to `settings.json`.
  */
-async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true } = {}) {
+async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs } = {}) {
   await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values: { 'coordinator.model': MAIN, ...values } }), { mode: 0o600 })
   const { models, requests } = fakeModels(main, child)
   const service = await PiMegachatService.open(storage, models, undefined, {}, { settingsPath: join(directory, 'settings.json'),
-    spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {} })
+    spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {}, resumeDelayMs })
   await service.state.addWorkspace(cwd)
   const slot = new ChildSlot()
   const pi = new PiRunService(service.state, service.harness, { agent: directory => service.childAgent(directory), slot, deadlineMs })
@@ -379,6 +379,57 @@ test('a steer during the turn of a pi child reaches its next model request one t
   assert.equal(occurrences(childRequests[1].messages, STEER), 1)
   assert.ok(childRequests[1].messages.includes(message('child.steer')))
   assert.equal((await reports(service)).length, 1)
+})
+
+/**
+ * Starts a pi run whose first child request waits for `release`, and steers it with mode queue during that request.
+ * [before] gives the replies of the child before that request, and [after] the replies after it.
+ */
+async function steerDuringRequest(t, { before = [], after = [], main = [], ...options } = {}) {
+  const project = await temporary(t)
+  const { cwd } = project
+  const held = {}
+  const opened = await open(t, project, { ...options,
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), ...main],
+    child: [...before, () => new Promise(resolve => { held.release = resolve }), ...after],
+  })
+  const { service } = opened
+  await service.submit('spawn', 'Work')
+  const run = await waitForState(service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(async () => held.release && !(await service.state.snapshot()).current)
+  await setCurrent(service, 'user')
+  const steered = await service.steer('tool:steer-held:steer', { childSessionId: run.childSessionId, prompt: STEER, mode: 'queue' })
+  await setCurrent(service, null)
+  assert.equal(steered.outcome, 'injected')
+  return { ...opened, run, release: reply => held.release(reply) }
+}
+
+test('a model error after a queued steer ends the pi run at once, and its continuation holds the message as a possible repeat', { timeout: 30000 }, async t => {
+  const { service, run, release, requests } = await steerDuringRequest(t, { resumeDelayMs: 10, deadlineMs: 5000,
+    after: [fauxAssistantMessage('Answered the message.')], main: [fauxAssistantMessage('Reported.')] })
+  release(fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'Bad request.' }))
+  const state = await finished(service)
+  const stopped = state.runs[run.id]
+  assert.deepEqual([stopped.status, stopped.stopReason, stopped.error], ['resumed', 'model_error', message('error.interrupted')])
+  const continued = state.runs[stopped.resumedBy]
+  assert.deepEqual([continued.status, continued.output], ['completed', 'Answered the message.'])
+  assert.deepEqual(continued.steers.map(item => [item.delivery, item.repeat]), [['fallback', true]])
+  const last = requests.filter(request => request.child).at(-1)
+  assert.equal(occurrences(last.messages, STEER), 1)
+  assert.ok(last.messages.includes(message('child.steer.repeat', 1)))
+})
+
+test('a turn limit after a queued steer ends the pi run at once, and its report says that the child did not get the message', { timeout: 30000 }, async t => {
+  const { service, run, release } = await steerDuringRequest(t, { deadlineMs: 5000,
+    before: Array(19).fill(call('read', { path: 'README.md' })), main: [fauxAssistantMessage('Reported.')] })
+  release(call('read', { path: 'README.md' }))
+  const state = await finished(service)
+  const ended = state.runs[run.id]
+  assert.deepEqual([ended.status, ended.stopReason, ended.resumedBy], ['failed', 'turn_limit', undefined])
+  assert.equal(ended.error, `${message('error.pi.stopped', 'turn_limit')} ${message('error.pi.unhandledSteers', 1)}`)
+  assert.equal(Object.keys(state.runs).length, 1)
+  const [report] = await reports(service)
+  assert.equal(report.data.results[0].error, ended.error)
 })
 
 test('a steer of a queued pi run goes in its prompt', { timeout: 30000 }, async t => {

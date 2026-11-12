@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/conte
 import { ConversationBusy, ConversationIdle } from '@earendil-works/pi-durable'
 import { steerBlock } from './AcpRunService.mjs'
 import { ChildSlot } from './ChildSlot.mjs'
-import { MegachatDoc, terminalStates } from './MegachatState.mjs'
+import { maxAutomaticResumes, MegachatDoc, terminalStates } from './MegachatState.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { PiChildDoc } from './PiChild.mjs'
 
@@ -74,7 +74,7 @@ export class PiRunService {
 
   begin(run) {
     const work = { cancel: null, cancellationSent: false, promise: null, lifetime: new AbortController(),
-      steered: new Set(), deliver: null, delivering: null, ended: false }
+      steered: new Set(), deliver: null, delivering: null, ended: false, withdrawn: 0 }
     this.active.set(run.id, work)
     work.promise = this.execute(run, work).finally(() => {
       this.active.delete(run.id)
@@ -168,9 +168,14 @@ export class PiRunService {
       const restarted = current.steerRestart && !limited
       const status = current.cancelRequested ? 'cancelled' : settled.status === 'done' ? 'completed'
         : restarted || limited || repeatableReasons.has(reason) ? 'interrupted' : 'failed'
+      const error = status === 'failed' ? message('error.pi.stopped', reason)
+        : status === 'interrupted' && !restarted ? message(limited ? 'error.limit' : 'error.interrupted') : undefined
+      // A continuation carries a withdrawn message. Without one, the report tells the main agent to send it again.
+      const continued = restarted || status === 'interrupted' && !limited && (current.resumeAttempt ?? 0) < maxAutomaticResumes
+      const unhandled = error !== undefined && !continued && work.withdrawn > 0
       await this.state.transition(run.id, ['dispatched'], { status, stopReason: reason,
-        ...(status === 'interrupted' && !restarted ? { error: message(limited ? 'error.limit' : 'error.interrupted'), autoResume: !limited } : {}),
-        ...(status === 'failed' ? { error: message('error.pi.stopped', reason) } : {}) })
+        ...(error === undefined ? {} : { error: unhandled ? `${error} ${message('error.pi.unhandledSteers', work.withdrawn)}` : error }),
+        ...(status === 'interrupted' && !restarted ? { autoResume: !limited } : {}) })
     }
     catch (error) {
       work.ended = true
@@ -253,7 +258,14 @@ export class PiRunService {
       await work.delivering
       for (const item of (await this.state.snapshot()).runs[run.id].steers ?? []) {
         if (item.delivery !== 'delivered' || item.submissionId === undefined) continue
-        const steered = await (await this.harness.submission(item.submissionId, context))?.wait(signal)
+        const steering = await this.harness.submission(item.submissionId, context)
+        // After a failed turn, Pi Durable keeps a message that it did not place in the inbox until the next input. The
+        // run withdraws it, so a continuation carries it, or the report tells that the child did not get it.
+        if (settled.status !== 'done' && await steering?.abort(context) === 'aborted') {
+          work.withdrawn += 1
+          continue
+        }
+        const steered = await steering?.wait(signal)
         if (steered && steered.status !== 'done') settled = steered
       }
       await copy()
