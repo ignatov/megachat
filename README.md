@@ -135,7 +135,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
 | `settings.json` | The settings that you gave in the chat, the project values, and the status of the setup. |
 | `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
-| `memory.md` | The learned memory: the facts about you and the working notes that the main agent saved, and the topics that it must not save again. You can edit it. The first write makes it. See [The learned memory](#the-learned-memory). |
+| `memory.md` | The learned memory: the facts about you and the working notes that the main agent and the reflection saved, and the topics that it must not save again. You can edit it. The first write makes it. See [The learned memory](#the-learned-memory). |
 | `memory-versions/` | The newest 20 versions of `memory.md` before each write of Megachat, the newest 5 texts that an undo replaced, and the digest of the file after the last write. A forget deletes the versions. |
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
@@ -365,11 +365,11 @@ you repeated. Text that you paste or quote, such as a file, a log or the output 
 yours, and a reply of the main agent is never a source. It only adds entries, through the same checks as the memory
 tool, and it never saves a topic of `## Do not remember`. A change or a removal is a proposal for you. The next reply
 tells the line of each entry that the reflection added, and each proposal. To take back an entry of the reflection, ask
-the agent to remove it: an undo takes back only the newest write. A message of yours does not stop a pass, and the reply
-after the end of the pass tells its adds. A forget stops a pass, and no later pass reads the conversation before the
-forget. Each pass is one model request with the model of the main agent, at most 1,000 output tokens and no prompt
-cache. It counts in the daily spend, and no pass starts above `budget.dailyUsd`. Set `memory.reflection` to `false` to
-stop it: the later passes then do not read the conversation of that time.
+the agent to remove it: an undo takes back only the newest write. A message of yours and its turn do not stop a pass.
+The reply of the first turn that starts after the end of the pass tells its adds. A forget stops a pass, and no later
+pass reads the conversation before the forget. Each pass is one model request with the model of the main agent, at most
+1,000 output tokens and no prompt cache. It counts in the daily spend, and no pass starts above `budget.dailyUsd`. Set
+`memory.reflection` to `false` to stop it: the later passes then do not read the conversation of that time.
 
 ## The morning report
 

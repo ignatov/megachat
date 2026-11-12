@@ -15,7 +15,7 @@ Tests: `test/spend.test.mjs`
 - **THEN** Megachat gives no warning
 
 ### Requirement: Count of the spend
-Megachat MUST count the cost of each model request of the main agent and of each pi child on the local day: each reply, also a reply with tool calls, each summary and each keep-alive request. A request without a cost from its provider MUST get the cost from the prices of its model data. The cost of the Claude and Codex children MUST NOT be in the count.
+Megachat MUST count the cost of each model request of the main agent and of each pi child on the local day: each reply, also a reply with tool calls, each summary, each keep-alive request and each reflection request of the memory. A request without a cost from its provider MUST get the cost from the prices of its model data. The cost of the Claude and Codex children MUST NOT be in the count.
 
 Tests: `test/spend.test.mjs`, `test/pi-child.test.mjs`
 
@@ -30,6 +30,10 @@ Tests: `test/spend.test.mjs`, `test/pi-child.test.mjs`
 #### Scenario: A summary, a keep-alive request and a pi child
 - **WHEN** a compaction makes a summary, a keep-alive request goes out, or a pi child with a priced model replies
 - **THEN** the count of the day becomes higher
+
+#### Scenario: A reflection request
+- **WHEN** a reflection pass sends a request with the total cost 0.05 USD
+- **THEN** the count of the day gets 0.05 USD
 
 ### Requirement: Stored count
 The count MUST stay in `spend.json` in the state directory with the mode 0600, so a daemon restart keeps it. The count MUST start again at the local midnight.
