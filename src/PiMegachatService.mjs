@@ -463,8 +463,10 @@ export class PiMegachatService {
     ], tools: [
       tool('list', obj({}), async () => {
         const state = await this.state.snapshot()
+        // An ended run without a reported result gets its own result message after this turn, as in the morning report.
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
-          cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
+          cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200),
+          ...(terminalStates.has(run.status) && !run.reported ? { separateResult: true } : {}) }))
         // Each directory names the agent of a new task in it: a project value of children.agent wins over the global value.
         const workspaces = directoriesOf(state).map(item => ({ ...item, defaultAgent: this.settings.values(item.cwd)['children.agent'] }))
         return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces, runs,

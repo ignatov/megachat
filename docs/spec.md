@@ -181,6 +181,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A permission request of a child must show at once. Only the turn of the result waits.
 - The wait must survive a restart of the daemon: its end must come from the settings and the clock. The timer must look at the clock again at least every 15 minutes.
 - With `report.morning` on, the turn of the waiting results must come before the turn of the morning report, because the event pump starts the result turns first. The data of the report must mark each finished child run without a reported result with `separateResult: true`, and the rules of the report must ask the main agent to name it in a few words and not to tell its result again.
+- `agents_list` must give each ended run without a reported result `separateResult: true`, as the data of the morning report does. The rules must tell the main agent that such a task ended and that its result comes in its own message after this turn. So in the turn of the user before a waiting result, the main agent does not say that the task has no result.
+- `agents_inspect` of an ended run must mark its result as reported, also while the result waits. The main agent then has the result in this turn, and no result message repeats it.
 - With `workday.enabled` off, a child result must start its turn at once, at each time of the day.
   [@test] ../test/waiting-results.test.mjs
 - The setting `report.morning` must be off by default. Off must start no report, no timer and no run of tokprof. A `settings.json` without the key must open with the default.

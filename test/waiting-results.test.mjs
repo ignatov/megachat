@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import test from 'node:test'
 import { client, methods } from '@agentclientprotocol/sdk/unstable'
+import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { AcpBridge } from '../src/AcpBridge.mjs'
 import { message } from '../src/messages.mjs'
@@ -83,6 +84,49 @@ test('the next turn of the user takes the waiting results right after it', { tim
   await daemon.json(`/wait?submission=${receipt.submissionId}`)
   await reported(service, 'night')
   assert.deepEqual(requests.map(request => [isResult(request), request.at]), [[false, '2026-11-11T23:30:00.000Z'], [true, '2026-11-11T23:30:00.000Z']])
+})
+
+/** A reply of the fake model that calls the tool [name] of the main agent. */
+const call = (name, args = {}) => () => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: 'toolUse' })
+/** The last result of the tool [name] in the context of a model request, and the context as text. */
+const seen = (context, name) => {
+  const item = context.messages.findLast(model => model.role === 'toolResult' && model.toolName === name)
+  return { output: JSON.parse(item.content[0].text), context: JSON.stringify(context) }
+}
+
+test('in the turn of the user before a waiting result, agents_list shows that the task ended and that its result follows', { timeout: 20000 }, async t => {
+  const views = []
+  const replies = [call('agents_list'), context => { views.push(seen(context, 'agents_list')); return fauxAssistantMessage('The task ended. Its result follows.') },
+    'Result night.',
+    call('agents_inspect', { runId: 'read' }), context => { views.push(seen(context, 'agents_inspect')); return fauxAssistantMessage('Result read.') }]
+  const { service, daemon, requests, clock, project } = await daemonFixture(t, { start: '2026-11-11T23:00:00Z', values: NIGHT, replies })
+  await service.resume()
+  await finish(service, 'night', project, '2026-11-11T23:00:00Z')
+  await settle()
+  clock.sleep(30 * MINUTE)
+  const say = async (requestId, text) => {
+    const receipt = await daemon.json('/input', { requestId, text })
+    await daemon.json(`/wait?submission=${receipt.submissionId}`)
+  }
+  await say('user-list', 'How is the task?')
+  // The run ended, and its result waits for its own message after this turn. The rules tell the main agent so.
+  const listed = views[0].output.runs.find(run => run.runId === 'night')
+  assert.deepEqual([listed.status, listed.separateResult], ['completed', true])
+  assert.match(views[0].context, /A listed task with separateResult true ended, and its result comes in its own message after this turn\./)
+  await reported(service, 'night')
+  assert.deepEqual(requests.map(isResult), [false, false, true])
+  // After its result message, the list shows the run without the mark.
+  const list = service.extension().tools.find(item => item.name === 'agents_list')
+  assert.equal(JSON.parse((await list.execute({})).output[0].text).runs.find(run => run.runId === 'night').separateResult, undefined)
+  // A read of the ended run in the turn of the user gives the result in that turn, so no result message repeats it.
+  clock.sleep(40 * MINUTE)
+  await finish(service, 'read', project, '2026-11-12T00:10:00Z')
+  await settle()
+  assert.equal(requests.length, 3)
+  await say('user-read', 'What did the second task find?')
+  assert.deepEqual([views[1].output.output, views[1].output.reported], ['Result read.', true])
+  await settle()
+  assert.deepEqual(requests.map(isResult), [false, false, true, false, false])
 })
 
 test('with workday.idleMinutes 0, a waiting result goes out right after the next turn of the user, and a later result waits', { timeout: 20000 }, async t => {

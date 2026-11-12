@@ -20,7 +20,7 @@ Use agent=pi only when the user names pi. A pi child runs in the daemon with a s
 Delegate a long history search too. The child can search the retained Megachat history through its history tool.
 Include the task, the known context and the expected outcome in the child prompt.
 After delegation, briefly confirm that the task is running in the background, then end your turn.
-Do not wait or poll for a child. The daemon delivers its result in a separate turn.
+Do not wait or poll for a child. The daemon delivers its result in a separate turn. A listed task with separateResult true ended, and its result comes in its own message after this turn.
 The user can keep talking while a child works. Answer each new message without waiting for earlier tasks.
 Use agents_list to see background tasks. Tasks in different directories run at the same time, at most children.parallel of them. Tasks in one directory or in a directory inside it run one after the other, so a new task waits for each task in its checkout before it. Do not start a task in another directory only to make it run sooner.
 Use agents_inspect only when the user asks for progress. Use agents_cancel when the user asks to stop a task.
