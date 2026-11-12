@@ -156,14 +156,16 @@ guide `plugins/air/docs/guides/acp-async-tasks-guide.md` of Air describes it.
   phase stops the same run. The daemon cancels the run through `/child/stop`, as `agents_cancel` cancels it, also while
   no turn runs. A queued run ends at once. A run that runs gets a cancel of its turn, and its pending permission
   requests become stale. The run gets no continuation. Then the row ends with `stopped`, and the main agent gets the
-  result `cancelled` in a turn of its own.
+  result `cancelled` in a turn of its own. The stop closes the permission requests of the run at once: each view that
+  shows the dialog of such a request gets the final `tool_call_update` with `failed`, and Air removes the dialog. See
+  "The permissions".
 - The answer is `{ "stopped": false }`, and nothing changes, for a run that ended, an unknown run, a row of another
   kind (the import of past sessions), an unknown session, a client that did not send `asyncTasks`, and a daemon of an
   earlier build without the route.
 - Air hides the Background Tasks tab while a permission request shows in the composer
   (`AirFollowUpQueueTabbedPanel.kt`, `setHiddenForSecurityApproval`). So a view that shows the permission request of a
   child shows no Stop until the request closes. Megachat handles the stop of such a run all the same, for example from
-  another view.
+  another view or through `agents_cancel`. Then Megachat closes the dialog of the request in each view.
 
 ## The replay
 
@@ -194,9 +196,47 @@ to the message with the same ID, and a new ID starts a new message. This needs n
 
 ## The permissions
 
-Megachat sends each pending permission request of a child through `session/request_permission` in the main session.
+Megachat sends each open permission request of a child through `session/request_permission` in the main session.
 The `toolCallId` is the ID of the permission record. The title names the agent. Megachat gives the selected option
-to the daemon. A request stays pending in the daemon when no client is connected.
+to the daemon. A request stays pending in the daemon when no client is connected. This needs no change in Air.
+
+A request is open while the daemon takes a new answer for it: the request is pending, and its run exists, has the
+generation of the request, has no stop request, and is not in a terminal state (`permissionOpen` in
+`src/MegachatState.mjs`). When a request that a view showed is no longer open, the bridge sends one final
+`tool_call_update` for its `toolCallId` to that view:
+
+```json
+{ "sessionUpdate": "tool_call_update", "toolCallId": "<permission ID>", "status": "completed" }
+```
+
+The status is `completed` after an answer, when the user of this view gave no answer or gave the answer that counts.
+It is `failed` when the run stopped, ended or changed its generation before an answer, when the state dropped the
+request, and when the user of this view gave an answer that did not count. A view that attaches after the request
+closed gets no dialog and no update of the request.
+
+What Megachat builds on, from the code of Air:
+
+- Air puts the `toolCall` of the request in the chat as a tool call entry, with the approval on it
+  (`AcpSessionRuntimeFacts.kt`, `PermissionRequested`). So the entry stays after the dialog closes.
+- Air closes a dialog that waits for the user when a final `tool_call_update` (`completed` or `failed`) for its
+  `toolCallId` arrives. It records the approval as expired with the reason "Tool call finished before user decision",
+  and it answers the request with `cancelled` (`AcpSessionRuntimeOwner.kt`, `admitProtocolNotification`;
+  `AcpClientOperations.kt`, `resolvePendingPermissionForTerminalToolUpdate`). The bridge sends nothing for
+  `cancelled`.
+- The step status of the entry follows the approval first (`ThreadGuiSnapshotMapper.kt`, `toThreadGuiStepStatus`). An
+  expired approval shows as cancelled, and a refused approval shows as rejected, whatever the status of the tool call
+  is. Only an allowed approval, or an option of an unknown kind, shows the status of the tool call. So the status of
+  the update matters only in a view where the user answered: `completed` for the answer that counts, and `failed` for
+  an answer that came too late. The other views show the entry as cancelled.
+- Air ends a pending approval one time only, in its actor: by the answer of the user, or by the update. An update
+  that arrives after the answer finds no pending approval, so it only sets the status of the entry
+  (`AcpSessionRuntimeOwner.kt`, `resolvePermission`, `abandonPermission`).
+- The replay of Megachat holds no tool call. So a view that attaches later has no entry of a closed request.
+
+The daemon stays the judge. When the answer and the update race, Air gives one of them the dialog. An answer that
+wins in Air still goes to the daemon, and the daemon refuses it when the request is no longer open. The view then
+shows `failed` for it. When the answer of the view reaches the bridge only after the bridge sent `completed`, the
+entry of that view shows `completed` all the same.
 
 ## The stop dialog
 

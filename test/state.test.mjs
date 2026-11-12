@@ -9,7 +9,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { findSteer, maxSteers, MegachatState } from '../src/MegachatState.mjs'
+import { findSteer, maxSteers, MegachatState, permissionOpen } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -300,6 +300,37 @@ test('a permission stays pending without a viewer and its answer is durable', { 
   await assert.rejects(state.respondPermission(id, 'no'), { code: 'conflict' })
   await state.transition(run.id, ['running'], { status: 'completed' })
   await state.respondPermission(id, 'yes')
+})
+
+test('a permission request is open exactly while respondPermission takes a new answer for it', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const request = { options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }], toolCall: { title: 'Write a file' } }
+  /** A run that waits for one permission request, after [change] of the run. Gives the result of the check and of the answer. */
+  const check = async (name, change) => {
+    const run = await state.admitChild(`tool:${name}`, { cwd: '/workspace', prompt: name })
+    await state.transition(run.id, ['admitted'], { status: 'running', generation: 'process' })
+    const id = await state.requestPermission(run.id, 'process', request)
+    await change(run, id)
+    const snapshot = await state.snapshot()
+    const open = permissionOpen(snapshot, snapshot.permissions[id])
+    const accepted = await state.respondPermission(id, 'yes').then(() => true, error => error.code)
+    return [name, open, accepted]
+  }
+  const results = [
+    await check('pending', async () => {}),
+    // A stop of the child that the run service did not end yet.
+    await check('stop', run => state.stopChild(run.id)),
+    await check('generation', run => state.transition(run.id, ['approval'], { generation: 'restarted' })),
+    await check('ended', run => state.transition(run.id, ['approval'], { status: 'failed' })),
+    await check('recovered', () => state.recover()),
+  ]
+  assert.deepEqual(results, [['pending', true, true], ['stop', false, 'stale'], ['generation', false, 'stale'],
+    ['ended', false, 'stale'], ['recovered', false, 'stale']])
+  const answered = Object.values((await state.snapshot()).permissions).find(permission => permission.status === 'answered')
+  assert.equal(permissionOpen(await state.snapshot(), answered), false)
+  assert.equal(permissionOpen(await state.snapshot(), undefined), false)
 })
 
 test('cancellation wins the dispatch boundary and retained output stays bounded', { timeout: 10000 }, async t => {

@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import { agent, methods } from '@agentclientprotocol/sdk/unstable'
 import { VERSION } from './MegachatBuild.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
-import { serviceSessionsOf, terminalStates } from './MegachatState.mjs'
+import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { transcriptPath } from './ChildTranscript.mjs'
 import { replyText } from './ReplyStream.mjs'
 import { livePromptSuggestion, promptSuggestionUpdate } from './Suggestions.mjs'
@@ -177,7 +177,11 @@ class AcpBridgeSession {
     this.replayIndex = 0
     this.abort = new AbortController()
     this.entries = new Set()
-    this.permissions = new Set()
+    // The permission requests of the children that this view showed, by ID: the run ID while the request is open, and
+    // `null` after the view ended its tool call. So a closed request never shows again.
+    this.permissions = new Map()
+    // The option that the user selected in this view, by the ID of the request.
+    this.answers = new Map()
     // The stop requests of the main agent that this view showed.
     this.stops = new Set()
     this.serial = Promise.resolve()
@@ -272,6 +276,7 @@ class AcpBridgeSession {
     this.serial = Promise.resolve()
     this.entries.clear()
     this.permissions.clear()
+    this.answers.clear()
     this.stops.clear()
     this.childTasks.clear()
     this.reply = null
@@ -418,9 +423,23 @@ class AcpBridgeSession {
         this.recordedChildren.add(address)
       }
     }
+    await this.permissionRequests(state)
+    if (this.nativeTurns) await this.childRows(state)
+    if (this.ready) await this.suggest(state)
+  }
+
+  /**
+   * Shows each open permission request of a child through `session/request_permission`, and gives a selected answer to
+   * the daemon. The daemon judges each answer: it refuses an answer to a request that is no longer open. When a request
+   * that this view showed is no longer open, the view ends its tool call one time with a final status: `completed`
+   * after an answer that counts, else `failed`, for example when the run stopped or ended first. Air then removes the
+   * dialog, if it still shows it, for example after an answer in another view or a stop of the child. A cancel of Air
+   * sends nothing.
+   */
+  async permissionRequests(state) {
     for (const permission of Object.values(state.permissions)) {
-      if (permission.status !== 'pending' || this.permissions.has(permission.id)) continue
-      this.permissions.add(permission.id)
+      if (!permissionOpen(state, permission) || this.permissions.has(permission.id)) continue
+      this.permissions.set(permission.id, permission.runId)
       // Several children can ask at the same time, so the title names the agent and the task of the run.
       const run = state.runs[permission.runId]
       this.connection.client.request(methods.client.session.requestPermission, {
@@ -429,12 +448,25 @@ class AcpBridgeSession {
           title: message('permission.title', agentName(run?.agent), run ? runTitle(state, run) : message('title'), permission.request.toolCall?.title ?? '') },
       }).then(async result => {
         if (result.outcome.outcome === 'selected') {
+          this.answers.set(permission.id, result.outcome.optionId)
           await this.daemon.json('/permission', { id: permission.id, decision: result.outcome.optionId })
         }
       }).catch(() => {})
     }
-    if (this.nativeTurns) await this.childRows(state)
-    if (this.ready) await this.suggest(state)
+    for (const [id, runId] of this.permissions) {
+      if (runId === null) continue
+      const permission = state.permissions[id]
+      // The reply of `/state` to a prompt can come after a later event, so a state can be older than a shown request.
+      // Then the request is missing, and its run has not ended. The state drops a request only after the end of its run.
+      const run = state.runs[runId]
+      if (permission ? permissionOpen(state, permission) : run && !terminalStates.has(run.status)) continue
+      this.permissions.set(id, null)
+      // Air shows the status only in a view where the user answered. An answer that the daemon refused there, because
+      // the request closed first or another view gave another answer first, shows as failed.
+      const answer = this.answers.get(id)
+      const counted = permission?.status === 'answered' && (answer === undefined || answer === permission.decision)
+      await this.notify({ sessionUpdate: 'tool_call_update', toolCallId: id, status: counted ? 'completed' : 'failed' })
+    }
   }
 
   /**

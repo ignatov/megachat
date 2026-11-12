@@ -208,6 +208,24 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Reconnection must restore the conversation without child lifecycle rows.
   [@test] ../test/integration.test.mjs
   [@test] ../test/parallel.test.mjs
+- A permission request of a child must be open only while the daemon takes a new answer for it: the request is
+  pending, and its run exists, has the generation of the request, has no stop request, and is not in a terminal state.
+  One function of the state must give this condition to the answer and to the bridge.
+- Each view must show each open request through `session/request_permission`, also a view that attaches while the
+  request is open. A view must show no dialog for a request that is not open.
+- When a request that a view showed is no longer open, that view must end the tool call of the request one time with a
+  final `tool_call_update`: `completed` after an answer that counts, and `failed` when the run stopped, ended or
+  changed its generation first, when the state dropped the request, and when the user of that view gave an answer
+  that did not count. So Air removes the dialog of each view that did not answer.
+  This applies to a Stop of the row, `agents_cancel`, a Stop of the turn, the deadline, a failure or a restart of the
+  child, a new generation of the run and an answer in another view. An older state that a view gets late must not end
+  the tool call of a shown request, and a view must not show a request again after it ended its tool call.
+- The daemon must stay the judge of each answer. A view must give each selected answer to the daemon, also an answer
+  that races the final update, and the daemon must refuse an answer to a request that is not open. A cancel of Air
+  must send nothing to the daemon.
+- A view that attaches after a request closed must get no dialog and no tool call update of that request.
+  [@test] ../test/integration.test.mjs
+  [@test] ../test/state.test.mjs
 - Each row of a child run must have the Stop action of Air (`canStop: true`), in each phase: queued, resuming, waiting
   for permission and running. The row of the import of past sessions must have none.
 - A Stop of a row must cancel only the child run of that row, as `agents_cancel` does, also while no turn runs. The

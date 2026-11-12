@@ -60,22 +60,27 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
   return { cwd, fake, service, children, daemon, server, launchedAgents }
 }
 
-async function attach(daemon, cwd, { loading = false, approve = false, native = false, sessionId = 'megachat', serviceSessions = false, workspaces = [] } = {}) {
+/**
+ * A view of Air. [answer] gives the answer to a permission request. Without it, [approve] selects `yes` at once, else
+ * the view never answers. [asked] gets the parameters of each permission request.
+ */
+async function attach(daemon, cwd, { loading = false, approve = false, answer, native = false, sessionId = 'megachat', serviceSessions = false, workspaces = [] } = {}) {
   const updates = []
   const registrations = []
+  const asked = []
+  answer ??= () => approve ? { outcome: { outcome: 'selected', optionId: 'yes' } } : new Promise(() => {})
+  const respond = params => { asked.push(params); return answer(params) }
   const bridge = new AcpBridge(daemon)
-  const connection = native ? rawClient(bridge, updates, approve, registrations, workspaces) : client({ name: 'test-air' })
+  const connection = native ? rawClient(bridge, updates, respond, registrations, workspaces) : client({ name: 'test-air' })
     .onNotification('*', ({ params }) => { updates.push(params) })
-    .onRequest(methods.client.session.requestPermission, () => approve
-      ? { outcome: { outcome: 'selected', optionId: 'yes' } }
-      : new Promise(() => {}))
+    .onRequest(methods.client.session.requestPermission, ({ params }) => respond(params))
     .connect(bridge.app())
   await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: native
     ? { _meta: { jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks', ...(serviceSessions ? ['serviceSessions'] : []), ...(workspaces.length ? ['workspaces'] : [])] } } } } : {} })
   const opened = await connection.agent.request(loading ? methods.agent.session.load : methods.agent.session.new, {
     cwd, mcpServers: [], ...(loading ? { sessionId } : {}),
   })
-  return { connection, updates, registrations, sessionId: loading ? sessionId : opened.sessionId }
+  return { connection, updates, registrations, asked, sessionId: loading ? sessionId : opened.sessionId }
 }
 
 test('a Codex child requests permission and registers its service session', { timeout: 10000 }, async t => {
@@ -127,7 +132,7 @@ test('an explicit Codex resume preserves the user session and supports cancellat
 })
 
 // Air preserves draft subagent updates that the released JavaScript client schema rejects.
-function rawClient(bridge, updates, approve, registrations, workspaces) {
+function rawClient(bridge, updates, respond, registrations, workspaces) {
   const inbound = new TransformStream()
   const writer = inbound.writable.getWriter()
   const pending = new Map()
@@ -139,8 +144,8 @@ function rawClient(bridge, updates, approve, registrations, workspaces) {
         updates.push(message.params)
         for (const listener of listeners) listener(message.params)
       }
-      else if (message.method === 'session/request_permission' && approve) {
-        queueMicrotask(() => writer.write({ jsonrpc: '2.0', id: message.id, result: { outcome: { outcome: 'selected', optionId: 'yes' } } }))
+      else if (message.method === 'session/request_permission') {
+        Promise.resolve(respond(message.params)).then(result => writer.write({ jsonrpc: '2.0', id: message.id, result })).catch(() => {})
       }
       else if (message.method === '_workspaces/list') {
         queueMicrotask(() => writer.write({ jsonrpc: '2.0', id: message.id, result: { directories: workspaces } }))
@@ -284,7 +289,9 @@ test('the chat lists running children instead of coordinator tool calls', { time
   assert.ok(spawned.some(update => update.description === `Claude · ${project}`))
   const closed = new Set(rows().filter(update => update.sessionUpdate === 'async_task_state_update').map(update => update.asyncTaskId))
   assert.ok(spawned.every(update => closed.has(update.asyncTaskId)))
-  assert.ok(!viewer.updates.some(event => ['tool_call', 'tool_call_update'].includes(event.update.sessionUpdate)))
+  // The only tool call update is the end of the tool call of the permission request.
+  assert.deepEqual(viewer.updates.map(event => event.update).filter(update => ['tool_call', 'tool_call_update'].includes(update.sessionUpdate)),
+    [{ sessionUpdate: 'tool_call_update', toolCallId: permission.id, status: 'completed' }])
   assert.ok(viewer.updates.some(event => event.update.content?.text === 'Started.'))
   const history = (await service.view()).entries.flatMap(entry => entry.model ?? [])
   assert.ok(history.some(model => model.role === 'assistant' && model.content.some(block => block.type === 'toolCall' && block.name === 'agents_spawn')))
@@ -1326,26 +1333,135 @@ test('the Stop of a row stops one of two parallel children, and the main agent g
   assert.equal(Object.keys(state.runs).length, 2)
 })
 
-test('the Stop of a row that waits for a permission cancels the run and its permission request', { timeout: 15000 }, async t => {
+/** The statuses of the final `tool_call_update` of [toolCallId] that [viewer] got, in their order. */
+const finalUpdates = (viewer, toolCallId) => viewer.updates.map(event => event.update)
+  .filter(update => update.sessionUpdate === 'tool_call_update' && update.toolCallId === toolCallId).map(update => update.status)
+
+/** Waits until [check] gives a value. */
+async function eventually(check) {
+  for (;;) {
+    const value = check()
+    if (value) return value
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+test('the Stop of a row that waits for a permission cancels the run, the dialog closes in each view, and a view that attaches later shows none', { timeout: 15000 }, async t => {
   const { daemon, cwd, fake, service } = await fixture(t, 'approval')
   fake.setResponses([
     fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'approval' }), { stopReason: 'toolUse' }),
     fauxAssistantMessage('Delegated.'),
     fauxAssistantMessage('Reported.'),
   ])
+  const late = Promise.withResolvers()
   const viewer = await attach(daemon, cwd, { native: true })
-  t.after(() => viewer.connection.close())
+  const other = await attach(daemon, cwd, { native: true, answer: () => late.promise })
+  t.after(() => { viewer.connection.close(); other.connection.close() })
   await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
   const permission = await waitForState(service.state, state => Object.values(state.permissions).find(p => p.status === 'pending'))
+  await eventually(() => viewer.asked.length && other.asked.length)
+  assert.deepEqual([viewer.asked[0].toolCall.toolCallId, other.asked[0].toolCall.toolCallId], [permission.id, permission.id])
   const [row] = await rowsOf(viewer, [permission.runId], 'approval')
   assert.equal(row.canStop, true)
   const ended = viewer.connection.nextUpdate(event => event.update.asyncTaskId === row.asyncTaskId && event.update.sessionUpdate === 'async_task_state_update')
   assert.deepEqual(await stopTask(viewer, row.asyncTaskId), { stopped: true })
   assert.equal((await ended).update.state, 'stopped')
+  // Each view ends the tool call of the request with `failed`, so Air removes the dialog that nobody answered.
+  await eventually(() => finalUpdates(viewer, permission.id).length && finalUpdates(other, permission.id).length)
+  // An answer after the stop goes to the daemon, which refuses it. The view sends no second update.
+  late.resolve({ outcome: { outcome: 'selected', optionId: 'yes' } })
+  await assert.rejects(daemon.json('/permission', { id: permission.id, decision: 'yes' }), { code: 'stale' })
   const state = await finishChildren(service)
   assert.equal(state.runs[permission.runId].status, 'cancelled')
-  assert.equal(state.permissions[permission.id].status, 'stale')
-  await assert.rejects(daemon.json('/permission', { id: permission.id, decision: 'yes' }), { code: 'stale' })
+  assert.deepEqual([state.permissions[permission.id].status, state.permissions[permission.id].decision], ['stale', null])
+  // The window of the other view opens the chat again. It gets no dialog and no tool call of the closed request.
+  other.connection.close()
+  const reopened = await attach(daemon, cwd, { native: true, loading: true, sessionId: other.sessionId, approve: true })
+  t.after(() => reopened.connection.close())
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.deepEqual(reopened.asked, [])
+  assert.ok(!reopened.updates.some(event => event.update.toolCallId === permission.id))
+  assert.deepEqual([finalUpdates(viewer, permission.id), finalUpdates(other, permission.id)], [['failed'], ['failed']])
+})
+
+test('an answer in one view closes the permission dialog of the other view, and the daemon refuses a different later answer', { timeout: 15000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t, 'approval')
+  const answer = Promise.withResolvers()
+  const first = await attach(daemon, cwd, { answer: () => answer.promise })
+  const second = await attach(daemon, cwd)
+  t.after(() => { first.connection.close(); second.connection.close() })
+  await first.connection.agent.request(methods.agent.session.prompt, { sessionId: first.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
+  const permission = await waitForState(service.state, state => Object.values(state.permissions).find(p => p.status === 'pending'))
+  await eventually(() => first.asked.length && second.asked.length)
+  assert.deepEqual([finalUpdates(first, permission.id), finalUpdates(second, permission.id)], [[], []])
+  answer.resolve({ outcome: { outcome: 'selected', optionId: 'yes' } })
+  // Each view ends the tool call with `completed`. In the view that got the answer, Air keeps the answer of the user.
+  await eventually(() => finalUpdates(first, permission.id).length && finalUpdates(second, permission.id).length)
+  await assert.rejects(daemon.json('/permission', { id: permission.id, decision: 'no' }), { code: 'conflict' })
+  const state = await finishChildren(service)
+  assert.deepEqual([state.permissions[permission.id].status, state.permissions[permission.id].decision], ['answered', 'yes'])
+  assert.equal(state.runs[permission.runId].status, 'completed')
+  // A view that attaches after the answer gets no dialog and no tool call of the request.
+  const third = await attach(daemon, cwd, { approve: true })
+  t.after(() => third.connection.close())
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.deepEqual(third.asked, [])
+  assert.ok(!third.updates.some(event => event.update.toolCallId === permission.id))
+  assert.deepEqual([finalUpdates(first, permission.id), finalUpdates(second, permission.id)], [['completed'], ['completed']])
+})
+
+test('a view shows only an open request, ends its tool call one time when it closes, and ends an answer that did not count as failed', { timeout: 10000 }, async () => {
+  const request = { options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow' }], toolCall: { title: 'Write a file' } }
+  const run = (id, fields) => ({ id, status: 'approval', generation: 'process', prompt: id, ...fields })
+  const permissionOf = (runId, status = 'pending') => ({ id: `request-${runId}`, runId, generation: 'process', request, status, decision: null })
+  const runs = { answer: run('answer'), end: run('end'), race: run('race'), stopping: run('stopping', { cancelRequested: true }),
+    restarted: run('restarted', { generation: 'new' }), answered: run('answered') }
+  const permissions = Object.fromEntries(Object.keys(runs).map(id => [`request-${id}`, permissionOf(id, id === 'answered' ? 'answered' : 'pending')]))
+  const without = Object.fromEntries(Object.entries(permissions).filter(([id]) => id !== 'request-answer'))
+  const closedRuns = { ...runs, answer: { ...runs.answer, status: 'running' }, end: { ...runs.end, status: 'cancelled' },
+    race: { ...runs.race, status: 'running' } }
+  // The user of this view answers `no` to the request `race`, but the answer `yes` of another view counted first.
+  const closed = { ...permissions, 'request-answer': { ...permissions['request-answer'], status: 'answered', decision: 'yes' },
+    'request-race': { ...permissions['request-race'], status: 'answered', decision: 'yes' } }
+  // The second and the last state are older states, as a late reply of `/state` gives: without a shown request, and with
+  // the requests open. A missing request of a run that works stays open, and a closed request never shows again.
+  const states = [{ runs, permissions }, { runs, permissions: without }, { runs: closedRuns, permissions: closed },
+    { runs: closedRuns, permissions: closed }, { runs, permissions }]
+  const answered = []
+  const daemon = {
+    json: async (path, body) => { if (path === '/permission') answered.push(body); return {} },
+    watch: (consumer, signal) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
+      consumer({ type: 'conversation', value: { entries: [] } })
+        .then(async () => {
+          for (const value of states) {
+            await consumer({ type: 'tasks', value: { current: null, ...value } })
+            await new Promise(resolve => setImmediate(resolve))
+          }
+        }).catch(reject)
+    }),
+  }
+  const asked = []
+  const updates = []
+  const bridge = new AcpBridge(daemon)
+  bridge.connection = { client: {
+    notify: async (method, params) => { updates.push(params.update) },
+    request: async (method, params) => {
+      asked.push(params.toolCall.toolCallId)
+      return params.toolCall.toolCallId === 'request-race' ? { outcome: { outcome: 'selected', optionId: 'no' } } : new Promise(() => {})
+    },
+  }, close: () => {} }
+  await bridge.attach({ params: { cwd: '/project' } }, false)
+  await eventually(() => updates.some(update => update.sessionUpdate === 'tool_call_update'))
+  await new Promise(resolve => setTimeout(resolve, 50))
+  bridge.close()
+  assert.deepEqual(asked, ['request-answer', 'request-end', 'request-race'])
+  assert.deepEqual(updates.filter(update => update.sessionUpdate === 'tool_call_update'), [
+    { sessionUpdate: 'tool_call_update', toolCallId: 'request-answer', status: 'completed' },
+    { sessionUpdate: 'tool_call_update', toolCallId: 'request-end', status: 'failed' },
+    { sessionUpdate: 'tool_call_update', toolCallId: 'request-race', status: 'failed' },
+  ])
+  assert.deepEqual(answered, [{ id: 'request-race', decision: 'no' }])
 })
 
 test('the Stop of a queued row cancels that run before its start, and the run before it goes on', { timeout: 15000 }, async t => {

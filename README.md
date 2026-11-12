@@ -363,6 +363,10 @@ of past sessions has no Stop.
 Air hides the Background Tasks tab while the chat shows a permission request. Answer the request first, or ask the main
 agent to cancel the task.
 
+The permission dialog of a task goes away in each chat window when the request can no longer get an answer: after an
+answer in another window, and when the task stops, fails or reaches its deadline. A window that opens later shows no
+dialog for it.
+
 ## Read the transcript of a task
 
 Click the title of a running task in the Background Tasks tab. The IDE opens the transcript of that run, a plain text

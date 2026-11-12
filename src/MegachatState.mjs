@@ -7,6 +7,16 @@ import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJ
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
+
+/**
+ * Tells whether the user can answer [permission] in [state] now. The request must be pending, and its run must exist,
+ * have the generation of the request, have no stop request, and not be in a terminal state. `respondPermission` takes a
+ * new answer only then. For an answered request, it takes only a repeat of the same answer, which changes nothing.
+ */
+export function permissionOpen(state, permission) {
+  const run = permission?.status === 'pending' ? state.runs[permission.runId] : undefined
+  return !!run && run.generation === permission.generation && !run.cancelRequested && !terminalStates.has(run.status)
+}
 /**
  * The kinds of the automatic turns: a project event of an earlier build (`event`) and the summary of the past sessions,
  * a child result (`report`), and the morning report (`morning`). Such a turn starts no work and changes no setting.
@@ -862,12 +872,10 @@ export class MegachatState {
         requireCondition(permission.decision === decision, 'conflict')
         return
       }
-      const run = state.runs[permission.runId]
-      requireCondition(run?.generation === permission.generation && !run.cancelRequested && !terminalStates.has(run.status), 'stale')
-      requireCondition(permission.status === 'pending', 'stale')
+      requireCondition(permissionOpen(state, permission), 'stale')
       permission.decision = decision
       permission.status = 'answered'
-      run.status = 'running'
+      state.runs[permission.runId].status = 'running'
     })
   }
 
