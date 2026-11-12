@@ -7,6 +7,11 @@ import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJ
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
+/**
+ * The kinds of the automatic turns: a project event of an earlier build (`event`) and the summary of the past sessions,
+ * a child result (`report`), and the morning report (`morning`). Such a turn starts no work and changes no setting.
+ */
+export const automaticKinds = new Set(['event', 'report', 'morning'])
 export const maxAutomaticResumes = 2
 /** The limit of the messages that the user adds to one task, for its first run and each continuation together. */
 export const maxSteers = 16
@@ -251,6 +256,9 @@ export class MegachatState {
       state.projectCreations ??= {}
       // The task of an import pass ends with its daemon. A summary that waits for its event turn stays.
       state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null }
+      // The morning report: the local date of the last report, the data of a report that waits for its turn, and the
+      // report of the turn that runs. A state of an earlier build has none.
+      state.morningReport ??= { lastDate: null, pending: null, running: null }
       // The workspace of Megachat follows the state directory of this start, so the state does not keep an old one.
       state.megachatWorkspace = this.workspace ?? null
       // A build from before the output limit of the tail kept each update of a run. Nothing read these updates, and
@@ -294,7 +302,7 @@ export class MegachatState {
   async addProject(path, requestId) {
     const cwd = await resolveRepository(path, this.repositoryOptions)
     return this.change(state => {
-      requireCondition(!['event', 'report'].includes(state.current?.kind), 'proposalOnly')
+      requireCondition(!automaticKinds.has(state.current?.kind), 'proposalOnly')
       if (!state.projects.includes(cwd)) {
         requireCondition(state.projects.length < KNOWN_PROJECTS_LIMIT, 'limit')
         state.projects.push(cwd)
@@ -321,7 +329,7 @@ export class MegachatState {
   async createProject(requestId, name, root) {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
     const state = await this.snapshot()
-    requireCondition(!['event', 'report'].includes(state.current?.kind), 'proposalOnly')
+    requireCondition(!automaticKinds.has(state.current?.kind), 'proposalOnly')
     const record = state.projectCreations[requestId]
     if (record?.cwd) return { cwd: record.cwd }
     const path = await createProjectDirectory(root, name, this.repositoryOptions, { reserved: record?.path,
@@ -337,12 +345,16 @@ export class MegachatState {
     }
   }
 
-  /** Removes a repository from the known list. A project of an IDE stays in the list of the directories. */
+  /**
+   * Removes a repository from the known list. A project of an IDE stays in the list of the directories. The morning
+   * report cannot remove one.
+   */
   async removeProject(path) {
     requireCondition(typeof path === 'string' && path.length > 0 && path.length <= 4096, 'directory')
     const { projects } = await this.snapshot()
     const cwd = projects.includes(path) ? path : await resolveRepository(path, this.repositoryOptions).catch(() => path)
     return this.change(state => {
+      requireCondition(state.current?.kind !== 'morning', 'morningReport')
       const index = state.projects.indexOf(cwd)
       requireCondition(index >= 0, 'workspace')
       state.projects.splice(index, 1)
@@ -492,6 +504,53 @@ export class MegachatState {
     })
   }
 
+  /**
+   * Records that the morning report of [date] needs no turn, because its period had no activity, or because the user
+   * turned the report on after the start of that day. Gives false when the state has a report of [date].
+   */
+  async morningReportDone(date) {
+    return this.change(state => {
+      if (state.morningReport.lastDate === date) return false
+      state.morningReport.lastDate = date
+      return true
+    })
+  }
+
+  /**
+   * Stores the data of the morning report of [date] for its turn, and the date, so a restart sends no second report.
+   * Gives false when the state has a report of [date].
+   */
+  async morningReportReady(date, data) {
+    return this.change(state => {
+      if (state.morningReport.lastDate === date) return false
+      state.morningReport.lastDate = date
+      state.morningReport.pending = { date, data, repeated: false }
+      return true
+    })
+  }
+
+  /** Starts the turn of the morning report that waits. The turn runs only when no other turn runs. */
+  async nextMorningReport() {
+    return this.change(async (state, tx) => {
+      const pending = state.morningReport?.pending
+      if (state.current || !pending) return null
+      retain(state)
+      clearPromptSuggestion(state.initiative)
+      const mainRunId = randomUUID()
+      const requestId = `morning:${mainRunId}`
+      const submissionId = await this.root.submit(tx, {
+        type: 'input', requestId, content: `${message('event.morning')}\n${JSON.stringify(pending.data)}`,
+        entry: { kind: 'air.megachat.event', data: { type: 'morning', date: pending.date } },
+      })
+      state.morningReport.pending = null
+      state.morningReport.running = { ...pending, mainRunId }
+      const input = { digest: digest(pending.data), mainRunId, submissionId, status: 'running', admittedAt: Date.now() }
+      state.inputs[requestId] = input
+      state.current = { id: mainRunId, requestId, cancelling: false, kind: 'morning' }
+      return input
+    })
+  }
+
   async readRun(runId) {
     return this.change(state => {
       const run = state.runs[runId]
@@ -534,7 +593,8 @@ export class MegachatState {
   /**
    * Ends the current turn. [reason] is the reason code of Pi Durable for a turn without an answer. A result report
    * that fails for a reason that can go away is sent once more, after a delay. A cancelled report is not: the user
-   * stopped it, or `interruptAutomaticTurn` already asked for a new report.
+   * stopped it, or `interruptAutomaticTurn` already asked for a new report. A morning report that a user message
+   * interrupted, or that failed for a reason that can go away, waits for one more turn. The user can stop it for good.
    */
   async settleInput(mainRunId, status, reason) {
     await this.change(state => {
@@ -547,6 +607,12 @@ export class MegachatState {
       const suggestion = state.initiative.promptSuggestion
       if (suggestion?.turnId === state.current.requestId && (status !== 'completed'
         || Object.values(state.runs).some(run => run.mainRunId === mainRunId))) clearPromptSuggestion(state.initiative)
+      const morning = state.current.kind === 'morning' ? state.morningReport.running : null
+      if (morning) {
+        const repeatable = morning.interrupted || status === 'interrupted' && (reason === undefined || repeatableReasons.has(reason))
+        if (repeatable && !morning.repeated) state.morningReport.pending = { date: morning.date, data: morning.data, repeated: true }
+        state.morningReport.running = null
+      }
       if (status === 'interrupted') {
         // The state keeps only the reason code. The detail of the reason can hold the text of a provider.
         if (typeof reason === 'string') input.reason = reason.slice(0, 64)
@@ -569,6 +635,7 @@ export class MegachatState {
       if (!state.current || state.current.kind === 'user') return false
       state.current.cancelling = true
       for (const id of state.inputs[state.current.requestId].resultRunIds ?? []) state.runs[id].reported = false
+      if (state.current.kind === 'morning' && state.morningReport.running) state.morningReport.running.interrupted = true
       return true
     })
   }
@@ -588,7 +655,7 @@ export class MegachatState {
         return plain(old)
       }
       requireCondition(state.current && !state.current.cancelling, 'inactive')
-      requireCondition(!['event', 'report'].includes(state.current.kind), 'proposalOnly')
+      requireCondition(!automaticKinds.has(state.current.kind), 'proposalOnly')
       requireCondition(isDirectoryOf(state, args.cwd), 'workspace')
       requireCondition(Object.values(state.runs).filter(run => run.mainRunId === state.current.id).length < 8, 'limit')
       requireCondition(Object.values(state.runs).filter(run => !terminalStates.has(run.status)).length < 8, 'limit')
@@ -649,7 +716,7 @@ export class MegachatState {
         }
       }
       requireCondition(state.current && !state.current.cancelling, 'inactive')
-      requireCondition(!['event', 'report'].includes(state.current.kind), 'steerEvent')
+      requireCondition(!automaticKinds.has(state.current.kind), 'steerEvent')
       const run = Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
       requireCondition(run && !run.closed, 'missing')
       // The project rules stay for a child that works: its directory can leave the list after its start.
@@ -791,6 +858,7 @@ export class MegachatState {
 
   async closeChild(childSessionId) {
     await this.change(state => {
+      requireCondition(state.current?.kind !== 'morning', 'morningReport')
       const runs = Object.values(state.runs).filter(run => run.childSessionId === childSessionId)
       requireCondition(runs.length > 0, 'missing')
       requireCondition(runs.every(run => terminalStates.has(run.status)), 'busy')

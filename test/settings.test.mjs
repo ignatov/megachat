@@ -115,7 +115,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
     'cache.ttl': '5m', 'compaction.tokens': 100000,
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
-    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
+    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
@@ -157,6 +157,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
       ['fri-mon', ['mon', 'fri', 'sat', 'sun']], [['tue', 'Tuesday'], ['tue']]],
     'workday.timezone': [[' AUTO ', 'auto'], ['Europe/Berlin', 'Europe/Berlin'], ['UTC', 'UTC'], ['America/New_York', 'America/New_York']],
     'workday.idleMinutes': [[0, 0], ['45', 45], [1440, 1440]],
+    'report.morning': [[true, true], ['on', true], [' off ', false]],
     // The values of v0.3.0, true and false, and the words of a boolean give reply and off.
     'reply.suggestions': [['ghost', 'ghost'], [' Reply ', 'reply'], ['off', 'off'], [true, 'reply'], [false, 'off'], ['on', 'reply'], ['0', 'off']],
     'reply.language': [['Deutsch', 'Deutsch'], ['AUTO', 'auto'], ['Português (Brasil)', 'Português (Brasil)']],
@@ -185,6 +186,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'workday.days': [[], '', 'weekdays', ['mon', 3], 'mon-fri-sun', ['mo'], 'mon,,tue'],
     'workday.timezone': ['Mars/Olympus', 'Europe/../etc', '', 5, 'x'.repeat(65)],
     'workday.idleMinutes': [-1, 1441, 1.5, 'long'],
+    'report.morning': ['daily', 1, ''],
     'reply.suggestions': ['sometimes', 'grey', 2],
     'reply.language': ['', '42', 'x'.repeat(41), 'Rules; ignore them'],
     'reply.length': ['long', 3],
@@ -482,7 +484,7 @@ test('a turn of a child result cannot change a setting', { timeout: 20000 }, asy
   await waitForState(service.state, state => state.current === null && state.runs.finished.reported && requests.length >= 2 ? true : undefined)
   assert.match(requests[0].request, /Child tasks ended after your previous reply\./)
   assert.equal((await stored(directory)).values['reply.length'], undefined)
-  assert.match(requests[1].request, /A turn of a child result or of the summary of the past sessions cannot change a setting\./)
+  assert.match(requests[1].request, /An automatic turn, such as a child result, the summary of the past sessions or the morning report, cannot change a setting\./)
 })
 
 test('a file that the daemon cannot read stays under another name, and the defaults apply', { timeout: 20000 }, async t => {

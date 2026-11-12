@@ -4,6 +4,8 @@ import { calculateCost } from '@earendil-works/pi-ai/models'
 const SCHEMA = 1
 const WARNINGS = ['none', 'pending', 'shown']
 const systemClock = { now: () => Date.now() }
+/** The count of the earlier days that the file keeps for the morning report. */
+const KEPT_DAYS = 31
 
 /** The local day of [time] as `YYYY-MM-DD`. The count of the spend starts again at the local midnight. */
 export function localDay(time) {
@@ -25,6 +27,12 @@ export function requestCost(usage, model) {
   return Number.isFinite(cost) ? cost : 0
 }
 
+const validCount = count => count !== null && typeof count === 'object' && Number.isFinite(count.usd) && count.usd >= 0
+  && Number.isFinite(count.piUsd) && count.piUsd >= 0
+/** The valid entries of the stored earlier days. A file of an earlier build has none. */
+const validDays = days => days !== null && typeof days === 'object' && !Array.isArray(days)
+  ? Object.fromEntries(Object.entries(days).filter(([day, count]) => /^\d{4}-\d\d-\d\d$/.test(day) && validCount(count))) : {}
+
 const validData = data => data !== null && typeof data === 'object' && data.schema === SCHEMA && typeof data.day === 'string'
   && Number.isFinite(data.usd) && data.usd >= 0 && WARNINGS.includes(data.warning)
 
@@ -32,6 +40,8 @@ const validData = data => data !== null && typeof data === 'object' && data.sche
  * The spend of the main agent on the local day, in the file `spend.json` of the state directory, so a restart keeps it.
  * The warning goes from `none` to `pending` when the spend passes the limit, and to `shown` after the turn that had it.
  * So the user gets one warning on each day. Without a path, the count stays in memory, for a test.
+ * `piUsd` is the part of `usd` that the pi children spent. `days` keeps the counts of the last [KEPT_DAYS] earlier days
+ * for the morning report. A file of an earlier build has neither, and an earlier build keeps the count of the day.
  */
 export class DailySpend {
   /** A file that the daemon cannot read gives a new count. The count is no setting, so the loss is small. */
@@ -49,19 +59,38 @@ export class DailySpend {
     this.queue = Promise.resolve()
   }
 
-  /** The count of today. A new local day starts a new count. */
+  /** The count of today. A new local day starts a new count, and the count of the earlier day goes to `days`. */
   today() {
     const day = localDay(this.clock.now())
-    if (this.data.day !== day) this.data = { schema: SCHEMA, day, usd: 0, warning: 'none' }
+    if (this.data.day === day) return this.data
+    const days = { ...validDays(this.data.days) }
+    if (this.data.usd > 0) days[this.data.day] = { usd: this.data.usd, piUsd: this.data.piUsd ?? 0 }
+    const kept = Object.keys(days).filter(item => item < day).sort().slice(-KEPT_DAYS)
+    this.data = { schema: SCHEMA, day, usd: 0, warning: 'none', days: Object.fromEntries(kept.map(item => [item, days[item]])) }
     return this.data
   }
 
-  /** Adds the cost of one request. Gives true when the spend passed [limit] with this request. */
-  add(usd, limit) {
-    this.today().usd += usd
+  /**
+   * Adds the cost of one request. [source] `pi` counts it also as a cost of the pi children. Gives true when the spend
+   * passed [limit] with this request.
+   */
+  add(usd, limit, source) {
+    const data = this.today()
+    data.usd += usd
+    if (source === 'pi') data.piUsd = (data.piUsd ?? 0) + usd
     const passed = this.check(limit)
     this.save()
     return passed
+  }
+
+  /** The spend of each of [dates], `YYYY-MM-DD`: in USD, and the part of the pi children. A day without a count gives 0. */
+  daily(dates) {
+    const data = this.today()
+    const days = validDays(data.days)
+    return dates.map(day => {
+      const count = day === data.day ? { usd: data.usd, piUsd: data.piUsd ?? 0 } : days[day] ?? { usd: 0, piUsd: 0 }
+      return { day, usd: count.usd, piUsd: count.piUsd }
+    })
   }
 
   /** Makes the warning pending when the spend is above [limit] and no warning went out today. `0` is no limit. */

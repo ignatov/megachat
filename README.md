@@ -202,6 +202,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `workday.days` | `mon`-`fri` | | The working days, as a list or as a text such as `mon-fri` or `mon,wed,fri`. |
 | `workday.timezone` | `auto` | | The timezone of the working hours. `auto` is the timezone of the system, else an IANA name such as `Europe/Berlin`. |
 | `workday.idleMinutes` | `30` | | The idle time outside the working hours before the conversation goes to sleep, 0 to 1440 minutes. |
+| `report.morning` | `false` | | The morning report on each working day at `workday.start`. See [The morning report](#the-morning-report). |
 | `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and Tab puts it into the input; a client that does not know the key shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
@@ -255,6 +256,35 @@ message and then offers the setup. The setup asks one question at a time and sho
 can skip one question or the whole setup, and the defaults then apply. After the setup, or after a skip, Megachat
 does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon cannot read stays as
 `settings.json.unreadable-<UTC time>`, and the defaults apply.
+
+## The morning report
+
+With `report.morning` on, the main agent writes a report on each working day at `workday.start`, on the days of
+`workday.days` and in the timezone of `workday.timezone`, also when `workday.enabled` is off. The report covers the
+days from the previous working day up to yesterday, so the report of a Monday covers Friday and the weekend. It has
+three parts:
+
+- **Done:** the finished child tasks, the commits of each listed project, and the sessions of the period by project
+  when the index of the past sessions is on.
+- **Open:** the child tasks that still run or that failed, and the permission requests that wait.
+- **Money:** the USD that the key of Megachat paid for the main agent and the pi children, from `spend.json`, and apart
+  from it the API-equivalent cost of your other agent sessions from [tokprof](https://github.com/ignatov/tokprof),
+  which the accounts of Claude Code, Codex and the other agents paid. Without tokprof, the report says that this part
+  is missing.
+
+The daemon collects the data, and the main agent only writes the text. The commits come from `git log` with a time
+limit. tokprof comes from `PATH`, else from `~/.local/bin`, and runs as `tokprof flame --stack agent,project,origin
+--value cost` for the period, with a time limit of 2 minutes. tokprof does not read the store of the pi children of
+Megachat, so their cost is only in the first part.
+
+The report is an automatic turn, as the report of a child result. When Air is open, the report comes as a reply. When
+Air is closed, the reply waits in the conversation, and Air shows it at the next attach. A message of yours interrupts
+the report, and the report then comes again one time. The report starts no work: it lists what the agent would do
+next, and you approve it. A period without a turn of yours, a child task and a spend of Megachat gives no report.
+
+The state keeps the date of the last report, so a restart sends no second report. When the computer slept or the
+daemon was down at `workday.start`, the report comes at the first chance on that working day. When you turn the report
+on after the start of a working day, the first report comes on the next working day.
 
 ## Add information to a task that runs
 
@@ -366,7 +396,8 @@ The session text is data for the agent, not instructions.
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
-| `src/Workday.mjs` | The working day: the pure function that tells whether a time is in the working hours, with the timezone through `Intl`. |
+| `src/Workday.mjs` | The working day: the pure functions that tell whether a time is in the working hours, the next start of a working day, and the period of a report, with the timezone through `Intl`. |
+| `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits. |
 | `src/ChildSlot.mjs` | The one place for a child run, which the ACP and the pi run services share, so one child runs at a time. |

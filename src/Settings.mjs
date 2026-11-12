@@ -149,6 +149,7 @@ export const SETTINGS = [
       return /^\d{1,4}$/.test(text) && Number(text) <= 1440 ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 0, maximum: 1440 }) },
+  { key: 'report.morning', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: 'off', applies: 'nextTurn',
     fromEnvironment: text => text === '1' ? 'reply' : text === '0' ? 'off' : choice(SUGGESTION_MODES)(text.toLowerCase()),
     validate: suggestionMode, allowed: () => ({ values: SUGGESTION_MODES }) },

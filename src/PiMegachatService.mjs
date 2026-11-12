@@ -5,7 +5,8 @@ import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtens
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
-import { findSteer, MegachatState, terminalStates } from './MegachatState.mjs'
+import { automaticKinds, findSteer, MegachatState, terminalStates } from './MegachatState.mjs'
+import { collectReportData, logReport, MorningReport, reportWorkday } from './MorningReport.mjs'
 import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
 import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
@@ -15,7 +16,7 @@ import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore, suggestionMode } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
-import { workdaySettings } from './Workday.mjs'
+import { isWorkingDate, localDate, workdaySettings, zonedTime } from './Workday.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { SessionIndexService } from './SessionIndexService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -134,9 +135,10 @@ export class PiMegachatService {
    * `settings.json`, for a test. The daemon passes none of them. [clock] gives the time of the daily spend, for a test.
    * [accountCheck] checks the accounts of the child agents for the tool `agents_accounts`. [processTable] replaces the
    * process table of the platform for the tool `agents_running`, and [clock] also gives the age of its view, for a test.
-   * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test.
+   * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test. [morningReport] gives the
+   * clock of the timer of the morning report and the time limit of tokprof, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, promptSuggestionLifetimeMs } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, promptSuggestionLifetimeMs, morningReport: reportOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -171,11 +173,14 @@ export class PiMegachatService {
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
-    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck,
+    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck, reportOptions, home,
+      stateDirectory, environment,
       spend: await DailySpend.open(spendPath, clock),
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
     service.adopt(values)
+    service.morningReport = new MorningReport({ clock: reportOptions.clock, values: () => service.settings.values(),
+      lastDate: async () => (await state.snapshot()).morningReport.lastDate, prepare: date => service.prepareMorningReport(date) })
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
@@ -187,7 +192,7 @@ export class PiMegachatService {
       service.sessions.index = service.sessionIndex
     }
     service.sessions.children = new PiChildHistory(harness, state)
-    service.childExtension = childExtension((usage, model) => service.countSpend(usage, model))
+    service.childExtension = childExtension((usage, model) => service.countSpend(usage, model, 'pi'))
     registry.install(service.childExtension)
     registry.install(service.extension())
     return service
@@ -232,6 +237,10 @@ export class PiMegachatService {
     this.notice = this.spend.notice(values['budget.dailyUsd'])
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
     this.state.eventSuffix = this.suggestions === 'off' ? '' : '.suggest'
+    // A change of the time of the morning report takes a new time at once.
+    const reportKey = JSON.stringify([values['report.morning'], reportWorkday(values)])
+    if (this.reportKey !== undefined && reportKey !== this.reportKey && this.resumed) this.morningReport?.check()
+    this.reportKey = reportKey
     const ttlSeconds = this.models.getModel(this.model.provider, this.model.modelId)?.promptCache?.[this.cacheRetention]
       ?? CACHE_LIFETIME_SECONDS[this.cacheRetention]
     const keepAlive = values['keepAlive.enabled'] ? { ttlMs: ttlSeconds * 1000, windowMs: values['keepAlive.hours'] * 3600000,
@@ -279,12 +288,13 @@ export class PiMegachatService {
   }
 
   /**
-   * Counts the cost of one model request of the main agent. When the spend of the day passes the limit, the warning
-   * goes into the rules of the next turn. A failure here must not fail the request, so it goes to the log only.
+   * Counts the cost of one model request of the main agent, or of a pi child with [source] `pi`. When the spend of the
+   * day passes the limit, the warning goes into the rules of the next turn. A failure here must not fail the request, so
+   * it goes to the log only.
    */
-  countSpend(usage, model) {
+  countSpend(usage, model, source) {
     try {
-      if (this.spend.add(requestCost(usage, model), this.settings.entry('budget.dailyUsd').value))
+      if (this.spend.add(requestCost(usage, model), this.settings.entry('budget.dailyUsd').value, source))
         this.settingsChanged().catch(error => logFailure('log.settings.failed', error))
     }
     catch (error) { logFailure('log.settings.failed', error) }
@@ -317,7 +327,7 @@ export class PiMegachatService {
       return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') },
         ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}) }
     }
-    requireCondition(!['event', 'report'].includes((await this.state.snapshot()).current?.kind), 'settingEvent')
+    requireCondition(!automaticKinds.has((await this.state.snapshot()).current?.kind), 'settingEvent')
     let changed
     if (args.action === 'onboarding') {
       changed = await this.settings.setOnboarding(args.status)
@@ -326,13 +336,42 @@ export class PiMegachatService {
     }
     else if (args.action === 'set') {
       requireCondition(args.value !== undefined, 'settingValue')
+      const before = this.settings.values()['report.morning']
       changed = await this.settings.set(args.key, args.value)
+      if (args.key === 'report.morning' && !before && this.settings.values()['report.morning']) await this.skipReportOfToday()
     }
     else changed = await this.settings.reset(args.key)
     // The consent to the session index applies at once: the import starts or stops in this turn.
     if (args.action !== 'onboarding') await this.sessionIndex?.apply(this.settings.values())
     await this.settingsChanged()
     return changed
+  }
+
+  /**
+   * The user turned the morning report on. After the start of a working day, the first report comes on the next working
+   * day, so the report does not interrupt the conversation that turned it on.
+   */
+  async skipReportOfToday() {
+    const workday = reportWorkday(this.settings.values())
+    const now = (this.reportOptions.clock ?? Date).now()
+    const today = localDate(now, workday.timezone)
+    if (isWorkingDate(workday, today) && now >= zonedTime(today, workday.start, workday.timezone)) await this.state.morningReportDone(today)
+  }
+
+  /**
+   * Collects the data of the morning report of [date]. A period without activity gets no turn, and the state keeps the
+   * date all the same. Else the data waits in the state for its turn, which the event pump starts.
+   */
+  async prepareMorningReport(date) {
+    const state = await this.state.snapshot()
+    if (state.morningReport.lastDate === date) return
+    const workday = reportWorkday(this.settings.values())
+    const data = await collectReportData({ state, date, workday, spend: this.spend, sessionStore: this.sessionIndex?.store,
+      home: this.home, stateDirectory: this.stateDirectory, environment: this.environment,
+      now: (this.reportOptions.clock ?? Date).now(), tokprofTimeoutMs: this.reportOptions.tokprofTimeoutMs, signal: this.lifetime.signal })
+    if (this.lifetime.signal.aborted) return
+    const stored = data ? await this.state.morningReportReady(date, data) : await this.state.morningReportDone(date)
+    if (stored) logReport(date, data)
   }
 
   /**
@@ -345,6 +384,11 @@ export class PiMegachatService {
     const outcome = recorded.outcome ?? await waitForState(this.state, state => findSteer(state, recorded.id)?.item.outcome ?? undefined,
       { signal: this.lifetime.signal, timeoutMs: STEER_WAIT_MS })
     return { childSessionId: args.childSessionId, runId: recorded.runId, steerId: recorded.id, mode: recorded.mode, outcome: outcome ?? 'pending' }
+  }
+
+  /** The morning report reads and writes the report, and nothing else. A tool that starts or changes something refuses it. */
+  async refuseInMorningReport() {
+    requireCondition((await this.state.snapshot()).current?.kind !== 'morning', 'morningReport')
   }
 
   extension() {
@@ -373,6 +417,7 @@ export class PiMegachatService {
         status: opt(str({ maxLength: 20 })) }), async args => result(await this.settingsTool(args))),
       // A check that runs gives its result also to a second call, so two calls do not start four agents.
       tool('accounts', obj({}), async () => {
+        await this.refuseInMorningReport()
         requireCondition(this.accountCheck, 'unavailable')
         this.checking ??= this.accountCheck().finally(() => { this.checking = undefined })
         return result(await this.checking)
@@ -434,6 +479,7 @@ export class PiMegachatService {
         return result(await this.state.readRun(args.runId))
       }),
       tool('close', obj({ childSessionId: str() }), async args => {
+        await this.refuseInMorningReport()
         await this.state.closeChild(args.childSessionId)
         return result({ closed: true })
       }),
@@ -551,10 +597,11 @@ export class PiMegachatService {
       }
       this.watchPromptSuggestion(snapshot)
       const sessionsPending = Boolean(snapshot.sessionIndex?.summary)
-      if (!resultsPending && !sessionsPending) return
+      const reportPending = Boolean(snapshot.morningReport?.pending)
+      if (!resultsPending && !sessionsPending && !reportPending) return
       this.eventPump = this.eventPump.then(async () => {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
-        const receipt = await this.state.nextChildResults() ?? await this.state.nextSessionsEvent()
+        const receipt = await this.state.nextChildResults() ?? await this.state.nextSessionsEvent() ?? await this.state.nextMorningReport()
         if (receipt) this.follow(receipt)
       }).catch(error => {
         if (this.lifetime.signal.aborted) return
@@ -566,6 +613,7 @@ export class PiMegachatService {
     this.eventWatch.start(call => { if (call.kind === 'value') observe(call.value) })
     this.harness.resume()
     this.resumed = true
+    this.morningReport.check()
     // An index that cannot open must not stop the chat. The log names the failure, and a change of the setting tries again.
     await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
   }
@@ -708,6 +756,7 @@ export class PiMegachatService {
 
   async close() {
     this.lifetime.abort()
+    await this.morningReport?.close()
     clearTimeout(this.reportTimer)
     clearTimeout(this.expiry?.timer)
     await this.keepAlive?.close()

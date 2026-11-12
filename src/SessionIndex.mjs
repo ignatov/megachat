@@ -387,6 +387,15 @@ export class SessionIndex {
     return this.#guard(() => this.db.all('SELECT agent, session_id, cwd, title, updated_at, entry_count, last_kind FROM sessions ORDER BY updated_at DESC'))
   }
 
+  /**
+   * The sessions with activity in the time from [from] to [to], at most [limit], the last active first: a session that
+   * started before [to], and whose last activity is at [from] or later.
+   */
+  async activeSessions(from, to, limit = 1000) {
+    return this.#guard(() => this.db.all(`SELECT agent, cwd, title, updated_at FROM sessions
+      WHERE updated_at >= ? AND coalesce(started_at, updated_at) < ? ORDER BY updated_at DESC LIMIT ?`, from, to, limit))
+  }
+
   /** Each row of the live table of the session files. */
   async logs() { return this.#guard(() => this.db.all('SELECT * FROM logs')) }
 
