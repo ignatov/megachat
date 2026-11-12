@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
-import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
+import { fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { taskRows } from '../src/AcpBridge.mjs'
@@ -688,4 +688,26 @@ test('a turn of a project event or of a child result cannot steer a pi child, an
   const continued = Object.values((await service.state.snapshot()).runs).find(item => item.resumeOf === run.id)
   assert.equal(continued.prompt, message('child.continue.pi'))
   assert.doesNotMatch(continued.prompt, /git/)
+})
+
+test('the continuation of a pi run keeps no copy of the output of the run before it after its end', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('Reported.')],
+    child: [fauxAssistantMessage([fauxText('Reading the README.'), fauxToolCall('read', { path: 'README.md' })], { stopReason: 'toolUse' }), hang,
+      fauxAssistantMessage('Redirected.')],
+  })
+  await service.submit('spawn', 'Work')
+  const run = await waitForState(service.state, state => Object.values(state.runs).find(run => run.output === 'Reading the README.'))
+  await until(async () => !(await service.state.snapshot()).current && requests.filter(request => request.child).length === 2)
+  await setCurrent(service, 'user')
+  assert.equal((await service.steer('tool:steer-6:steer', { childSessionId: run.childSessionId, prompt: STEER, mode: 'interrupt' })).outcome, 'restarted')
+  await setCurrent(service, null)
+  const state = await finished(service)
+  const continued = state.runs[state.runs[run.id].resumedBy]
+  assert.deepEqual([continued.status, continued.output], ['completed', 'Reading the README.\n\nRedirected.'])
+  assert.ok(Object.values(state.runs).every(item => !('carriedOutput' in item) && !('carriedTruncated' in item)))
+  const inspected = await service.state.readRun(continued.id)
+  assert.equal(occurrences(JSON.stringify(inspected), 'Reading the README.'), 1)
 })

@@ -98,6 +98,15 @@ function digest(value) {
 const plain = value => JSON.parse(JSON.stringify(value))
 
 /**
+ * Removes the copy of the output of the run before a pi continuation. Only a restart of the dispatched run reads it,
+ * and the output of the run holds the same text.
+ */
+function dropCarriedOutput(run) {
+  delete run.carriedOutput
+  delete run.carriedTruncated
+}
+
+/**
  * Replaces an interrupted run with a queued continuation in the same transaction, so a result report never sees both.
  * A prompt that may have reached the provider is never sent again as a new task: its session receives a continuation
  * prompt instead. The continuation keeps the first prompt as its `task`, and the dispatch quotes it, because the
@@ -479,7 +488,8 @@ export class MegachatState {
       const run = state.runs[runId]
       requireCondition(run, 'missing')
       if (terminalStates.has(run.status)) run.reported = true
-      return plain(run)
+      const { carriedOutput, carriedTruncated, ...shown } = plain(run)
+      return shown
     })
   }
 
@@ -682,6 +692,7 @@ export class MegachatState {
       if (run.status === 'dispatched') run.dispatched = true
       if (terminalStates.has(run.status)) {
         run.finishedAt = Date.now()
+        dropCarriedOutput(run)
         scheduleResume(state, run, previousStatus, this.resumeDelayMs)
         followSteers(state, run)
         for (const permission of Object.values(state.permissions)) {
@@ -775,6 +786,7 @@ export class MegachatState {
   async recover() {
     await this.change(state => {
       for (const run of Object.values(state.runs)) {
+        if (terminalStates.has(run.status)) dropCarriedOutput(run)
         if (terminalStates.has(run.status) || run.status === 'admitted') continue
         // Pi Durable continues the conversation of a dispatched pi run after the restart, and the pi run service follows it.
         if (run.agent === 'pi' && run.status === 'dispatched') continue
