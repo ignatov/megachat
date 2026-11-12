@@ -214,7 +214,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
 | `children.parallel` | `3` | | The count of the tasks that run at the same time, 1 to 8. Tasks in one checkout run one after the other. See below. |
 | `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
-| `children.claudeModel` | `inherit` | | The model of a Claude child: `inherit` (the model of your settings of Claude Code, else `anthropic/claude-sonnet-5-5`), or an `anthropic` model of the registry. See below. |
+| `children.claudeModel` | `inherit` | | The model of a Claude child: `inherit` (the model of your settings of Claude Code, else `anthropic/claude-sonnet-5-5`), or a model of Claude Code as `anthropic/<model ID>`. See below. |
 | `children.permissionMode` | `inherit` | | The permission mode of a Claude child: `inherit` (the settings of Claude Code decide), `ask`, `allowEdits` or `auto`. It does not change a Codex child or a pi child. See below. |
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
@@ -261,16 +261,18 @@ wins over each settings file: `ask` is the mode `default` of Claude Code, so the
 command. `allowEdits` is the mode `acceptEdits`, so the child changes files without a question and asks before a
 command. `auto` lets the classifier of Claude Code decide. A question of the child goes to the main conversation.
 Megachat offers no `bypassPermissions` and no `plan`, and it removes each option of a permission request that switches a
-child to `bypassPermissions`. When Claude Code refuses the mode, for example because your settings turn off the mode
+child to `bypassPermissions`. When your `~/.claude/settings.json` sets `permissions.defaultMode` to `bypassPermissions`,
+a Claude child of Megachat starts in the mode `default`, so it asks for each step that a permission rule does not allow. When Claude Code refuses the mode, for example because your settings turn off the mode
 `auto`, the task fails before it starts. Claude Code applies an allow rule of the project settings only in a directory
 that you trusted in Claude Code: in another directory, the child asks all the same. A deny rule applies in each
 directory.
 
 The adapter also switches a Claude child to the `model` of your settings of Claude Code. With `children.claudeModel`
 `inherit`, Megachat keeps that: the model of your settings decides, and without one the child uses
-`anthropic/claude-sonnet-5-5`. Another value names a model, and Megachat sends it after the start of each Claude child,
-so it wins over your settings. When your settings of Claude Code do not allow that model, for example with
-`availableModels`, the task fails before it starts.
+`anthropic/claude-sonnet-5-5`. Another value names a model of Claude Code as `anthropic/<model ID>`, also a model or an
+alias that the model registry does not know, such as `anthropic/fable`. Megachat sends it after the start of each Claude
+child, so it wins over your settings. When Claude Code does not offer that model, or your settings do not allow it, for
+example with `availableModels`, the task fails before it starts.
 
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.

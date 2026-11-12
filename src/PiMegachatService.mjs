@@ -97,6 +97,7 @@ function settingsRules(values, onboarding, rules, notice) {
     ...(values['reply.quoteRequest'] ? [message('instructions.quoteRequest')] : []),
     { off: message('instructions.noSuggestions'), reply: rules.suggestions.trimEnd(), ghost: rules.ghost.trimEnd() }[values['reply.suggestions']],
     message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
+    message('instructions.claude', values['children.permissionMode'], values['children.claudeModel']),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')

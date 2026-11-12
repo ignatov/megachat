@@ -167,8 +167,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.parallel': [[1, 1], [' 8 ', 8], ['3', 3]],
     'children.piModel': [[FAST, FAST], [` ${DEEP} `, DEEP]],
     'children.permissionMode': [['ask', 'ask'], [' allowEdits ', 'allowEdits'], ['auto', 'auto'], ['inherit', 'inherit']],
-    // The fake registry has no anthropic model. The test with the anthropic registry covers the models.
-    'children.claudeModel': [['inherit', 'inherit'], [' inherit ', 'inherit']],
+    // A model ID of Claude Code needs no model of the registry: the fake registry has no anthropic model.
+    'children.claudeModel': [['inherit', 'inherit'], [' inherit ', 'inherit'], ['anthropic/claude-sonnet-5-5', 'anthropic/claude-sonnet-5-5'],
+      [' anthropic/fable ', 'anthropic/fable'], ['anthropic/claude-opus-5-5[1m]', 'anthropic/claude-opus-5-5[1m]']],
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
@@ -201,8 +202,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.piModel': ['anthropic/claude-haiku-5-5', 'small', 'faux/', 7],
     // The setting takes its own names, not the mode names of Claude Code. It never offers the modes plan and bypassPermissions.
     'children.permissionMode': ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'Ask', true],
-    // Claude Code cannot use a model of another provider.
-    'children.claudeModel': [FAST, DEEP, 'anthropic/claude-sonnet-5-5', 'claude-sonnet-5-5', 'Inherit', '', 7],
+    // Claude Code cannot use a model of another provider. A model ID has no space, no slash and no other text.
+    'children.claudeModel': [FAST, DEEP, 'claude-sonnet-5-5', 'Inherit', '', 7, 'anthropic/', 'anthropic/claude sonnet', 'anthropic/a/b',
+      'anthropic/-opus', 'anthropic/opus[1m', `anthropic/${'a'.repeat(101)}`, 'Anthropic/opus'],
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
@@ -250,10 +252,12 @@ test('the levels of a model limit the reasoning level, and get lists the models 
   await assert.rejects(opus.set('coordinator.thinking', 'off'), { code: 'settingValue' })
   assert.equal((await opus.set('coordinator.thinking', 'high')).value, 'high')
   assert.deepEqual(opus.describe().settings.find(entry => entry.key === 'coordinator.thinking').values, ['low', 'medium', 'high', 'xhigh', 'max'])
-  // The model of a Claude child must be an anthropic model of the registry.
+  // The model of a Claude child is a model ID of Claude Code with the provider anthropic, also one that the registry does
+  // not know. The Claude child refuses a model that Claude Code does not offer.
   assert.equal(opus.entry('children.claudeModel').value, 'inherit')
   assert.equal((await opus.set('children.claudeModel', ' anthropic/claude-haiku-5-5 ')).value, 'anthropic/claude-haiku-5-5')
-  for (const value of ['anthropic/claude-unknown-9', 'claude-opus-5-5', 'anthropic/', 'openai/gpt-5'])
+  assert.equal((await opus.set('children.claudeModel', 'anthropic/claude-unknown-9')).value, 'anthropic/claude-unknown-9')
+  for (const value of ['claude-opus-5-5', 'anthropic/', 'openai/gpt-5'])
     await assert.rejects(opus.set('children.claudeModel', value), { code: 'settingValue' }, value)
 })
 

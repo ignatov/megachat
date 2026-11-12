@@ -86,13 +86,20 @@ test('the daemon adds the rules of the user to each child prompt at its dispatch
   // The section of the main agent tells it the same values.
   const section = (await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render()
   assert.match(section, /goes to claude\. .*commit allow, push ask, restart or stop of the Megachat daemon ask\./)
+  // It also tells the mode and the model of a Claude child, and that no value skips a permission request.
+  assert.ok(section.includes(message('instructions.claude', 'inherit', 'inherit')))
+  assert.match(message('instructions.claude', 'ask', 'inherit'), /bypassPermissions.*Codex child or a pi child/)
   state = await turn('second', call('agents_settings', { action: 'set', key: 'children.push', value: 'deny' }),
     call('agents_settings', { action: 'set', key: 'children.commit', value: 'ask' }),
+    call('agents_settings', { action: 'set', key: 'children.permissionMode', value: 'ask' }),
+    call('agents_settings', { action: 'set', key: 'children.claudeModel', value: 'anthropic/fable' }),
     call('agents_send', { childSessionId: first.childSessionId, cwd, prompt: 'follow-up' }), fauxAssistantMessage('Sent.'))
   const changed = [message('child.rules'), message('child.rule.commit.ask'), message('child.rule.push.deny'),
     message('child.rule.daemonRestart.ask')].join('\n')
   assert.deepEqual((await prompts())[1], [changed, 'follow-up'])
   assert.deepEqual(Object.values(state.runs).map(run => run.prompt), ['first task', 'follow-up'])
+  const changedSection = (await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render()
+  assert.ok(changedSection.includes(message('instructions.claude', 'ask', 'anthropic/fable')))
   // A report of a result quotes the stored task, without the rules.
   assert.doesNotMatch(JSON.stringify(Object.values(state.runs)), /The user of Megachat set these rules/)
 })
@@ -141,6 +148,19 @@ test('a Claude child never gets the mode bypassPermissions: its options turn the
   const state = await waitForState(service.state, value => Object.values(value.runs).every(run => terminalStates.has(run.status)) ? value : undefined)
   assert.equal(Object.values(state.runs)[0].status, 'completed')
   assert.deepEqual(JSON.parse(await readFile(join(cwd, 'plan-answer'), 'utf8')), { outcome: 'selected', optionId: 'exit-plan-default' })
+})
+
+test('the adapter of Claude Code starts a session of a user mode bypassPermissions in the mode default, because the options of a Claude child turn the mode off', async () => {
+  // A contract test of the adapter that npm installs with Megachat. A real run of 2026-11-12 showed the same for
+  // `session/new` and for `session/load` of a transcript in bypassPermissions, with no error.
+  const { resolveInitialPermissionMode } = await import('@agentclientprotocol/claude-agent-acp/dist/session-mode.js')
+  const errors = []
+  const logger = { error: text => errors.push(text), log: () => {} }
+  // `allowDangerouslySkipPermissions: false` in the options gives `allowBypass: false`.
+  const availability = { allowBypass: false, allowAuto: true }
+  assert.deepEqual(resolveInitialPermissionMode({ defaultMode: 'bypassPermissions' }, logger, availability), { mode: 'default', builtInDefault: false })
+  assert.equal(resolveInitialPermissionMode({ defaultMode: 'bypassPermissions', resumed: 'bypassPermissions' }, logger, availability).mode, 'default')
+  assert.ok(errors.length > 0)
 })
 
 test('a project ANTHROPIC_BASE_URL refuses a Claude child before the start of the agent, and the message has no value', { timeout: 20000 }, async t => {
@@ -259,8 +279,7 @@ test('a failed read of the project settings goes to the log without its message,
 })
 
 test('with children.claudeModel inherit a Claude child gets no model request, and a model of the setting goes before the mode and the prompt', { timeout: 30000 }, async t => {
-  // The fake registry has no anthropic model, so the test gives an explicit value of the setting to the run service.
-  // The settings test covers the validation.
+  // The test changes the value of the setting between the turns. The settings test covers the validation.
   let model
   const { service, cwd, turn, configs, modes } = await fixture(t, { 'children.commit': 'deny', 'children.permissionMode': 'ask' },
     { childLaunch: async () => ({ env: process.env, model: 'claude-sonnet-5-5' }) },
@@ -285,20 +304,20 @@ test('with children.claudeModel inherit a Claude child gets no model request, an
   assert.equal((await modes()).length, 3)
 })
 
-test('a model that the agent refuses fails the run before the prompt, with no continuation', { timeout: 20000 }, async t => {
+test('a model that the registry does not know reaches the agent, and a model that the agent refuses fails the run before the prompt, with no continuation', { timeout: 20000 }, async t => {
   const env = { ...process.env, FAKE_ACP_MODELS: 'claude-opus-5-5' }
-  let service
-  const fixed = await fixture(t, { 'children.permissionMode': 'ask' }, { childLaunch: async () => ({ env }) },
-    { settings: () => ({ ...service.settings.values(), 'children.claudeModel': 'anthropic/claude-haiku-5-5' }) })
-  service = fixed.service
-  const { cwd, turn, prompts, modes, configs } = fixed
+  // The registry of the test knows no anthropic model. The stored value is a model ID of Claude Code all the same.
+  const { cwd, turn, prompts, modes, configs, service } = await fixture(t, { 'children.permissionMode': 'ask', 'children.claudeModel': 'anthropic/claude-unknown-9' },
+    { childLaunch: async () => ({ env }) })
+  assert.equal(service.settings.entry('children.claudeModel').value, 'anthropic/claude-unknown-9')
   t.mock.method(process.stderr, 'write', () => true)
   const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
   const runs = Object.values(state.runs)
   assert.equal(runs.length, 1)
-  assert.equal(runs[0].error, message('error.childModel', 'anthropic/claude-haiku-5-5'))
+  assert.equal(runs[0].error, message('error.childModel', 'anthropic/claude-unknown-9'))
   assert.equal(runs[0].autoResume, false)
-  assert.deepEqual(await configs(), ['model=claude-haiku-5-5 before the prompt'])
+  assert.equal(JSON.parse(await readFile(join(cwd, 'claude-options.json'), 'utf8')).model, 'claude-unknown-9')
+  assert.deepEqual(await configs(), ['model=claude-unknown-9 before the prompt'])
   // The model comes before the mode, so the refused model sends no mode.
   assert.deepEqual(await modes(), [])
   await assert.rejects(prompts(), { code: 'ENOENT' })

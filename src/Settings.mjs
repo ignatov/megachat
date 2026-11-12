@@ -107,13 +107,19 @@ const modelOf = (models, value) => {
 const knownModel = (value, { models }) => typeof value === 'string' && /^[^/\s]+\/\S+$/.test(value.trim()) && modelOf(models, value.trim())
   ? value.trim() : undefined
 /**
- * `inherit`, or a model of the registry that Claude Code can use: a model of the provider `anthropic`, as the key of
- * Central serves it.
+ * A model ID of Claude Code: a name such as `claude-sonnet-5-5` or the alias `fable`, with an optional context hint such
+ * as `[1m]`.
  */
-const claudeModel = (value, context) => {
-  if (typeof value === 'string' && value.trim() === 'inherit') return 'inherit'
-  const model = knownModel(value, context)
-  return model && modelRef(model).provider === 'anthropic' ? model : undefined
+const CLAUDE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\[[A-Za-z0-9]{1,16}\])?$/
+/**
+ * `inherit`, or a model of Claude Code as `anthropic/<model ID>`, as the key of Central serves it. The model registry
+ * need not know the model: Claude Code has models and aliases that the registry does not have, such as `fable`. The
+ * adapter refuses a model that Claude Code does not offer, and the run then fails before its prompt.
+ */
+const claudeModel = value => {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (text === 'inherit') return 'inherit'
+  return text.startsWith('anthropic/') && CLAUDE_MODEL_ID.test(modelRef(text).modelId) ? text : undefined
 }
 const modelValues = ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
   contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') })
