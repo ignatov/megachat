@@ -405,9 +405,14 @@ test('the real process table of macOS gives this test process and its working di
   const table = processTable()
   const processes = await table.processes()
   const self = processes.find(item => item.pid === process.pid)
+  const parent = processes.find(item => item.pid === process.ppid)
   assert.equal(self?.ppid, process.ppid)
   assert.equal(self.uid, process.geteuid())
-  assert.ok(Math.abs(self.startedAt - (Date.now() - process.uptime() * 1000)) < 5000)
+  // The kernel gives the time of the creation of the process, in whole seconds. Node.js counts its uptime from a later
+  // time, after the load of its executable, and that load can take seconds on a loaded machine. So the start time must
+  // be between the start of the parent and the start of Node.js. The next test checks the time against a known spawn.
+  assert.ok(parent && parent.startedAt <= self.startedAt)
+  assert.ok(self.startedAt <= Date.now() - process.uptime() * 1000 + 1000)
   const found = await table.resolve([process.pid])
   assert.equal(found.get(process.pid).cwd, await realpath(process.cwd()))
 })

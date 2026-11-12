@@ -44,6 +44,11 @@ if (mode === 'first') {
   await waitForState(service.state, state => state.runs[run.id].steers.find(item => item.id === first.id).delivery === 'delivered' ? true : undefined)
   const second = await steer('second', 'Second message')
   await waitForState(service.state, state => state.runs[run.id].steers.find(item => item.id === second.id).sentAt ? true : undefined)
+  // The state records `sentAt` before the request goes out, so a kill after it can come before the agent has the
+  // request. The test counts the requests that the agent got, so it waits until the agent wrote the second one.
+  while ((await readFile(join(directory, 'steerings'), 'utf8').catch(() => '')).trim().split('\n').length < 2) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
   await steer('third', 'Third message')
   process.send('steered')
 }
