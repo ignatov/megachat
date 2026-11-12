@@ -5,6 +5,7 @@ import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtens
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
+import { MegachatMemory } from './MegachatMemory.mjs'
 import { automaticKinds, findSteer, lastUserTurnEnd, MegachatState, terminalStates } from './MegachatState.mjs'
 import { collectReportData, logReport, MorningReport, REPORT_RECHECK_MS, reportWorkday } from './MorningReport.mjs'
 import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
@@ -167,9 +168,10 @@ export class PiMegachatService {
    * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test. [secrets] is a
    * `KnownSecrets` with the exact values of the own secret of Megachat: the state and the session index remove them.
    * [schedulerWake] `false` turns off the guard against the lost wake-up of Pi Durable (see `wakeFinishedWaits`), for
-   * the test that shows the defect.
+   * the test that shows the defect. [memoryPath] is the path of `memory.md`. Without it, the main agent has no memory
+   * section and no tool `agents_memory`, for a test. [memory] gives the hooks of the memory, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {}, schedulerWake = true } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {}, schedulerWake = true } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -231,6 +233,7 @@ export class PiMegachatService {
       service.sessions.index = service.sessionIndex
     }
     service.sessions.children = new PiChildHistory(harness, state)
+    if (memoryPath) service.memory = new MegachatMemory(memoryPath, { secrets, ...memoryOptions })
     service.childExtension = childExtension((usage, model) => service.countSpend(usage, model, 'pi'))
     registry.install(service.childExtension)
     registry.install(service.extension())
@@ -457,6 +460,8 @@ export class PiMegachatService {
     return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
       { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules) },
+      // The section is always there when the daemon has a memory, so a change of the file changes only this section.
+      ...(this.memory ? [{ key: 'memory', render: () => this.memorySection() }] : []),
     ], hooks: [
       // Each reply of the model, also a reply with tool calls, is one request that costs money.
       hook(GenerationTask, { afterResponse: (answer, api) => this.countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
@@ -551,7 +556,41 @@ export class PiMegachatService {
         await this.state.closeChild(args.childSessionId)
         return result({ closed: true })
       }),
+      // The limits of the schema are above the limits of an entry, so the tool gives the reason `tooLong` for a long text.
+      ...(this.memory ? [tool('memory', obj({ action: str({ maxLength: 20 }), section: opt(str({ maxLength: 20 })),
+        text: opt(str({ maxLength: 4000 })), match: opt(str({ maxLength: 4000 })), topic: opt(str({ maxLength: 1000 })) }),
+      async (args, api) => result(await this.memoryTool(`tool:${api.taskId}:memory`, args)))] : []),
     ] })
+  }
+
+  /**
+   * The text of the section `memory`. Pi Durable renders each section before each model request, so the section reads
+   * `memory.md` only at the first request of a turn and keeps that text for the other requests of the turn. A write of
+   * the tool in a turn reaches the model through the tool result, and the section in the next turn.
+   */
+  async memorySection() {
+    const turn = (await this.state.snapshot()).current?.id
+    if (turn !== undefined && this.memoryShown?.turn === turn) return this.memoryShown.text
+    const text = await this.memory.section(this.values['memory.characters'])
+    this.memoryShown = { turn, text }
+    return text
+  }
+
+  /**
+   * The tool `agents_memory`. A turn of a child result, of the sessions summary or of the morning report can only
+   * `show`. The call runs again after a restart that cut it off, so [requestId] keys its outcome: the state records the
+   * digests of the file before and after the write and the result before the rename. A call that runs again gives that
+   * result when the file has the digest after the write, applies its action again when the file has the digest before
+   * it, and else changes nothing (see `MegachatMemory.change`). A forget removes the other records after its rename.
+   */
+  async memoryTool(requestId, args) {
+    const limit = this.values['memory.characters']
+    if (args.action === 'show') return this.memory.show(limit)
+    const state = await this.state.snapshot()
+    if (automaticKinds.has(state.current?.kind)) return { changed: false, reason: 'automatic', note: message('memory.automatic') }
+    const journal = { recorded: state.memoryWrites?.[requestId], record: write => this.state.memoryWritten(requestId, write),
+      forgotten: () => this.state.memoryForgotten(requestId) }
+    return args.action === 'undo' ? this.memory.undo(limit, journal) : this.memory.change(args, limit, journal)
   }
 
   /**
@@ -563,7 +602,11 @@ export class PiMegachatService {
     const model = api.models.getModel(this.model.provider, this.model.modelId)
     if (!model) return undefined
     const focus = compaction.instructions ? `\n\nAdditional focus: ${compaction.instructions}` : ''
-    const text = `<conversation>\n${transcript(compaction.messages)}\n</conversation>\n\n${this.summaryPrompt.instructions}${focus}`
+    // The topics of `## Do not remember`: the summary drops them, so a forgotten fact does not stay in the summary. A
+    // topic that the checks of a write refuse is not in the list.
+    const topics = await this.memory?.topics().catch(() => []) ?? []
+    const forgotten = topics.length ? `\n\n${message('memory.summary', topics.join('; '))}` : ''
+    const text = `<conversation>\n${transcript(compaction.messages)}\n</conversation>\n\n${this.summaryPrompt.instructions}${forgotten}${focus}`
     const answer = await api.models.completeSimple(model, { messages: [
       { role: 'system', content: this.summaryPrompt.system, timestamp: Date.now() },
       { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() },

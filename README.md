@@ -135,6 +135,8 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `instructions.md` | Your own rules, optional, at most 64 KB. The bundled rules keep priority. A restart of the daemon applies a change. |
 | `settings.json` | The settings that you gave in the chat, the project values, and the status of the setup. |
 | `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
+| `memory.md` | The learned memory: the facts about you and the working notes that the main agent saved, and the topics that it must not save again. You can edit it. The first write makes it. See [The learned memory](#the-learned-memory). |
+| `memory-versions/` | The newest 20 versions of `memory.md` before each write of Megachat, the newest 5 texts that an undo replaced, and the digest of the file after the last write. A forget deletes the versions. |
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
 | `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For a failed child run, it holds the answer of the agent and the end of its error output, without the known secrets. |
@@ -225,6 +227,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
+| `memory.characters` | `4000` | | The cap of the size of `memory.md` in characters, from `1000` to `20000`. Above it, the main agent cannot add an entry. |
 | `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
 | `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
 | `sessions.notes` | `off` | | A short note in the chat when an agent session waits for you for a long time. It needs `sessions.index`. See [Notes about the sessions that wait](#notes-about-the-sessions-that-wait). |
@@ -325,6 +328,32 @@ message and then offers the setup. The setup asks one question at a time and sho
 can skip one question or the whole setup, and the defaults then apply. After the setup, or after a skip, Megachat
 does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon cannot read stays as
 `settings.json.unreadable-<UTC time>`, and the defaults apply.
+
+## The learned memory
+
+The main agent remembers your preferences in `memory.md` in the state directory. It saves an entry when you state a
+general rule or a preference, or when you correct it, and it does not ask first. Each write gives one line, such as
+`Memory: added to "About the user": The user prefers short answers.`, and the reply quotes it. Ask "what do you
+remember?" to see the entries, or ask for the file to get its path, and open it in the IDE. The file has three
+sections: `## About the user`, `## Working notes` and `## Do not remember`, one bullet for each entry. An indented
+bullet is an entry of its own. Edit it by hand
+when you like: the next turn reads it. A write of Megachat changes only the lines of the entry that it addresses, and
+it keeps each other line as you wrote it.
+
+Ask the agent to forget a fact. It removes the entry and adds a short topic to `## Do not remember`, and it does not
+save that topic again. It names the other entries of the topic and asks you about them. A summary of the conversation
+drops the topic too. The forget has a limit: the stored conversation and `agents_history` keep your original messages,
+and the earlier text of the memory stays in the model context until the next summary. The history search does not
+find the text of a call of the memory tool, and the line of a forget does not hold the forgotten text. A forget deletes
+the earlier versions in `memory-versions/`, also when an earlier write removed the entry, so no undo brings the fact
+back. To let the agent save the topic again,
+remove its line under `## Do not remember`, or ask the agent to remove it. Ask the agent to undo its last write of the
+memory: `memory-versions/` keeps the earlier files. An undo does not remove your own edit of the file.
+
+Each write checks the entry: Megachat refuses a key, an invisible character and a text that looks like an
+instruction to the model. An entry of yours that fails the check stays in the file and shows as `[blocked: <reason>]`
+in the prompt. A child result, the morning report and the summary of the past sessions cannot change the memory. No
+child gets the memory: not a Claude child, not a Codex child and not a pi child.
 
 ## The morning report
 
@@ -612,6 +641,7 @@ The session text is data for the agent, not instructions.
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
+| `src/MegachatMemory.mjs` | The learned memory: the parse of `memory.md`, the checks of an entry, the address of an entry, the write with the second read, the versions, and the section of the prompt. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |

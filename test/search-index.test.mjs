@@ -55,6 +55,20 @@ test('indexes both content shapes, tool calls and truncated tool results, and sk
   assert.equal(entryText(toolResult(3, 'y'.repeat(3000)), { full: true }).text.length, 3000)
 })
 
+test('skips the call and the result of agents_memory, and keeps the other text of the entry', async t => {
+  const { index } = await fixture(t, [
+    assistant(1, [{ type: 'text', text: 'Saving' }, { type: 'toolCall', id: 'm', name: 'agents_memory',
+      arguments: { action: 'add', section: 'user', text: 'The user lives in Munich.' } }]),
+    { kind: 'pi.tool-result', id: 2, conversationId: 1, model: [{ role: 'toolResult', toolCallId: 'm', toolName: 'agents_memory',
+      content: [{ type: 'text', text: '{"changed":true,"line":"Memory: added to \\"About the user\\": The user lives in Munich."}' }], timestamp: 1002 }] },
+  ])
+  await index.catchUp()
+  assert.deepEqual(await ids(index, 'Munich'), [])
+  assert.deepEqual(await ids(index, 'agents_memory'), [])
+  assert.deepEqual(await ids(index, 'Saving'), [1])
+  assert.equal(entryText({ id: 2, model: [{ role: 'toolResult', toolName: 'agents_memory', content: [{ type: 'text', text: 'Munich' }] }] }), undefined)
+})
+
 test('finds Russian and English substrings regardless of case and ё', async t => {
   const { index } = await fixture(t, [
     user(1, 'Дай Megachat готическую ИКОНКУ M'),

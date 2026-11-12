@@ -118,7 +118,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
-    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
+    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
   // A variable that the daemon cannot read has no effect.
@@ -178,6 +178,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.daemonRestart': [['deny', 'deny']],
     'projects.newRoot': [['~', '~'], [' ~/work/ ', '~/work'], ['/srv/projects', '/srv/projects']],
     'budget.dailyUsd': [[0, 0], ['2.5', 2.5], [100000, 100000]],
+    'memory.characters': [[1000, 1000], [' 4000 ', 4000], ['20000', 20000]],
     'sessions.index': [['on', 'on'], [false, 'off'], [' OFF ', 'off']],
     'sessions.days': [[0, 0], ['30', 30], [3650, 3650]],
     'sessions.notes': [['on', 'on'], [true, 'on'], [' Off ', 'off']],
@@ -217,6 +218,8 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.daemonRestart': ['', 1],
     'projects.newRoot': ['src', '', '~user/src', 5],
     'budget.dailyUsd': [-1, 'much', 100001, true],
+    // The default memory of 4,000 characters holds about 40 entries. Less than 1,000 holds too few.
+    'memory.characters': [999, 20001, 1500.5, '4k', true, ''],
     'sessions.index': ['later', 2],
     'sessions.days': [-1, 3651, 1.5, 'long'],
     'sessions.notes': ['soon', 5, ''],

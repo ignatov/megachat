@@ -4,6 +4,12 @@ export { queryTerms, snippet }
 
 const VERSION = 2
 const TOOL_TEXT_LIMIT = 2000
+/**
+ * The tool of the learned memory. The index skips its calls and their results, so a forgotten entry does not come back
+ * through a history search. The tool is newer than version 2 of the index, so an index of an earlier build holds no
+ * such call, and the index needs no rebuild.
+ */
+const MEMORY_TOOL = 'agents_memory'
 /** Entry IDs are allocated before commit, so a lower ID can commit after a higher one; catch-up rereads this many. */
 const OVERLAP = 16
 /** Matches ranked together: the newest first, then older ones window by window. */
@@ -43,11 +49,11 @@ export function entryText(entry, { full = false } = {}) {
   const parts = []
   let role
   for (const model of entry.model ?? []) {
-    if (model.role === 'system') continue
+    if (model.role === 'system' || model.role === 'toolResult' && model.toolName === MEMORY_TOOL) continue
     role ??= model.role
     const blocks = typeof model.content === 'string' ? [{ type: 'text', text: model.content }] : model.content ?? []
     let text = blocks.map(block => block.type === 'text' ? block.text
-      : block.type === 'toolCall' ? `${block.name} ${JSON.stringify(block.arguments ?? {}).slice(0, TOOL_TEXT_LIMIT)}` : '')
+      : block.type === 'toolCall' && block.name !== MEMORY_TOOL ? `${block.name} ${JSON.stringify(block.arguments ?? {}).slice(0, TOOL_TEXT_LIMIT)}` : '')
       .filter(Boolean).join('\n')
     if (model.role === 'toolResult' && !full) text = text.slice(0, TOOL_TEXT_LIMIT)
     if (text) parts.push(text)

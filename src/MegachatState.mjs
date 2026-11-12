@@ -115,6 +115,7 @@ function retain(state) {
   if (Object.keys(state.initiative.decisions).length >= 2000) dropOldest(state.initiative.decisions, 1000, decision => decision.decidedAt)
   if (Object.keys(state.serviceSessions).length >= 5000) dropOldest(state.serviceSessions, 4000, session => session.recordedAt)
   if (Object.keys(state.projectCreations ?? {}).length >= 200) dropOldest(state.projectCreations, 100, creation => creation.createdAt)
+  if (Object.keys(state.memoryWrites ?? {}).length >= 200) dropOldest(state.memoryWrites, 100, write => write.createdAt)
 }
 
 /** Keeps the address of a delegated session after a prune of its runs, so Air still hides that session. */
@@ -314,6 +315,8 @@ export class MegachatState {
       state.serviceSessions ??= serviceSessionsOf(state.runs)
       state.projects ??= []
       state.projectCreations ??= {}
+      // The outcomes of the writes of the tool agents_memory by the request ID. A state of an earlier build has none.
+      state.memoryWrites ??= {}
       // The task of an import pass ends with its daemon. A summary that waits for its event turn stays, and so does the
       // summary of the turn that runs, which can wait for its repeat. A state of an earlier build has neither field.
       state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null, repeated: state.sessionIndex?.repeated ?? false,
@@ -405,6 +408,33 @@ export class MegachatState {
       await this.change(state => { delete state.projectCreations[requestId] }).catch(() => {})
       throw error
     }
+  }
+
+  /**
+   * Records the outcome of a write of the tool `agents_memory` before the rename of the file: the SHA-256 [before] of the
+   * file before the write (`null` for no file), the SHA-256 [digest] of the new file, the [result] of the call, and
+   * whether it is a [forget]. A call that runs again after a restart gives the result when the file has [digest], and
+   * applies its action again only when the file has [before]. A call that runs again without its record applies its
+   * action again, and the checks refuse a second copy of an entry.
+   */
+  async memoryWritten(requestId, { before, digest, result, forget = false }) {
+    requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
+    await this.change(state => {
+      state.memoryWrites ??= {}
+      retain(state)
+      state.memoryWrites[requestId] = { before, digest, result, forget, createdAt: Date.now() }
+    })
+  }
+
+  /**
+   * Removes each record of `memoryWrites` but the record of the forget [requestId], after the rename of the forget. The
+   * result of an earlier write can hold the text of the forgotten entry.
+   */
+  async memoryForgotten(requestId) {
+    await this.change(state => {
+      const own = state.memoryWrites?.[requestId]
+      state.memoryWrites = own ? { [requestId]: own } : {}
+    })
   }
 
   /**

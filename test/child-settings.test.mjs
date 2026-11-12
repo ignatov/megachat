@@ -36,7 +36,7 @@ async function fixture(t, values, configuration, options = {}) {
   models.setProvider(fake.provider)
   const model = fake.getModel()
   const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, {},
-    { settingsPath, keepAlive: { enabled: false } })
+    { settingsPath, memoryPath: join(directory, 'memory.md'), keepAlive: { enabled: false } })
   await service.state.addWorkspace(cwd)
   const launched = []
   const children = new AcpRunService(service.state, { childLaunch: async agent => {
@@ -58,7 +58,7 @@ async function fixture(t, values, configuration, options = {}) {
   }
   const prompts = async () => (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
   const lines = name => async () => (await readFile(join(cwd, name), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
-  return { service, cwd, launched, script, turn, prompts, modes: lines('modes'), configs: lines('configs'), settingsPath }
+  return { service, cwd, launched, script, turn, prompts, modes: lines('modes'), configs: lines('configs'), settingsPath, memoryPath: join(directory, 'memory.md') }
 }
 
 test('a task without a named agent goes to the agent of children.agent, and a follow-up stays with its session', { timeout: 20000 }, async t => {
@@ -206,6 +206,20 @@ test('a Claude child gets AGENTS.md in its prompt only when the directory has no
   await writeFile(join(cwd, 'AGENTS.md'), 'x'.repeat(RULES_LIMIT + 10))
   await turn('fourth', call('agents_spawn', { cwd, prompt: 'fourth task' }), fauxAssistantMessage('Started.'))
   assert.ok((await prompts())[3][1].endsWith(`</repository_rules>\n${message('child.claude.rulesTruncated', RULES_LIMIT)}`))
+})
+
+test('a Claude child and a Codex child get no memory in their prompt', { timeout: 20000 }, async t => {
+  for (const agent of ['claude', 'codex']) {
+    const { service, cwd, turn, prompts, memoryPath } = await fixture(t, { 'children.agent': agent })
+    await writeFile(memoryPath, '## About the user\n- The user writes Kotlin.\n')
+    const state = await turn('first', call('agents_spawn', { cwd, prompt: 'Fix the build.' }), fauxAssistantMessage('Started.'))
+    assert.equal(Object.values(state.runs)[0].agent, agent)
+    const [prompt] = await prompts()
+    assert.equal(prompt.at(-1), 'Fix the build.')
+    assert.ok(!JSON.stringify(prompt).includes('The user writes Kotlin.'), agent)
+    // The main agent has the memory in its section.
+    assert.match(await service.memorySection(), /- The user writes Kotlin\./)
+  }
 })
 
 test('a Codex child gets no AGENTS.md block, because Codex reads AGENTS.md by itself', { timeout: 20000 }, async t => {

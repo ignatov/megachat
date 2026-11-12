@@ -88,11 +88,11 @@ async function temporary(t) {
  * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one pool. The
  * main agent uses the free model, and [values] go to `settings.json`.
  */
-async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs, launch } = {}) {
+async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs, launch, memoryPath } = {}) {
   await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values: { 'coordinator.model': MAIN, ...values } }), { mode: 0o600 })
   const { models, requests } = fakeModels(main, child)
   const service = await PiMegachatService.open(storage, models, undefined, {}, { settingsPath: join(directory, 'settings.json'),
-    spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {}, resumeDelayMs })
+    spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {}, resumeDelayMs, memoryPath })
   await service.state.addWorkspace(cwd)
   const pool = new ChildPool()
   const pi = new PiRunService(service.state, service.harness, { agent: launch ?? (directory => service.childAgent(directory)), pool, deadlineMs })
@@ -170,6 +170,27 @@ test('a pi child reads its project in the daemon process with only the tool read
   // Only the conversation of a child gets an environment.
   assert.equal(await childEnvironment({ conversationId: service.root.id, read: service.harness }, context), undefined)
   assert.ok(await childEnvironment({ conversationId: Number(run.providerSessionId), read: service.harness }, context) instanceof ProjectReadEnv)
+})
+
+test('a pi child gets no memory: no request of the child holds the section memory or an entry', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd, directory } = project
+  const memoryPath = join(directory, 'memory.md')
+  await writeFile(memoryPath, '## About the user\n- The user writes Kotlin.\n')
+  const { requests, turn } = await open(t, project, { memoryPath,
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('Reported.')],
+    child: [fauxAssistantMessage('The README says hello.')] })
+  await turn('spawn')
+  const childRequests = requests.filter(request => request.child)
+  assert.equal(childRequests.length, 1)
+  for (const request of childRequests) {
+    assert.deepEqual(request.sectionKeys, ['instructions'])
+    assert.ok(!request.messages.includes('<memory>') && !request.messages.includes('The user writes Kotlin.'))
+  }
+  // The main agent has the memory, so the file was read.
+  const mainRequest = requests.find(request => !request.child)
+  assert.deepEqual(mainRequest.sectionKeys, ['settings', 'memory', 'instructions'])
+  assert.ok(mainRequest.system.includes('- The user writes Kotlin.'))
 })
 
 test('agents_send continues the same pi conversation, a change of children.piModel reaches the next run, and the spend counts the child', { timeout: 30000 }, async t => {
