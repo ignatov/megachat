@@ -19,9 +19,12 @@ export const DEFAULT_KEEPALIVE_HOURS = 6
 /** `1` lets the main agent offer a next step by itself, `0` stops it. */
 export const SUGGESTIONS_VARIABLE = 'MEGACHAT_SUGGESTIONS'
 export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'
+/** The model of a pi child: small and cheap, for a task that only reads files. */
+export const DEFAULT_PI_MODEL = 'anthropic/claude-haiku-5-5'
 /** The cache retention of pi-ai for each value of `cache.ttl`. */
 export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
 export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
+/** The default agents of a new child task. A pi child cannot change code, so it is no default: the user names it. */
 export const CHILD_AGENTS = ['claude', 'codex']
 /** The steps of a child that the user allows, forbids, or allows only after a question. */
 export const CHILD_STEPS = ['commit', 'push', 'daemonRestart']
@@ -44,6 +47,10 @@ const modelOf = (models, value) => {
   const { provider, modelId } = modelRef(value)
   return models?.getModel(provider, modelId)
 }
+const knownModel = (value, { models }) => typeof value === 'string' && /^[^/\s]+\/\S+$/.test(value.trim()) && modelOf(models, value.trim())
+  ? value.trim() : undefined
+const modelValues = ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
+  contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') })
 const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(model) : [...MODEL_THINKING_LEVELS]
 
 /**
@@ -58,11 +65,7 @@ const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(mo
  * - `applies` tells when a change has an effect: `settings.applies.<applies>` in the resources says it to the user.
  */
 export const SETTINGS = [
-  { key: 'coordinator.model', default: DEFAULT_MODEL, applies: 'nextTurn',
-    validate: (value, { models }) => typeof value === 'string' && /^[^/\s]+\/\S+$/.test(value.trim()) && modelOf(models, value.trim())
-      ? value.trim() : undefined,
-    allowed: ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
-      contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') }) },
+  { key: 'coordinator.model', default: DEFAULT_MODEL, applies: 'nextTurn', validate: knownModel, allowed: modelValues },
   { key: 'coordinator.thinking', default: 'low', applies: 'nextTurn',
     validate: (value, { model }) => {
       const level = choice(MODEL_THINKING_LEVELS)(value)
@@ -97,6 +100,9 @@ export const SETTINGS = [
     validate: choice(['short', 'normal', 'detailed']), allowed: () => ({ values: ['short', 'normal', 'detailed'] }) },
   { key: 'reply.quoteRequest', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   { key: 'children.agent', default: 'claude', applies: 'nextChild', validate: choice(CHILD_AGENTS), allowed: () => ({ values: CHILD_AGENTS }) },
+  // The list of the models is long, and `coordinator.model` gives it already.
+  { key: 'children.piModel', default: DEFAULT_PI_MODEL, applies: 'nextChild', validate: knownModel,
+    allowed: () => ({ other: message('settings.piModel.other') }) },
   { key: 'children.commit', default: 'allow', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.push', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS),

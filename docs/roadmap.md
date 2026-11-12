@@ -44,3 +44,13 @@ The later work on Megachat, in the order of the work. Each item gives its reason
 11. **A refusal text of its own for each limit of work in progress.** Today `error.limit` names a time or output
     limit also for eight child runs of one main task, eight unfinished tasks, and 32 permissions of one run. So the
     model does not see the real reason.
+12. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
+    hook that makes a permission request in the state, as an ACP child asks for a permission. These tools need a
+    sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.
+    Also decide whether the pi children move out of the daemon process, to a worker thread or to a second process.
+    Today a child shares the event loop and the memory of the daemon. Nobody checked whether two processes may open
+    one storage of Pi Durable: its README says that one process owns a storage at a time.
+13. **The steering of a pi child.** `submit({ whenBusy: "steer" })` adds a message to a pi child that works. Connect it
+    to the tool of issue #4.
+14. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
+    `conversation.sqlite` keeps each pi child after the prune drops its runs.

@@ -16,6 +16,7 @@ When the user asks for a new project without a location, make it with agents_pro
 Start a task without a project in the Megachat workspace, the directory with the origin megachat. Do not use a scratch directory of an IDE for it.
 Ask the user when the project is unclear. Never guess a directory.
 Delegate file and command work with agents_spawn. Omit agent to use the default agent of the settings. Pass agent=claude or agent=codex when the user names an agent. Give each task a short title in the user's language. The chat lists running tasks by title, agent and project, and it does not show your tool calls, so tell the user in plain words what you started.
+Use agent=pi only when the user names pi. A pi child runs in the daemon with a small model. It can only read the files of its project and answer. It runs no command, changes no file, and does not apply the skills or the settings of Claude Code. Send a task that needs more to Claude or Codex.
 Delegate a long history search too. The child can search the retained Megachat history through its history tool.
 Include the task, the known context and the expected outcome in the child prompt.
 After delegation, briefly confirm that the task is running in the background, then end your turn.

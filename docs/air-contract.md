@@ -32,7 +32,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | Method | Sender | Parameters | What the other side does |
 |---|---|---|---|
 | `_workspaces/list` | Megachat | `{}` | Air returns `directories`: the trusted open project directories. Megachat registers each one in the daemon, and skips a directory that the daemon cannot read. Megachat asks on each attach and every 15 seconds while a view is open. |
-| `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. |
+| `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code or Codex, so Megachat sends no record for it. |
 | `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat has no handler today, so it sends `canStop: false`. Air expects `{ "stopped": true }`. The task stays active until its terminal update. `docs/roadmap.md` has the change. |
 
 Megachat sends `_session/service/record` once for each attach, for each address in the `serviceSessions` map of the
@@ -65,7 +65,7 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 
 - `asyncTaskId`, `name`, `taskType` and `showInTranscript` are required.
 - Megachat sends one task for each unfinished child run. `name` is the title of the task. `description` gives the
-  agent, the project and the phase. `taskType` is `agent`, `showInTranscript` is `false`, and `canStop` is `false`.
+  agent (`Claude`, `Codex` or `Pi`), the project and the phase. `taskType` is `agent`, `showInTranscript` is `false`, and `canStop` is `false`.
 - The ID is `<run ID>:<phase>`. The phase is `queued`, `resuming`, `approval` or `running`. A change of the phase ends
   the task of the old phase with `completed` and sends a new task.
 - A run that ends gives `completed` when it completed, `stopped` when the user cancelled it, and `failed` otherwise.

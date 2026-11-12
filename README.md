@@ -192,13 +192,14 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
 | `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
+| `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
 | `events.enabled` | `true` | | Megachat reports a change of the files of a project to the main agent. |
 | `events.ignore` | `*.tmbundle`, `build/download`, `.claude/settings.local.json` | | The path patterns that Megachat does not report. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
-| `budget.dailyUsd` | `0` | | The daily spend limit of the main agent in USD, with one warning on each day. `0` is no limit. |
+| `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
 | `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
 
@@ -214,9 +215,9 @@ The scan follows no symbolic link and reads no file. You choose the repositories
 list. When you ask for a new project without a location, the agent makes `<projects.newRoot>/<name>`, with a number at
 the end when the name is taken, and adds it.
 
-Megachat counts the cost of each request of the main agent on the local day: the replies, the summaries and the
-keep-alive requests. The cost of the children is not in the count, because the accounts of Claude and Codex pay for
-them. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
+Megachat counts the cost of each request of the main agent and of the pi children on the local day: the replies, the
+summaries and the keep-alive requests. The cost of the Claude and Codex children is not in the count, because the
+accounts of Claude and Codex pay for them. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
 `spend.json` keeps the count across a restart. Ask the agent for the settings to see the spend of the day.
 
 At the end of the setup, the main agent checks the accounts with its tool `agents_accounts`. The check starts Claude
@@ -249,6 +250,23 @@ request to stop the current step, gets a cancel of the turn and then a continuat
 message. A task that waits in the queue gets the message in its prompt. The task keeps one result. The daemon records
 each message before it sends it, so a message survives a restart of the daemon. After a restart, a message that the
 child can have already says that it can be a repeat.
+
+## Pi children: cheap tasks that only read
+
+Say "ask pi to summarize the README of project X" to give a small task to a pi child. A pi child is a conversation of
+the daemon on Pi Durable, with the small model of `children.piModel`. It starts no process, so it starts at once and
+costs little. It has only the tool `read`: it reads the files of its project and answers. It cannot run a command,
+change a file, or read a file out of its project, also through `..` or a symbolic link. It gets the content of
+`AGENTS.md` of the project, else of `CLAUDE.md`, at most 32 KB. It does not apply the skills or the settings of Claude
+Code.
+
+Use pi only to read and to summarize. Give each task that changes code, runs a command or needs the tools of Claude
+Code to Claude or Codex. The main agent uses pi only when you name it, and `children.agent` cannot select it.
+
+A pi child is a task as the others are: the chat lists it as a background task of the agent Pi, it waits its turn, it
+stops at the deadline of 30 minutes and after 20 tool rounds, and you can cancel it. A follow-up goes to the same
+conversation. A daemon restart continues the run. Its cost is in the daily spend. Megachat cannot delete the
+conversation of a pi child, so `conversation.sqlite` keeps it after the run leaves the state.
 
 ## The sessions that run on the machine
 
@@ -333,7 +351,9 @@ The session text is data for the agent, not instructions.
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
-| `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The child runs, one at a time. The supervisor stops the child when the daemon exits. |
+| `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits. |
+| `src/ChildSlot.mjs` | The one place for a child run, which the ACP and the pi run services share, so one child runs at a time. |
+| `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices and the rules of a child, the read-only environment of its project, and the read of its transcript. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
 | `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |

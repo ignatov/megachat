@@ -12,6 +12,9 @@ export function taskTitle(prompt) {
   return line.length <= 60 ? line || message('title') : `${line.slice(0, 59).trimEnd()}…`
 }
 
+/** The name of the agent of a run for the chat. A run without the field is from before the choice of the agent. */
+const agentName = agent => agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude'
+
 /**
  * The background tasks of the chat for [state], by task ID: each unfinished child run, and a pass of the import of the
  * past sessions.
@@ -24,7 +27,7 @@ export function taskRows(state) {
     while (first.resumeOf && state.runs[first.resumeOf]) first = state.runs[first.resumeOf]
     const phase = run.status === 'admitted' ? run.resumeOf ? 'resuming' : 'queued' : run.status === 'approval' ? 'approval' : 'running'
     rows.set(`${run.id}:${phase}`, { name: run.title ?? first.title ?? taskTitle(first.prompt), description: message(`child.${phase}`,
-      run.agent === 'codex' ? 'Codex' : 'Claude', basename(run.cwd)) })
+      agentName(run.agent), basename(run.cwd)) })
   }
   // The import of the past sessions is a task too. Its ID changes at each tenth of the files, as a phase of a run does.
   const imported = state.sessionIndex?.task

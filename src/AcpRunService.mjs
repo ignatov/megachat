@@ -4,6 +4,7 @@ import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
 import { waitForState } from './waitForState.mjs'
+import { ChildSlot } from './ChildSlot.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
@@ -41,10 +42,11 @@ function steerBlock(items) {
  * own before the task, and the state keeps only the task, so a report quotes the task alone.
  * Only this process has the connection to the agent. So the tool `agents_steer` records a message in the state, and
  * this service sends it, as it does for a cancel. [steerTimeoutMs] limits the wait for the answer of the agent.
+ * [slot] is the one place for a child that this service shares with the pi run service. A pi run is not for this service.
  */
 export class AcpRunService {
   constructor(state, configuration, {
-    command, args, model, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000,
+    command, args, model, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, slot = new ChildSlot(),
   } = {}) {
     this.state = state
     this.configuration = configuration
@@ -52,6 +54,7 @@ export class AcpRunService {
     this.steerTimeoutMs = steerTimeoutMs
     this.historyServer = historyServer
     this.childRules = childRules
+    this.slot = slot
     this.active = new Map()
     this.stopping = false
     this.closing = false
@@ -59,6 +62,7 @@ export class AcpRunService {
 
   async start() {
     this.watch = await this.state.watch()
+    this.unsubscribe = this.slot.subscribe(() => { if (!this.stopping) this.observe(this.watch.value) })
     this.observe(this.watch.value)
     this.watch.start(call => { if (call.kind === 'value') this.observe(call.value) })
   }
@@ -66,16 +70,18 @@ export class AcpRunService {
   observe(snapshot) {
     const now = Date.now()
     for (const run of Object.values(snapshot.runs)) {
+      if (run.agent === 'pi') continue
       if (run.status === 'admitted' && (run.notBefore ?? 0) > now) {
         if (!this.stopping) this.wakeAt(run.notBefore)
         continue
       }
-      if (run.status === 'admitted' && this.active.size === 0 && !this.stopping) {
+      if (run.status === 'admitted' && this.active.size === 0 && !this.stopping && this.slot.take(snapshot, run, now)) {
         const work = { cancel: null, cancellationSent: false, promise: null, lifetime: new AbortController(),
           updates: 0, steered: new Map(), deliver: null, delivering: null, ended: false }
         this.active.set(run.id, work)
         work.promise = this.execute(run, work).finally(() => {
           this.active.delete(run.id)
+          this.slot.release(run.id)
           this.observe(this.watch.value)
         })
         work.promise.catch(error => {
@@ -329,6 +335,7 @@ export class AcpRunService {
     this.closing = true
     this.stopping = true
     clearTimeout(this.wake?.timer)
+    this.unsubscribe?.()
     await this.watch?.stop()
     for (const work of this.active.values()) work.lifetime.abort()
     await Promise.allSettled([...this.active.values()].map(work => work.promise))

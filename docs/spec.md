@@ -1,6 +1,6 @@
 ---
 name: Megachat
-description: One persistent conversation delegates tasks and searches Claude Code and Codex histories.
+description: One persistent conversation delegates tasks to Claude Code, Codex and pi, and searches Claude Code and Codex histories.
 style: plain-1
 targets:
   - ../src/*.mjs
@@ -42,7 +42,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The main conversation must accept new messages while a child works or needs permission.
 - New delegated tasks must wait in a durable queue when a child is already running.
 - A later user message may cancel an earlier background task.
-- The user may delegate a task to Claude Code or Codex.
+- The user may delegate a task to Claude Code or Codex, and a task that only reads files to a pi child.
 - Claude Code must remain the default for delegated tasks unless the setting `children.agent` selects Codex.
 - The user may continue an existing session in its registered project.
   [@test] ../test/integration.test.mjs
@@ -202,7 +202,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - After the status `done` or `skipped`, the setup rules must not come back by themselves, also after a restart. The rules must then say that the agent changes a setting or runs the setup again when the user asks.
 - The status `pending` must bring the setup rules back. The tool result must hold them, so the setup can start in the same turn.
   [@test] ../test/settings.test.mjs
-- The setting `children.agent` must select the agent of a new child task without a named agent: `claude`, the default, or `codex`. A follow-up and a continuation must stay with the agent of their session. A change must apply to the next child task, also in the turn that made it.
+- The setting `children.agent` must select the agent of a new child task without a named agent: `claude`, the default, or `codex`. It must refuse `pi`, because a pi child cannot change code. A follow-up and a continuation must stay with the agent of their session. A change must apply to the next child task, also in the turn that made it.
 - The settings `children.commit`, `children.push` and `children.daemonRestart` must take `allow`, `ask` or `deny`. The defaults are `allow`, `ask` and `ask`. A daemon restart is a restart or a stop of the Megachat daemon.
 - At each dispatch, the daemon must add one rules paragraph from these settings to the prompt of the child, as a block before the task. A change must reach the next new task, follow-up and continuation. The state must keep the prompt of a run without the paragraph.
 - `allow` must let the child do the step. `deny` must forbid the step, also when the task asks for it. `ask` must forbid the step unless the task says that the user approved it. The child must then say in its result that the step is necessary.
@@ -211,13 +211,14 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A daemon restart must keep each setting of the children, the project events, the known repositories and the spend limit.
   [@test] ../test/settings.test.mjs
   [@test] ../test/child-settings.test.mjs
-- The setting `budget.dailyUsd` must be a daily spend limit of the main agent in USD, from 0 to 100,000. The default 0 means no limit.
-- Megachat must count the cost of each model request of the main agent on the local day: each reply, also a reply with tool calls, each summary and each keep-alive request. A request without a cost from its provider must get the cost from the prices of its model data. The cost of the children must not be in the count.
+- The setting `budget.dailyUsd` must be a daily spend limit of the main agent and the pi children in USD, from 0 to 100,000. The default 0 means no limit.
+- Megachat must count the cost of each model request of the main agent and of each pi child on the local day: each reply, also a reply with tool calls, each summary and each keep-alive request. A request without a cost from its provider must get the cost from the prices of its model data. The cost of the Claude and Codex children must not be in the count.
 - The count must stay in `spend.json` in the state directory with the mode 0600, so a daemon restart keeps it. The count must start again at the local midnight.
 - When the count passes the limit, the rules of the next turn must hold one line with the spend and the limit, which asks for one short warning. The line must go away after a completed turn that had it. The user must get at most one warning on each day. Megachat must not stop the work.
 - A warning that waits at the local midnight must not go into a turn of the next day, and it must not mark the warning of the next day as shown.
-- `agents_settings get` must give the spend of the day, the limit, whether the warning went out in a completed turn (`warned`), whether a warning waits (`warningPending`), and a note that the children are not in the count.
+- `agents_settings get` must give the spend of the day, the limit, whether the warning went out in a completed turn (`warned`), whether a warning waits (`warningPending`), and a note that the Claude and Codex children are not in the count.
   [@test] ../test/spend.test.mjs
+  [@test] ../test/pi-child.test.mjs
 - The tool `agents_accounts` must check Claude Code and Codex in parallel. It must start each agent as a child starts, ask for `initialize` and `session/new` in the workspace of Megachat, send no prompt, and close the process after the check.
 - Each agent must have a time limit of 30 seconds. A second call while a check runs must get the result of that check.
 - An agent that opens the session must give the status `started` with the login `unknown`, because only a prompt proves that the provider accepts the login. The result must say so.
@@ -434,7 +435,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/discovery.test.mjs
 - A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
   This also applies to the working directory of `session/new` and `session/load`.
-- The daemon must run at most one child at a time.
+- The daemon must run at most one child at a time, ACP or pi. The queue order must hold across the two kinds: a pi run must wait for an ACP run, and an ACP run must wait for a pi run.
 - It may retain at most eight unfinished child tasks, including queued tasks.
 - Claude background tasks must be disabled. A child run ends with its ACP prompt.
 - A main task may create at most eight child runs.
@@ -459,6 +460,21 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/recovery.test.mjs
   [@test] ../test/transport.test.mjs
   [@test] ../test/launch.test.mjs
+- `agents_spawn` with `agent` `pi` must start a pi child: an ownerless conversation in the harness of the main agent, in the daemon process, with no new process. The ID of that conversation must be the provider session ID of the run. `agents_list` must name `pi` as an agent.
+- A pi run must go through the same states as an ACP run, and the main agent must get one report of its result. The limits, the queue and the prune rules of the runs must apply to it.
+- A pi child must use the model of the setting `children.piModel`, `provider/model`, which the model registry must know. The default is `anthropic/claude-haiku-5-5`. When the registry does not know the effective value, as in a test, a pi child must use the model of the main agent. The model of the main agent must not change. A change must apply to the next pi run, also to a follow-up.
+- A pi child must have only the tool `read`. It must get none of the `agents_*` tools, not the rules of the main agent, not the section `settings`, not the instructions of the user, and not the hooks of the main agent. Its instructions must say what it can do, and they must hold the content of `AGENTS.md` of the directory of the run, else of `CLAUDE.md`, at most 32,000 bytes, marked as the rules of the repository.
+- The environment of a pi child must read only the files of the directory of its run. It must compare real paths, so `..`, an absolute path, `~` and a symbolic link must not lead out of the directory. It must refuse each write, command, watch and temporary file. The main conversation must get no environment. A read-only child needs no sandbox, because this environment is its only way to a file.
+- `read` must return at most 2,000 lines or 50 KB of a text file, or one image of at most 4.5 MB, in each call. A run of a pi child must end after 20 tool rounds, as `failed` with the reason code. The output of a pi run must keep the text of each answer of the child within the retention limit of a child output.
+- `agents_send` must submit a follow-up to the same conversation. A pi run must refuse a session of the pi command-line agent.
+- `agents_cancel` and the deadline of 30 minutes must abort the conversation of the child. The main conversation must continue. A run at the deadline must become interrupted with no continuation.
+- A daemon restart during a dispatched pi run must not lose the run. Pi Durable continues the conversation, and the next daemon must follow the same run to its end. A pi run that had not sent its prompt must become interrupted and continue, as an ACP run does.
+- A pi child must not be a service session, so Megachat must send no `_session/service/record` for it. The chat must list it as a background task of the agent `Pi`.
+- `agents_session_history` with the agent `pi` and the session ID of a pi run in its directory must read the transcript of that child, also without the index of past sessions.
+- A pi child shares the event loop and the memory of the daemon. The turn limit, the deadline, the size of a read and the size of the stored output bound it.
+- Pi Durable 1.5.0 cannot delete or archive a conversation. So `conversation.sqlite` must keep the conversation of a pi child after the prune drops its last run.
+  [@test] ../test/pi-child.test.mjs
+  [@test] ../test/settings.test.mjs
 
 ## Error Handling
 
@@ -488,7 +504,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 
 - Megachat does not install a login service.
 - It does not resume a tool call through a daemon crash. The continuation prompt asks the agent to check its work.
-- It does not start parallel child tasks.
+- It does not start parallel child tasks, also not parallel pi children.
+- A pi child does not run a command, change a file, steer, or apply the skills and the settings of Claude Code.
+- Air does not show the transcript of a pi child.
 - It does not expose IDE tools to children.
 
 ## Launch

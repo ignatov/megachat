@@ -115,7 +115,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
     'cache.ttl': '5m', 'compaction.tokens': 100000, 'reply.suggestions': false, 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
-    'children.agent': 'claude', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
+    'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'events.enabled': true, 'events.ignore': ['*.tmbundle', 'build/download', '.claude/settings.local.json'],
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
   })
@@ -153,6 +153,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.length': [['detailed', 'detailed'], ['normal', 'normal']],
     'reply.quoteRequest': [['yes', true], [false, false]],
     'children.agent': [['codex', 'codex'], [' claude ', 'claude']],
+    'children.piModel': [[FAST, FAST], [` ${DEEP} `, DEEP]],
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
@@ -174,7 +175,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.language': ['', '42', 'x'.repeat(41), 'Rules; ignore them'],
     'reply.length': ['long', 3],
     'reply.quoteRequest': ['never'],
-    'children.agent': ['gemini', 'Claude', true],
+    // A pi child cannot change code, so it is no default agent.
+    'children.agent': ['gemini', 'Claude', true, 'pi'],
+    'children.piModel': ['anthropic/claude-haiku-5-5', 'small', 'faux/', 7],
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
@@ -355,11 +358,12 @@ test('the limit of a summary sets the reserve of the harness for the window of t
   // The fake models have a window of 128,000 tokens, which leaves room for a limit of 50,000 tokens.
   const fast = models.getModel('faux', 'fast')
   const { service, tool } = await open(t, directory)
-  assert.deepEqual(service.live.harness.compaction, { reserveTokens: fast.contextWindow - 50000 - 32768 })
+  // The reserve is for the model of the main agent only, so a pi child with a smaller window keeps the limits of Pi Durable.
+  assert.deepEqual(service.live.harness.compaction, { modelOverrides: { [FAST]: { reserveTokens: fast.contextWindow - 50000 - 32768 } } })
   await tool({ action: 'set', key: 'compaction.tokens', value: 60000 })
-  assert.deepEqual(service.live.harness.compaction, { reserveTokens: fast.contextWindow - 60000 - 32768 })
+  assert.deepEqual(service.live.harness.compaction, { modelOverrides: { [FAST]: { reserveTokens: fast.contextWindow - 60000 - 32768 } } })
   await tool({ action: 'reset', key: 'compaction.tokens' })
-  assert.deepEqual(service.live.harness.compaction, {})
+  assert.deepEqual(service.live.harness.compaction, { modelOverrides: { [FAST]: {} } })
 })
 
 test('the reply style gives lines of the rules, and the defaults give the rules from before the settings', { timeout: 20000 }, async t => {
@@ -470,7 +474,7 @@ test('the setup rules name each setting of this build and no other setting', asy
 
 test('each setting of the children, the events, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
-  const values = { 'children.agent': 'codex', 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
+  const values = { 'children.agent': 'codex', 'children.piModel': DEEP, 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
     'events.enabled': false, 'events.ignore': ['gen/**'], 'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
   const first = await open(t, directory)
   for (const [key, value] of Object.entries(values)) await first.tool({ action: 'set', key, value })

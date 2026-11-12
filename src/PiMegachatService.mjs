@@ -6,6 +6,8 @@ import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-sc
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { findSteer, MegachatState, terminalStates } from './MegachatState.mjs'
+import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
+import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { eventMatcher } from './ProjectEventFilter.mjs'
@@ -33,6 +35,12 @@ const STEER_WAIT_MS = 30000
 /** The lifetimes of the prompt cache of a model that states none: those of Anthropic. */
 const CACHE_LIFETIME_SECONDS = { short: 300, long: 3600 }
 const resource = name => readFile(new URL(`../resources/${name}`, import.meta.url), 'utf8')
+/**
+ * The extension of the main agent. A conversation without its own choice selects only this extension, so the main
+ * conversation does not get the tool `read` of a pi child, and a pi child, which selects its own extension, gets nothing
+ * of the main agent.
+ */
+const MAIN_EXTENSION = 'air.megachat'
 
 /** The limit of a summary from the environment alone, without the stored settings. */
 export function compactTokens(environment = process.env) {
@@ -52,14 +60,17 @@ export function compactionSettings(contextWindow, tokens) {
 
 /**
  * The settings of the harness for the effective [values]. Pi Durable reads them at each use, so a new value applies to
- * the next model request without a new harness.
+ * the next model request without a new harness. The limit of a summary is for the model of the main agent only: a pi
+ * child with a model of a smaller window keeps the limits of Pi Durable.
  */
 function harnessSettings(values, models) {
   const { provider, modelId } = modelRef(values['coordinator.model'])
   return {
+    extensions: [{ name: MAIN_EXTENSION }],
     retry: { enabled: false },
     stream: { timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: CACHE_RETENTION[values['cache.ttl']] },
-    compaction: compactionSettings(models.getModel(provider, modelId)?.contextWindow ?? 0, values['compaction.tokens']),
+    compaction: { modelOverrides: { [values['coordinator.model']]:
+      compactionSettings(models.getModel(provider, modelId)?.contextWindow ?? 0, values['compaction.tokens']) } },
     // Pi Durable puts the partial reply into `pi.live` at this interval. The daemon sends it to the chat from there.
     progress: { partialIntervalMs: STREAM_INTERVAL_MS },
   }
@@ -143,6 +154,8 @@ export class PiMegachatService {
     const registry = createRegistry()
     const harness = await Harness.open(storage, {
       models, registry, settings: () => live.harness,
+      // Only a pi child gets an environment, and it reads only the files of its project.
+      env: childEnvironment,
       // Pi Durable reports each failure of a task, an extension or the storage here, and nowhere else.
       onReport: report => logFailure('log.report', report.error, [report.kind, report.reason, report.extension, report.task?.kind]
         .filter(part => typeof part === 'string' && /^[\w.:-]{1,64}$/.test(part)).join(' ')),
@@ -170,6 +183,9 @@ export class PiMegachatService {
       service.sessionIndex = new SessionIndexService({ path: sessionsPath, state, home, environment, ...indexOptions })
       service.sessions.index = service.sessionIndex
     }
+    service.sessions.children = new PiChildHistory(harness, state)
+    service.childExtension = childExtension((usage, model) => service.countSpend(usage, model))
+    registry.install(service.childExtension)
     registry.install(service.extension())
     return service
   }
@@ -277,6 +293,21 @@ export class PiMegachatService {
     catch (error) { logFailure('log.settings.failed', error) }
   }
 
+  /**
+   * The model of the next pi child: the setting `children.piModel`, or the model of the main agent when the model
+   * registry does not know the setting, as with the models of a test.
+   */
+  piModel() {
+    const values = this.settings.values()
+    const model = modelRef(values['children.piModel'])
+    return this.models.getModel(model.provider, model.modelId) ? model : modelRef(values['coordinator.model'])
+  }
+
+  /** The choices of the conversation of a pi child in [cwd] at its dispatch. */
+  childAgent(cwd) {
+    return childAgent(cwd, this.piModel(), this.childExtension)
+  }
+
   /** The rules paragraph of the next child. It reads the stored settings, so a change in a turn reaches the next child. */
   childRules() {
     return childRulesText(this.settings.values())
@@ -324,7 +355,7 @@ export class PiMegachatService {
       name: `agents_${name}`, description: message(`tool.${name}`), parameters, replay: 'safe', execute,
     })
     const inspect = async args => result(await this.state.readRun(args.runId))
-    return defineExtension({ name: 'air.megachat', sections: [
+    return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
       { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice)) },
     ], hooks: [
@@ -336,7 +367,7 @@ export class PiMegachatService {
         const state = await this.state.snapshot()
         const runs = Object.values(state.runs).map(run => ({ runId: run.id, childSessionId: run.childSessionId, agent: run.agent ?? 'claude',
           cwd: run.cwd, status: run.status, title: run.title, prompt: run.prompt.slice(0, 200) }))
-        return result({ agents: ['claude', 'codex'], defaultAgent: this.settings.values()['children.agent'], workspaces: directoriesOf(state), runs,
+        return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces: directoriesOf(state), runs,
           ...(this.suggestions ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),

@@ -561,8 +561,10 @@ export class MegachatState {
       const previous = args.childSessionId && Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
       // A run without the field is from before the choice of the agent, so it is a Claude run.
       const agent = previous ? previous.agent ?? 'claude' : args.agent ?? defaultAgent
-      requireCondition(['claude', 'codex'].includes(agent))
+      requireCondition(['claude', 'codex', 'pi'].includes(agent))
       requireCondition(!args.agent || args.agent === agent, 'conflict')
+      // A pi child is a conversation of this daemon. A session of the pi command-line agent cannot continue as one.
+      requireCondition(agent !== 'pi' || !args.providerSessionId)
       if (args.childSessionId) {
         requireCondition(previous && previous.cwd === args.cwd && !previous.closed, 'missing')
         requireCondition(terminalStates.has(previous.status), 'childBusy')
@@ -579,7 +581,8 @@ export class MegachatState {
         requestId, digest: hash, prompt: args.prompt, cwd: args.cwd, status: 'admitted',
         ...(args.title === undefined ? {} : { title: args.title.trim() }),
         providerSessionId,
-        serviceSession: previous?.serviceSession ?? !args.providerSessionId,
+        // A pi child has no session file of Claude Code or Codex, so Air has no session of it to hide.
+        serviceSession: agent === 'pi' ? false : previous?.serviceSession ?? !args.providerSessionId,
         generation: null, pid: null, output: '', truncated: false,
         cancelRequested: false, createdAt: Date.now(), closed: false,
       }
@@ -760,6 +763,8 @@ export class MegachatState {
     await this.change(state => {
       for (const run of Object.values(state.runs)) {
         if (terminalStates.has(run.status) || run.status === 'admitted') continue
+        // Pi Durable continues the conversation of a dispatched pi run after the restart, and the pi run service follows it.
+        if (run.agent === 'pi' && run.status === 'dispatched') continue
         const previousStatus = run.status
         run.status = run.cancelRequested ? 'cancelled' : 'interrupted'
         run.finishedAt = Date.now()

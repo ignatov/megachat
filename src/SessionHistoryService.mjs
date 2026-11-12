@@ -177,18 +177,21 @@ export class SessionHistoryService {
 
   async read({ cwd, agent, sessionId, cursor, query = '' } = {}) {
     cwd = await this.workspace(cwd)
-    this.agent(agent)
+    // A native pi child lives in the conversation of the daemon, and a pi run of the state names its session. So it
+    // needs no index, and a log of the pi command-line agent cannot have its ID.
+    const child = agent === INDEX_ONLY && typeof sessionId === 'string' && Boolean(await this.children?.owns(cwd, sessionId))
+    if (!child) this.agent(agent)
     requireCondition(typeof sessionId === 'string' && sessionIdPattern.test(sessionId))
     requireCondition(typeof query === 'string' && query.length <= 200)
     const identity = { cwd, agent, sessionId, query }
     const position = this.position(cursor, identity)
     if (position?.index !== undefined) requireCondition(this.indexed && indexPosition(position.index))
-    if (this.indexed && (!position || position.index)) {
+    if (!child && this.indexed && (!position || position.index)) {
       const page = await this.indexRead(identity, position?.index?.after ?? 0)
       if (page) return { ...page, index: await this.index.status() }
     }
-    requireCondition(agent !== INDEX_ONLY, 'missing')
-    const page = await this.providers[agent].read(cwd, sessionId, position?.historyCursor ?? null)
+    requireCondition(child || agent !== INDEX_ONLY, 'missing')
+    const page = await (child ? this.children : this.providers[agent]).read(cwd, sessionId, position?.historyCursor ?? null)
     return { agent, session: page.session,
       entries: page.entries.filter(entry => entry.text.toLowerCase().includes(query.toLowerCase())).map(entry => this.excerpt(entry, query)),
       nextCursor: page.nextCursor === null ? null : encode({ ...identity, historyCursor: page.nextCursor }),

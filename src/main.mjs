@@ -12,6 +12,7 @@ import { AcpBridge } from './AcpBridge.mjs'
 import { checkAccounts } from './AgentAccountCheck.mjs'
 import { CentralConfigurationService } from './CentralConfigurationService.mjs'
 import { AcpRunService } from './AcpRunService.mjs'
+import { ChildSlot } from './ChildSlot.mjs'
 import { DaemonClient } from './DaemonClient.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
@@ -20,6 +21,7 @@ import { daemonBuild, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
 import { install } from './MegachatInstall.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
+import { PiRunService } from './PiRunService.mjs'
 import { ProjectWatchService } from './ProjectWatchService.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { withoutNpm } from './npmEnvironment.mjs'
@@ -50,6 +52,7 @@ async function daemon() {
   const owner = await DaemonDirectory.acquire(directory)
   let service
   let children
+  let piChildren
   let server
   let projects
   let stopping
@@ -60,7 +63,7 @@ async function daemon() {
     await starting?.catch(() => {})
     try { await server?.close() }
     finally {
-      try { await projects?.close(); await children?.close() }
+      try { await projects?.close(); await children?.close(); await piChildren?.close() }
       finally {
         try { await service?.close() }
         finally { await owner.close() }
@@ -94,8 +97,14 @@ async function daemon() {
     server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build })
     const descriptor = await server.listen()
     proceed()
+    // The daemon runs at most one child at a time, ACP or pi. A pi run that was dispatched before a restart takes the
+    // slot first, because Pi Durable continues it.
+    const slot = new ChildSlot()
+    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), slot })
+    await piChildren.start()
+    proceed()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),
-      childRules: () => service.childRules() })
+      childRules: () => service.childRules(), slot })
     await children.start()
     proceed()
     await service.resume()
