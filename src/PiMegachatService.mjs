@@ -15,7 +15,8 @@ import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
-import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, PROJECT_SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
+import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
+import { isNoteMessage, SessionNotes } from './SessionNotes.mjs'
 import { waitForState } from './waitForState.mjs'
 import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
@@ -102,6 +103,7 @@ function settingsRules(values, onboarding, rules, notice, projects = []) {
     message('instructions.projects', PROJECT_SETTINGS.join(', ')),
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
+    message('instructions.notes', notesOn(values) ? 'on' : 'off'),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')
 }
@@ -149,9 +151,10 @@ export class PiMegachatService {
    * [stop] gives the signal function of the tool `agents_stop`, and the PID and the user of the daemon, for a test.
    * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test. [morningReport] gives the
    * clock of the working day and the time limit of tokprof, for a test. The clock gives the time of the timer of the
-   * morning report, of the idle time of the conversation, and of the wait of a child result.
+   * morning report, of the idle time of the conversation, of the wait of a child result, and of the notes about the
+   * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test.
    */
-  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -196,6 +199,9 @@ export class PiMegachatService {
     service.workdayClock = reportOptions.clock ?? workdayClock
     service.morningReport = new MorningReport({ clock: service.workdayClock, values: () => service.settings.values(),
       lastDate: async () => (await state.snapshot()).morningReport.lastDate, prepare: date => service.prepareMorningReport(date) })
+    // The notes start in `resume`, and only with the setting `sessions.notes` and the consent `sessions.index`.
+    service.sessionNotes = new SessionNotes({ clock: service.workdayClock, view: notesOptions.view ?? (() => service.running.view()),
+      sleeping: () => service.resultsWait(), deliver: (plan, now) => state.sessionNote(plan, now) })
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
@@ -347,7 +353,7 @@ export class PiMegachatService {
     requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
     if (args.action === 'get') {
       return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') },
-        ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}) }
+        ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}), sessionNotes: this.notesStatus() }
     }
     requireCondition(!automaticKinds.has((await this.state.snapshot()).current?.kind), 'settingEvent')
     let changed
@@ -363,10 +369,20 @@ export class PiMegachatService {
       if (args.key === 'report.morning' && !before && this.settings.values()['report.morning']) await this.skipReportOfToday()
     }
     else changed = await this.settings.reset(args.key, args.project)
-    // The consent to the session index applies at once: the import starts or stops in this turn.
-    if (args.action !== 'onboarding') await this.sessionIndex?.apply(this.settings.values())
+    // The consent to the session index applies at once: the import starts or stops in this turn. So do the notes.
+    if (args.action !== 'onboarding') {
+      await this.sessionIndex?.apply(this.settings.values())
+      if (this.resumed) this.sessionNotes.apply(notesOn(this.settings.values()))
+      if (args.key === 'sessions.notes' || args.key === 'sessions.index') changed = { ...changed, sessionNotes: this.notesStatus() }
+    }
     await this.settingsChanged()
     return changed
+  }
+
+  /** Whether the notes about the waiting sessions are on, and why not when the setting is on without the consent. */
+  notesStatus() {
+    const values = this.settings.values()
+    return { on: notesOn(values), ...(values['sessions.notes'] === 'on' && !notesOn(values) ? { note: message('settings.notes.consent') } : {}) }
   }
 
   /**
@@ -589,10 +605,13 @@ export class PiMegachatService {
     return answer.usage
   }
 
-  /** The time of the last message of the model context. After a restart, it stands for the last model request. */
+  /**
+   * The time of the last message of the model context. After a restart, it stands for the last model request. A note
+   * of Megachat is no model request, so it does not count.
+   */
   async lastMessageTime() {
     const { messages } = await this.root.context(context)
-    return messages.findLast(model => Number.isFinite(model.timestamp))?.timestamp
+    return messages.findLast(model => Number.isFinite(model.timestamp) && !isNoteMessage(model))?.timestamp
   }
 
   async resume() {
@@ -618,6 +637,8 @@ export class PiMegachatService {
           // summary starts the window of keep-alive requests again, and the morning report does not.
           if (kind === 'user') this.userIdleSince = this.workdayClock.now()
           this.keepAlive?.turnEnded(undefined, { kind })
+          // A note that waited for the end of the turn goes out now.
+          this.sessionNotes.check()
         }
       }
       kind = snapshot.current?.kind ?? kind
@@ -658,6 +679,7 @@ export class PiMegachatService {
     this.morningReport.check()
     // An index that cannot open must not stop the chat. The log names the failure, and a change of the setting tries again.
     await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
+    this.sessionNotes.apply(notesOn(this.values))
   }
 
   /**
@@ -825,6 +847,7 @@ export class PiMegachatService {
     this.lifetime.abort()
     this.stopper.stop()
     await this.morningReport?.close()
+    await this.sessionNotes?.close()
     if (this.waitTimer !== undefined) this.workdayClock.clearTimeout(this.waitTimer)
     clearTimeout(this.reportTimer)
     clearTimeout(this.expiry?.timer)

@@ -236,7 +236,15 @@ export const SETTINGS = [
       return /^\d{1,4}$/.test(text) && Number(text) <= 3650 ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 0, maximum: 3650 }) },
+  // The notes about the agent sessions that wait for the user. They read the session logs, so they need the consent
+  // `sessions.index` too: without it, the notes stay off.
+  { key: 'sessions.notes', default: 'off', applies: 'notes',
+    validate: value => { const on = toBoolean(value); return on === undefined ? undefined : on ? 'on' : 'off' },
+    allowed: () => ({ values: ['on', 'off'] }) },
 ]
+
+/** True when the notes about the waiting sessions are on: the setting `sessions.notes` and the consent `sessions.index`. */
+export const notesOn = values => values['sessions.notes'] === 'on' && values['sessions.index'] === 'on'
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))
 /** The keys of the settings that can have a project value. */

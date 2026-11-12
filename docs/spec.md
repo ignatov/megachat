@@ -322,7 +322,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The tool must store a valid value at once, remove a stored value, and set the status of the onboarding. It must refuse an unknown key and an invalid value as each other tool refuses an invalid request.
 - A turn of a child result or of the summary of the past sessions must not change a setting or the status of the onboarding.
 - The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `workday.enabled`, `workday.start`, `workday.end`, `workday.days`, `workday.timezone`, `workday.idleMinutes`, `report.morning`, `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
-- The settings of the index of past sessions are `sessions.index` and `sessions.days`. They must apply at once, also in the middle of a turn, because they change no model request.
+- The settings of the index of past sessions are `sessions.index`, `sessions.days` and `sessions.notes`. They must apply at once, also in the middle of a turn, because they change no model request.
 - A model must be valid only when the model registry knows it, except a model of `children.claudeModel`. A reasoning level must be a level of pi-ai that the model supports.
 - The output of `get` must list each model of the registry with the prices of its model data, and one note with the measurement of Claude Opus 5.5. It must give no measurement of another model.
 - A changed setting must apply at once when no turn runs, else at the end of the current turn, before the next turn starts. A change must not apply in the middle of a turn. A setting with another time in its `applies` text, such as a setting of the children, must apply at that time.
@@ -586,6 +586,54 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   session file, and a call after the change must get no data of a log, also from a scan that started before it.
   [@test] ../test/session-logs.test.mjs
   [@test] ../test/session-index.test.mjs
+- The setting `sessions.notes` must be off by default. Off must read no session file and no process table for the notes,
+  and must start no timer. A `settings.json` without the key must open with the default.
+- The notes must also need the consent `sessions.index`, because they read the session logs. Without it, they stay off.
+  The output of `agents_settings` with `get`, and of a `set` or a `reset` of `sessions.notes` or `sessions.index`, must
+  give `sessionNotes` with `on`, and a `note` that names the missing consent. A change of each of the two settings must
+  apply at once, also in the middle of a turn.
+- With both on, the daemon must check the view of `agents_running` every minute and at the end of each turn. A session
+  must get a note when its status is `stuck`, or when it is a session outside Megachat with the status
+  `waiting_for_permission` for 5 minutes or more (`PERMISSION_NOTE_MS` of `src/SessionNotes.mjs`), from the start of
+  the wait in the process file of Claude Code. A child of Megachat that waits for a permission must get no note,
+  because the chat shows its dialog. `waiting_for_user` and `idle` must give no note, because a finished turn is the
+  usual state of a session. The view must give the start of the status (`statusSince`) to the notes: the start of the
+  wait in the process file, or the last log write of a stuck session. The output of the tool must not give it.
+- A session must get one note for each state. The state must keep a record of each sent note in `sessionNotes.records`:
+  a hash of the agent, the session ID and the process as the key, the status, the start of the status (`since`),
+  `left`, and the time of the note. A record must hold no title, no path and no session ID. A view that shows the
+  session in another status, or with another start, must set `left`. Only a new start after `left` must give a second
+  note. So a reading that comes and goes, and a restart of the daemon, give no second note for the same wait. The state
+  must keep at most 200 records, none older than 30 days. A check that changes no record and writes no note must commit
+  nothing.
+- The sessions that need a note at one check must get one note, with one line for each session: the agent, the base
+  name of the project directory, the title on one line, the state and how long. A note must have at most 10 such lines,
+  and then one line with the count of the other sessions. The text must say that the state is a reading of the logs and
+  of the process files, not a message of the agent.
+- A note must be a fixed text from `resources/Megachat.properties`, and it must cost no model request. The daemon must
+  write it as a write submission of Pi Durable (`type: "write"`): an entry of the kind `air.megachat.note` with one
+  message of the assistant, the provider `megachat` and no usage. Pi Durable appends such an entry at once and starts no
+  run. The commit of the write must check that no turn runs, that no run of Pi Durable is live and that its inbox is
+  empty, so the note never lands inside a run. Else the note must wait for the next check, and its records must not
+  change.
+- A note must not be a turn: it must make no input, must not end the idle time of the working day, must start no window
+  of keep-alive requests, and must end no prompt suggestion. A keep-alive request must hold a note as a turn sends it.
+  After a restart, a note must not stand for the last model request, because it is none.
+- While the conversation sleeps (`isSleeping`), no note must go out. The records must still follow the states. A session
+  that still waits when the conversation wakes, at the start of the working day or at a turn of the user, must get its
+  note then. A wait that ended while the conversation slept must give no note.
+- Each view must get a note at once as an `agent_message_chunk` with the message ID `megachat-entry-<entry>`, never in
+  the message of a stream. The replay must show it. The next model request of the main agent must hold it as a message
+  of the assistant. The rules of the main agent must say in one line what a note is, that it is no request, and the
+  value of the notes. The setup must ask for the setting only when `sessions.index` is on.
+- The note must go only into the conversation. The log of the daemon must get one line with the count of the sessions
+  of a note, and no title and no project.
+- A daemon of v0.3.0 must open a state with a note and its records. It shows the note as a reply, sends it to the model
+  as a message of the assistant, and keeps the records, because it keeps each field of the state that it does not know.
+  It keeps `sessions.notes` in `settings.json`. This build must then send no second note for the same wait.
+  [@test] ../test/session-notes.test.mjs
+  [@test] ../test/session-logs.test.mjs
+  [@test] ../test/settings.test.mjs
 - `agents_session_history` of the main agent with `order` `newest` must read a session of the live table by its agent
   and session ID, also outside the listed directories, from the end of its log: the last `limit` entries (20 by
   default, at most 100) in the order of the log, and a cursor to the older page. `query` must select the entries in the

@@ -194,6 +194,20 @@ to the message with the same ID, and a new ID starts a new message. This needs n
 - Megachat sends no `agent_thought_chunk`.
 - Megachat sends at most 20 chunks of a stream in a second.
 
+## The notes about the sessions that wait
+
+This uses the updates of the reply stream above. It is not an extension of Megachat, and it needs no change in Air.
+
+- With the setting `sessions.notes`, the daemon writes a note into the conversation when an agent session on the
+  machine waits for the user for a long time. A note is an entry of the conversation with one message of the
+  assistant, and no model request and no turn makes it.
+- Megachat sends the note to each view at once as an `agent_message_chunk` with the message ID `megachat-entry-<entry>`,
+  so it is a message of its own and never continues the message of a stream. No prompt of the view and no background
+  task goes with it. The replay sends it again, as each other entry.
+- Air takes a live update outside a prompt turn (`AcpSessionRuntimeOwner.kt`, `followBackgroundWorkEnd`), and the
+  reply of an automatic turn of Megachat, such as a child result, comes to Air in the same way. Megachat sends no task
+  of the type `turn` for a note.
+
 ## The permissions
 
 Megachat sends each open permission request of a child through `session/request_permission` in the main session.

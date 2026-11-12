@@ -609,6 +609,11 @@ test('the process file of Claude Code gives waiting_for_permission or waiting_fo
     20: 'waiting_for_user', 21: 'working', 22: 'stuck', 23: 'stuck', 24: 'working', 25: 'working', 26: 'working', 30: 'stuck', 31: 'stuck', 32: 'working', 33: 'working', 34: 'working',
     40: 'stuck', 41: 'stuck', 42: 'stuck', 43: 'stuck', 50: 'stuck',
   })
+  // The view gives the start of the status to the notes: the start of the wait in the process file, or the last write
+  // of the log of a stuck session. The output of the tool does not have it.
+  const since = Object.fromEntries((await running(catalog, table).view()).rows.map(row => [row.pid, row.statusSince]))
+  assert.deepEqual([since[10], since[11], since[22], since[50], since[20], since[21]], [NOW - QUIET, NOW - MINUTE, NOW - QUIET, NOW - QUIET, NOW - QUIET, null])
+  assert.ok(answer.sessions.every(row => !('statusSince' in row)))
   // The wait ends: Claude Code writes the status busy, and the log gets the result of the tool.
   await processFile(10, NOW, { status: 'busy', waitingFor: undefined })
   const clock = fakeClock(NOW + SNAPSHOT_TTL_MS)

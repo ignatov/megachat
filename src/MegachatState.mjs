@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
-import { defineDoc } from '@earendil-works/pi-durable'
+import { defineDoc, InboxDoc, LiveDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
+import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
 import { rmdir } from 'node:fs/promises'
 import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
@@ -559,6 +560,41 @@ export class MegachatState {
       state.morningReport.lastDate = date
       state.morningReport.pending = { date, data, repeated: false }
       return true
+    })
+  }
+
+  /**
+   * Writes a note about the agent sessions that wait into the conversation, and the records of the sent notes, in one
+   * commit. [plan] gets the records (`sessionNotes.records`, keyed by `noteKey`) and gives `{ due, changes, text }`
+   * (see `planNotes`). The note is a message of the assistant in an entry of the kind `air.megachat.note`. Pi Durable
+   * appends such a write at once and starts no run, so the note costs no model request, and the next turn of the main
+   * agent sees it. The write must not land inside a run: a note between a tool result and the next model request would
+   * end the context with a message of the assistant. So the note goes out only when no turn runs, no run is live and the
+   * inbox is empty. Else the note waits for the next check, and the records of the sessions in [plan.due] stay as they
+   * are. Gives the count of the sessions in the note, or 0.
+   */
+  async sessionNote(plan, now) {
+    // A check runs each minute. Without a note to write and without a changed record, it commits nothing.
+    const before = await this.snapshot()
+    const preview = plan(plain(before.sessionNotes?.records ?? {}))
+    if (!Object.keys(preview.changes).length && (!preview.text || before.current)) return 0
+    return this.change(async (state, tx) => {
+      // A state of an earlier build has no records. A daemon of v0.3.0 keeps the field as it is.
+      state.sessionNotes ??= { records: {} }
+      const records = state.sessionNotes.records
+      const { due, changes, text } = plan(plain(records))
+      const idle = !state.current && (await tx.doc(LiveDoc, this.root.id)).run === undefined
+        && (await tx.doc(InboxDoc, this.root.id)).items.length === 0
+      let sent = 0
+      if (text && idle) {
+        await this.root.submit(tx, { type: 'write', requestId: `notes:${randomUUID()}`,
+          entry: { kind: NOTE_KIND, data: { type: 'sessions', count: due.length }, model: [noteMessage(text, now)] } })
+        for (const { key, row } of due) records[key] = { status: row.status, since: row.statusSince, left: false, notedAt: now }
+        sent = due.length
+      }
+      Object.assign(records, changes)
+      pruneRecords(records, now)
+      return sent
     })
   }
 

@@ -223,6 +223,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
 | `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
+| `sessions.notes` | `off` | | A short note in the chat when an agent session waits for you for a long time. It needs `sessions.index`. See [Notes about the sessions that wait](#notes-about-the-sessions-that-wait). |
 
 The daemon adds the rules of `children.commit`, `children.push` and `children.daemonRestart` to the prompt of each
 child at its dispatch, also to a follow-up and to a continuation. With `ask`, the child does the step only when its task
@@ -446,6 +447,37 @@ gives one row for each open session. Then ask "what is session X doing?": the ma
 the session from the end of its log, also for a log of hundreds of MB. Without the consent, Megachat reads no session
 log, and the answer says so.
 
+## Notes about the sessions that wait
+
+With `sessions.notes` on, Megachat tells you in the chat when an agent session on the machine waits for you for a long
+time. Say "tell me when a session waits for me" to turn it on. It is off by default. The notes read the session logs, so
+they also need the consent `sessions.index`. Without it, they stay off, and the settings say why.
+
+- **What gives a note.** A session outside Megachat that seems to wait for a permission for 5 minutes or more, from the
+  process file of Claude Code, and a session that is `stuck`: an open step and no log write for 10 minutes. A child of
+  Megachat that waits for a permission gets no note, because the chat shows its dialog. A session after a finished turn
+  gets no note, because that is the usual state of a session. A Codex session outside Megachat that waits for a
+  permission shows as `stuck` after 10 minutes, because Codex writes no file that tells the wait.
+- **One note for each session and state.** The note comes one time. A session gets a second note only when it leaves
+  the state and comes back, for example a new permission prompt. Sessions that need a note at the same time come in one
+  note, with one line for each session: the agent, the project, the title, the state and how long. A restart of the
+  daemon gives no second note: the state keeps a record of each note, without a title or a path.
+- **The text.** A note starts with "Megachat note:". It is a fixed text, and it says that the state is a reading of the
+  logs, not a message of the agent. Look at the session before you act. The main agent sees the note in its next turn,
+  and it does not take it as a request.
+- **The cost.** A note costs no model request. The daemon writes it into the conversation as a message of the
+  assistant, without a turn, and the chat shows it at once. When a turn runs, the note waits for its end. The next turn
+  sends the note to the model as a few more input tokens.
+- **The working day.** No note goes out while the conversation sleeps (see [The prompt cache](#the-prompt-cache)). A
+  session that still waits when the conversation wakes, at `workday.start` or at your next message, gets its note then.
+  A wait that ended at night gives no note. A note does not wake the conversation and starts no keep-alive request.
+- **Privacy.** A note holds the title and the project name of a session. It goes only into the conversation, as an
+  answer of `agents_running` does. The log of the daemon gets the count of the sessions only.
+
+The daemon checks the sessions every minute while the notes are on, with the same `ps` call as `agents_running`.
+
+Megachat 0.3.0 opens a state with a note: it shows the note as a message of the assistant, and it keeps the records.
+
 ## Stop an orphan session
 
 Ask the agent "stop the orphan sessions" or "stop PID 4242". The main agent calls its tool `agents_stop`, and the
@@ -537,6 +569,7 @@ The session text is data for the agent, not instructions.
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
+| `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |

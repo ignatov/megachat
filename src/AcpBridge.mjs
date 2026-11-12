@@ -5,6 +5,7 @@ import { VERSION } from './MegachatBuild.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { transcriptPath } from './ChildTranscript.mjs'
+import { NOTE_KIND } from './SessionNotes.mjs'
 import { replyText } from './ReplyStream.mjs'
 import { livePromptSuggestion, promptSuggestionUpdate } from './Suggestions.mjs'
 
@@ -397,7 +398,13 @@ class AcpBridgeSession {
             : model.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
           updates.push({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } })
         }
-        if (model.role === 'assistant') updates.push(...this.replyChunks(entry, model))
+        // A note about the waiting sessions is no reply of the main agent, so it never continues the message of a stream.
+        if (model.role === 'assistant' && entry.kind === NOTE_KIND) {
+          for (const block of model.content.filter(item => item.type === 'text' && item.text)) {
+            updates.push({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-entry-${entry.id}`, content: { type: 'text', text: block.text } })
+          }
+        }
+        else if (model.role === 'assistant') updates.push(...this.replyChunks(entry, model))
       }
     }
     for (const [index, update] of updates.entries()) {

@@ -118,7 +118,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
-    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
+    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
   // A variable that the daemon cannot read has no effect.
@@ -177,6 +177,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'budget.dailyUsd': [[0, 0], ['2.5', 2.5], [100000, 100000]],
     'sessions.index': [['on', 'on'], [false, 'off'], [' OFF ', 'off']],
     'sessions.days': [[0, 0], ['30', 30], [3650, 3650]],
+    'sessions.notes': [['on', 'on'], [true, 'on'], [' Off ', 'off']],
   }
   const refused = {
     'coordinator.model': ['anthropic/claude-opus-5-5', 'fast', 'faux/', 7],
@@ -212,6 +213,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'budget.dailyUsd': [-1, 'much', 100001, true],
     'sessions.index': ['later', 2],
     'sessions.days': [-1, 3651, 1.5, 'long'],
+    'sessions.notes': ['soon', 5, ''],
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
   for (const [key, cases] of Object.entries(accepted)) {

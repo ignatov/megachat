@@ -30,7 +30,7 @@ const ONBOARDING = /The setup of Megachat is pending\./
 /** The keys of the log lines about a failure. A start of the new code on an old state must write none of them. */
 const FAILURES = ['log.daemon', 'log.storage', 'log.report', 'log.child', 'log.children', 'log.request', 'log.event',
   'log.keepalive.failed', 'log.settings.unreadable', 'log.settings.failed', 'log.sessions', 'log.sessions.file',
-  'log.central.main', 'log.central.claude', 'log.projectSettings', 'log.running', 'error.event', 'error.search']
+  'log.central.main', 'log.central.claude', 'log.projectSettings', 'log.running', 'log.notes.failed', 'error.event', 'error.search']
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 const call = (...calls) => fauxAssistantMessage(calls.map(([name, args]) => fauxToolCall(name, args)), { stopReason: 'toolUse' })
 const text = content => typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('\n')

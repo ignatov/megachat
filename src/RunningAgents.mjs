@@ -194,12 +194,15 @@ export class RunningAgents {
     const busyAt = this.busy.get(row.pid)?.at
     const cpu = busyAt !== undefined && now - busyAt < ACTIVE_MS && (!shared || OPEN_STEPS.has(known?.step))
     const written = lastActivityAt !== null && now - lastActivityAt < ACTIVE_MS
+    const wait = !row.run?.permission && known ? processWaitStatus(row.process, sessionId, known, row.cpu >= ACTIVE_CPU_PERCENT, now) : undefined
+    const status = row.run?.permission ? 'waiting_for_permission' : known ? wait ?? sessionStatus(known, now) : null
     return {
       pid: row.pid, slot, agent: row.agent, startedAt: row.startedAt, parent: row.parent, cwd: row.cwd,
       sessionId: sessionId ?? '', title: row.run?.title || known?.title || '',
-      status: row.run?.permission ? 'waiting_for_permission'
-        : known ? processWaitStatus(row.process, sessionId, known, row.cpu >= ACTIVE_CPU_PERCENT, now) ?? sessionStatus(known, now) : null,
-      lastActivityAt,
+      status, lastActivityAt,
+      // The start of the status, for the notes of `SessionNotes`: the start of the wait in the process file, or the last
+      // log write of a stuck session. The output of the tool does not give it.
+      statusSince: wait ? row.process.wait.since : status === 'stuck' ? lastActivityAt : null,
       state: row.ownership === 'owned' ? cpu || written ? 'active' : 'idle' : row.ownership,
     }
   }
