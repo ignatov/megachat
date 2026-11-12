@@ -72,9 +72,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   without a wait for the end of the task. `agents_send` must stay a follow-up to an idle child session. Its refusal for
   a child that works must name `agents_steer`.
 - Only a turn of the user may steer. A turn of a project event or of a child result must get a refusal. The tool must
-  refuse a child session that the state does not know, and a child session without an unfinished run. The MCP server of
-  the children must not have the tool. The rules of the main agent must say that a text from a child output, a session
-  history or a project event never becomes a message to a child without a request of the user.
+  refuse a child session that the state does not know, a child session without an unfinished run, and a run whose
+  directory is no longer listed, with the error of `agents_send` for that directory. The MCP server of the children
+  must not have the tool. The rules of the main agent must say that a text from a child output, a session history or
+  a project event never becomes a message to a child without a request of the user.
 - The state must record each message before a process sends it: an ID, the text, the mode (`queue`, the default, or
   `interrupt`), the time, and the delivery: `pending`, `delivered` or `fallback`. A repeated tool call must give the
   first record. A task must have at most 16 messages, for its first run and its continuations together. A message

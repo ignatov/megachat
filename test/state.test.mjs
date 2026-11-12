@@ -718,6 +718,18 @@ test('a steer message is recorded before the send, once for a repeated call, and
   await assert.rejects(state.steer('cancelling', { ...args, childSessionId: other.childSessionId }), { code: 'inactive' })
 })
 
+test('a steer refuses a child task whose directory is no longer listed, as agents_send does', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  const run = await sentRun(state, 'tool')
+  // The directory leaves the list after the start of the child, as a known project that the user removes.
+  await state.change(value => { value.workspaces.splice(value.workspaces.indexOf('/workspace'), 1) })
+  await assert.rejects(state.steer('removed', { childSessionId: run.childSessionId, prompt: 'Use the link', mode: 'queue' }), { code: 'workspace' })
+  await assert.rejects(state.directory('/workspace'), { code: 'workspace' })
+  assert.equal((await state.snapshot()).runs[run.id].steers, undefined)
+})
+
 test('a steer of a queued run goes into its prompt, also after a restart', { timeout: 10000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))

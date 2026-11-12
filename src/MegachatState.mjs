@@ -600,7 +600,8 @@ export class MegachatState {
 
   /**
    * Records a message of the user for the unfinished run of a child session, before a process sends it. A repeated
-   * [requestId] gives the first record. Only a turn of the user can add a message. A run that did not send its prompt
+   * [requestId] gives the first record. Only a turn of the user can add a message, and only to a run in a listed
+   * directory, as for `agents_send`. A run that did not send its prompt
    * yet gets the message in its prompt (`queued`). A sent run gets it through the run service (`pending`).
    * Each message has `delivery`: `pending` until the agent took it, `delivered` when the agent took it into its turn,
    * and `fallback` when the message goes in the prompt of a run. `outcome` tells the main agent how it went.
@@ -624,6 +625,8 @@ export class MegachatState {
       requireCondition(!['event', 'report'].includes(state.current.kind), 'steerEvent')
       const run = Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
       requireCondition(run && !run.closed, 'missing')
+      // The project rules stay for a child that works: its directory can leave the list after its start.
+      requireCondition(isDirectoryOf(state, run.cwd), 'workspace')
       requireCondition(!terminalStates.has(run.status), 'childIdle')
       requireCondition(!run.cancelRequested, 'inactive')
       requireCondition(steerCount(state, run) < maxSteers, 'steerLimit')
