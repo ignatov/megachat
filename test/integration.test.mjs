@@ -1126,6 +1126,31 @@ test('a steer keeps a permission request pending, and a steer of a queued run ch
   assert.equal(state.runs[second.id].prompt, 'second')
 })
 
+test('without steering, a steer stops the turn only after the user answered each of two open permission requests', { timeout: 15000 }, async t => {
+  // The second turn of the user stays in its model request, so the state accepts the steer without the wait of the
+  // tool. The end of the test ends that turn before the close of the service.
+  const hold = Promise.withResolvers()
+  t.after(() => hold.resolve())
+  const { daemon, fake, service } = await fixture(t, 'approvals', 'claude', { env: { FAKE_ACP_STEERING: 'off' } })
+  const pending = state => Object.values(state.permissions).filter(permission => permission.status === 'pending')
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  const [first, second] = await waitForState(service.state, state => pending(state).length === 2 ? pending(state) : undefined)
+  fake.setResponses([async () => { await hold.promise; return fauxAssistantMessage('Steered.') },
+    fauxAssistantMessage('The child finished.'), fauxAssistantMessage('The child finished again.')])
+  await service.submit('more', 'Add more')
+  await waitForState(service.state, state => state.current?.requestId === 'more' ? true : undefined)
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  await service.state.steer('stop', { childSessionId: run.childSessionId, prompt: 'Use the other branch', mode: 'queue' })
+  await daemon.json('/permission', { id: first.id, decision: 'yes' })
+  assert.equal(await waitForState(service.state, state => state.runs[run.id].steerRestart || undefined, { timeoutMs: 1000 }), null)
+  await daemon.json('/permission', { id: second.id, decision: 'yes' })
+  const state = await waitForState(service.state, state => Object.values(state.runs).some(value => value.resumeOf === run.id
+    && value.status === 'completed') ? state : undefined)
+  assert.deepEqual([state.permissions[first.id].status, state.permissions[second.id].status], ['answered', 'answered'])
+  const next = Object.values(state.runs).find(value => value.resumeOf === run.id)
+  assert.deepEqual(next.steers.map(item => item.text), ['Use the other branch'])
+})
+
 test('a turn of a project event or of a child result cannot steer, and a follow-up to a working child names agents_steer', { timeout: 15000 }, async t => {
   const { cwd, daemon, fake, service, server } = await fixture(t)
   const results = []

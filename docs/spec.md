@@ -91,8 +91,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The answer `failed`, an error, no answer in 20 seconds, an agent without steering, and the mode `interrupt` must use
   the fallback: `session/cancel`, and after the end of the prompt a continuation in the same provider session. Its
   prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`.
-- While a permission request of the run waits for the user, the fallback must wait for the answer. A steer must not
-  change a permission request. The chat must keep the task of the run with its ID and its phase.
+- While a permission request of the run waits for the user, the fallback must wait until the user answered each
+  request of the run. A steer must not change a permission request. The chat must keep the task of the run with its ID
+  and its phase.
 - A follow-up or a continuation for a message must start at once, must not count as an automatic attempt, and must
   start also after the last attempt. The main agent must get one report for the task: the report of the last run,
   with the output of the earlier run before its own output.

@@ -39,6 +39,13 @@ function countWork(stream, work) {
 }
 
 /**
+ * Tells whether a permission request of the run waits for the user. The status of the run is not enough: the answer
+ * to one of two requests makes the run `running`.
+ */
+const waitsForUser = (snapshot, runId) =>
+  Object.values(snapshot.permissions).some(permission => permission.runId === runId && permission.status === 'pending')
+
+/**
  * The prompt block of the messages that the user added to the task of a run. The block is the last one, after the task.
  * The pi run service gives the same block.
  */
@@ -108,7 +115,7 @@ export class AcpRunService {
         work.cancel()
       }
       if (work?.deliver && (run.steers?.some(item => item.delivery === 'pending' && !work.steered.has(item.id))
-        || work.restartWaiting && run.status !== 'approval')) work.deliver()
+        || work.restartWaiting && !waitsForUser(snapshot, run.id))) work.deliver()
     }
   }
 
@@ -303,11 +310,13 @@ export class AcpRunService {
    * message goes into the turn, and `idleBehavior: promptRequired` keeps each turn in the hands of Megachat: an adapter
    * then starts no turn of its own. When the turn ended first, the message waits for the end of the prompt, and the run
    * gets a follow-up. A fallback after the end of the prompt is a follow-up too. Each other case is the fallback: a cancel of the turn, then a continuation with the message.
-   * A cancel also ends a permission request that waits for the user, so the fallback waits for the answer.
+   * A cancel also ends a permission request that waits for the user, so the fallback waits until the user answered each
+   * request of the run.
    */
   async sendSteers(runId, generation, work, { ctx, sessionId, steering }) {
     for (;;) {
-      const run = (await this.state.snapshot()).runs[runId]
+      const snapshot = await this.state.snapshot()
+      const run = snapshot.runs[runId]
       if (work.ended || run.generation !== generation || run.steerRestart || run.cancelRequested || terminalStates.has(run.status)) return
       const item = run.steers?.find(value => value.delivery === 'pending' && !work.steered.has(value.id))
       if (item && steering && item.mode === 'queue') {
@@ -324,7 +333,7 @@ export class AcpRunService {
       }
       if (item) work.steered.set(item.id, { state: 'fallback' })
       if (![...work.steered.values()].some(entry => entry.state === 'fallback')) return
-      work.restartWaiting = run.status === 'approval'
+      work.restartWaiting = waitsForUser(snapshot, runId)
       if (work.restartWaiting) return
       if (await this.state.restartForSteer(runId, generation)) work.cancel()
       return
