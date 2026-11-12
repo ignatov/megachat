@@ -3,13 +3,14 @@
 // children, and a scripted ACP client that sends what Air sends. Each scenario has its own temporary state home and its
 // own throwaway projects. The run costs real money. See the section about the live smoke run in `README.md`.
 //
-// Usage: node test/live/smoke.mjs [<scenario>...]
+// Usage: node test/live/smoke.mjs [<scenario>[:<item>,<item>...]...]
 // The scenarios are chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw,
-// waiting and failures. Without a name, all of them run.
-import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+// waiting, failures and processes. Without a name, all of them run. The items after a colon select the items of the
+// scenarios failures and processes by their numbers, for example `failures:14.3b,14.4c`.
+import { execFile, spawn } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
 import { chmod, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
@@ -20,13 +21,24 @@ import {
 const { terminalStates } = await import(join(LEASE, 'src', 'MegachatState.mjs'))
 const { message } = await import(join(LEASE, 'src', 'messages.mjs'))
 const SCENARIOS = ['chat', 'suggest', 'rules', 'permissions', 'tasks', 'steer', 'others', 'workday', 'restart', 'twotools',
-  'withdraw', 'waiting', 'failures']
-const selected = process.argv.slice(2).length ? process.argv.slice(2) : SCENARIOS
+  'withdraw', 'waiting', 'failures', 'processes']
+// The items that an argument selects, by scenario. A scenario without an entry runs each of its items.
+const only = {}
+const selected = process.argv.slice(2).length ? process.argv.slice(2).map(argument => {
+  const [name, items] = argument.split(':')
+  if (items) only[name] = new Set(items.split(','))
+  return name
+}) : SCENARIOS
 for (const name of selected) if (!SCENARIOS.includes(name)) throw new Error(`Unknown scenario ${name}`)
+/** True when the run must do the item [item] of [scenario]. The number of the item is its first word. */
+const wanted = (scenario, item) => !only[scenario] || only[scenario].has(item.split(' ')[0])
 
 await loadSecrets()
 const root = await makeRoot()
 const homes = []
+// Each process that a child run of this smoke run started and that the run watches. At the end, each one that still
+// runs with the same command line gets SIGKILL.
+const leftovers = []
 const results = []
 const say = text => process.stdout.write(`${redact(text)}\n`)
 say(`The files of this run are in ${root}.`)
@@ -127,6 +139,9 @@ async function childLog(home, runId) {
   }
   return found
 }
+/** The lines of the daemon log of [home] about a signal that a supervisor refused (`log.child.refused`). */
+const refusals = async home => ((await readText(join(home, 'daemon', 'daemon.log'))) ?? '').split('\n')
+  .filter(line => !line.startsWith('  | ') && line.includes('sent no signal to the PID')).map(redact)
 /** True when [lines] of the log show the answer or the error output of an agent: only a failed run shows them. */
 const showsErrorOutput = lines => lines.some(line => /wrote this error output|wrote no error output|answered the request/.test(line))
 /** True when the error of a run names an exit code, a signal or the error output of the agent. */
@@ -432,7 +447,8 @@ async function tasks() {
       end: row.endState ?? null, ended: iso(row.endedAt) })),
     transcriptOfA: { mode: transcriptA.mode, directoryMode: transcriptA.directoryMode, bytes: transcriptA.bytes, toolLines: transcriptA.tools,
       endedLine: finalTranscriptA.ended, leaks: transcriptA.leaks, toolLine: redact(toolLine), excerpt: excerpt(finalTranscriptA.text ?? '', 1500) },
-    stops: { running: runningStop, runningEnd: runningEnd.endState, runningMs: runningEnd.endedAt - runningStopAt, queued: queuedStop,
+    stops: { running: runningStop, runningEnd: runningEnd.endState, runningMs: runningEnd.endedAt - runningStopAt,
+      runningRunEndMs: run('A').finishedAt - runningStopAt, queued: queuedStop,
       queuedEnd: queuedEnd.endState, queuedMs: queuedEnd.endedAt - queuedStopAt, errors: { A: run('A').error ?? null, B2: run('B2').error ?? null },
       logLines: stoppedLogs, quietStop },
     statuses: Object.fromEntries(Object.keys(ids).map(key => [key, run(key).status])), startedAgain: later.length, files,
@@ -442,9 +458,14 @@ async function tasks() {
   const overlap = run('A').startedAt < run('B').finishedAt && run('B').startedAt < run('A').finishedAt
   const sameAfter = run('A2').startedAt >= run('A').finishedAt
   const insideAfter = run('sub').startedAt >= run('A').finishedAt && run('sub').startedAt >= Math.min(run('A2').finishedAt, Infinity)
-  record('6 Parallel children', overlap && sameAfter && insideAfter ? 'pass' : 'fail', { times, overlap, sameDirectoryAfter: sameAfter, insideDirectoryAfter: insideAfter })
+  // A stopped run keeps its place in its directory until its supervisor exited, at most 6 seconds after its end.
+  const placeHeldMs = run('A2').startedAt - run('A').finishedAt
+  record('6 Parallel children', overlap && sameAfter && insideAfter && placeHeldMs <= PLACE_MS ? 'pass' : 'fail', { times, overlap,
+    sameDirectoryAfter: sameAfter, insideDirectoryAfter: insideAfter, placeHeldMs })
 }
 const keyOf = (ids, value) => Object.entries(ids).find(([, id]) => id === value)?.[0] ?? '<run>'
+/** The longest time that a run keeps its place in its directory after its end: 6 seconds and a margin for the start. */
+const PLACE_MS = 7000
 
 // Item 7: a message of the user reaches a running child through agents_steer.
 async function steer() {
@@ -553,9 +574,18 @@ async function restart() {
   if (!firstId) { record('10 Restart', 'fail', { reason: 'The main agent did not start the task.' }); return }
   await waitForTool(context.home, view, firstId, 'sleep')
   await delay(5000)
+  // The processes of the run and the daemon at the stop. A stop of the daemon keeps the shell of the run, as before.
+  const tree = await runTree(context.home, firstId)
+  const daemonProcess = { pid: await daemonPid(context.home), ppid: null, command: `${process.execPath} ${join(LEASE, 'src', 'main.mjs')} daemon ${context.home}` }
+  leftovers.push(...tree)
+  const watcher = watch([daemonProcess, ...tree])
+  await watcher.ready
   const stoppedAt = Date.now()
   const stop = await stopDaemon(context.home, context.env)
   const stopMs = Date.now() - stoppedAt
+  await delay(3000)
+  await watcher.stop()
+  const ends = endOrder([daemonProcess, ...tree], watcher, stoppedAt)
   const clientExit = await Promise.race([view.exited, delay(15000).then(() => 'still running')])
   const beforeText = (await transcript(context.home, firstId)).text ?? ''
   view = await connect(context, [project], { name: 'view after restart', sessionId })
@@ -572,7 +602,7 @@ async function restart() {
   await view.close()
   await stopDaemon(context.home, context.env)
   const ok = stop.stopped && first?.status === 'resumed' && next?.status === 'completed' && file?.trim() === 'r' && quietStop
-  record('10 Restart', ok ? 'pass' : 'fail', { daemonStopped: stop.stopped, stoppedAt: iso(stoppedAt), stopMs, clientExit,
+  record('10 Restart', ok ? 'pass' : 'fail', { daemonStopped: stop.stopped, stoppedAt: iso(stoppedAt), stopMs, clientExit, ends,
     first: { status: first?.status, finished: iso(first?.finishedAt), error: redact(first?.error ?? ''), resumedBy: Boolean(first?.resumedBy),
       logLines: firstLog, quietStop },
     continuation: next ? { status: next.status, started: iso(next.startedAt), finished: iso(next.finishedAt), sameSession: next.providerSessionId === first.providerSessionId } : null,
@@ -789,9 +819,55 @@ async function killChild(context, view, runId, target) {
   if (!victim) throw new Error(`No single Claude Code process under the adapter of the run ${runId}`)
   // The PID can only belong to this run when its command line did not change since the list.
   if (await commandOf(victim.pid) !== victim.command) throw new Error(`The process ${victim.pid} changed`)
+  leftovers.push(agent, ...tree)
   process.kill(victim.pid, 'SIGKILL')
-  return { killedAt: Date.now(), target, victim: shortCommand(victim.command), tree: [agent, ...tree] }
+  return { killedAt: Date.now(), target, victim: shortCommand(victim.command), tree: [agent, ...tree], watch: watch([agent, ...tree]) }
 }
+
+/**
+ * Each process of [items] that still runs with the same first line of its command line. One `ps` reads all of them.
+ */
+async function running(items) {
+  if (!items.length) return []
+  // `ps -p` exits with 1 when no PID of the list runs. Its output then is empty.
+  const output = await execute('ps', ['-ww', '-o', 'pid=,command=', '-p', items.map(item => item.pid).join(',')])
+    .then(result => result.stdout, error => error.stdout ?? '')
+  const now = new Map(output.split('\n').map(line => /^\s*(\d+) (.*)$/.exec(line)).filter(Boolean)
+    .map(([, pid, command]) => [Number(pid), command.trimEnd()]))
+  return items.filter(item => now.get(item.pid) === item.command)
+}
+
+/**
+ * Looks every 50 ms which processes of [tree] still run, until each one ended or `stop` is called. `seen` gives the
+ * last time when each one ran, and `ends` the first time when it no longer ran. `ready` resolves after the first look.
+ */
+function watch(tree) {
+  const seen = new Map()
+  const ends = new Map()
+  let stopped = false
+  let looked
+  const ready = new Promise(resolve => { looked = resolve })
+  const done = (async () => {
+    while (!stopped && ends.size < tree.length) {
+      const at = Date.now()
+      const live = new Set((await running(tree.filter(item => !ends.has(item.pid)))).map(item => item.pid))
+      for (const item of tree) {
+        if (ends.has(item.pid)) continue
+        if (live.has(item.pid)) seen.set(item.pid, at)
+        else ends.set(item.pid, Date.now())
+      }
+      looked()
+      await delay(50)
+    }
+    looked()
+  })()
+  return { seen, ends, ready, stop: async () => { stopped = true; await done } }
+}
+
+/** The processes of [tree] in the order of their ends, each with its times in ms after [from]. */
+const endOrder = (tree, { seen, ends }, from) => tree.map(item => ({ pid: item.pid, command: shortCommand(item.command).slice(0, 120),
+  lastSeenMs: seen.has(item.pid) ? seen.get(item.pid) - from : null, endedMs: ends.has(item.pid) ? ends.get(item.pid) - from : null }))
+  .sort((a, b) => (a.endedMs ?? Infinity) - (b.endedMs ?? Infinity))
 
 /**
  * The processes of [tree] that still run with the same command line 3 seconds after the end of their run. Each one gets
@@ -824,6 +900,7 @@ async function settled(home, count, timeoutMs) {
  * each run that the case made. [check] gives true when the case passes.
  */
 async function failureCase(context, view, { item, title, prompt, during, check }) {
+  if (!wanted('failures', item)) return undefined
   const count = runsOf(await snapshot(context.home)).length
   const step = await turn(context, view, prompt)
   let action
@@ -833,9 +910,15 @@ async function failureCase(context, view, { item, title, prompt, during, check }
     await waitState(context.home, value => terminalStates.has(value.runs[runId]?.status), 120000, `the end of the run ${title}`)
     await delay(3000)
     action.left = await survivors(action.tree)
+    await action.watch?.stop()
   }
   const state = await settled(context.home, count, 600000)
   const made = runsOf(state).slice(count)
+  // The ends of the processes of the first run, against the start of its continuation in the same directory.
+  const continuation = made.find(run => run.resumeOf === made[0]?.id)
+  const order = action?.watch ? endOrder(action.tree, action.watch, action.killedAt) : null
+  const beforeContinuation = order && continuation?.startedAt
+    ? order.every(entry => entry.lastSeenMs === null || entry.lastSeenMs < continuation.startedAt - action.killedAt) : null
   const runs = await Promise.all(made.map(async run => {
     const facts = await transcript(context.home, run.id)
     const log = await childLog(context.home, run.id)
@@ -848,7 +931,9 @@ async function failureCase(context, view, { item, title, prompt, during, check }
   }))
   const answer = replies(view.updates.slice(step.from)).map(entry => entry.text).join('\n---\n')
   const logInfo = await stat(join(context.home, 'daemon', 'daemon.log'))
-  const evidence = { action: action ? { target: action.target, victim: action.victim, processes: action.tree.length } : null,
+  const evidence = { action: action ? { target: action.target, victim: action.victim, processes: action.tree.length,
+    ends: order, continuationStartedMs: continuation?.startedAt ? continuation.startedAt - action.killedAt : null, beforeContinuation,
+    refused: await refusals(context.home) } : null,
     survivors: action?.left ?? [], runs, answer: redact(answer), logMode: (logInfo.mode & 0o777).toString(8), leaksInHome: await scanLeaks(context.home, context.log) }
   const verdict = runs.length > 0 ? check(made, runs, evidence) : false
   const safe = evidence.logMode === '600' && !evidence.leaksInHome.length && runs.every(run => !run.errorLeaks && !run.transcript.leaks)
@@ -887,9 +972,12 @@ async function failures() {
   await failureCase(context, view, { item: '14.3 Agent process killed during the task', title: 'killed agent',
     prompt: failurePrompt('Claude', kill, 'killed agent', killTask('agent.txt')), during: runId => killChild(context, view, runId, 'agent'),
     check: afterPrompt(new RegExp(`^${killedAgent.replace(/[.,/]/g, '\\$&')}$`)) })
+  // The adapter fails the prompt while the daemon runs, so the supervisor ends each process of the run, also the shell of
+  // the Bash tool in its own session. Nothing of the run runs when the continuation starts in the same directory.
   await failureCase(context, view, { item: '14.3b Claude Code process killed during the task', title: 'killed claude',
     prompt: failurePrompt('Claude', kill, 'killed claude', killTask('claude.txt')), during: runId => killChild(context, view, runId, 'claude'),
-    check: afterPrompt(/^The agent (answered session\/prompt with the error|process ended with)/) })
+    check: (made, runs, evidence) => afterPrompt(/^The agent (answered session\/prompt with the error|process ended with)/)(made, runs)
+      && !evidence.survivors.length && evidence.action.beforeContinuation === true && !evidence.action.refused.length })
   await view.close()
   await stopDaemon(context.home, context.env)
 
@@ -911,6 +999,7 @@ async function failures() {
       { command: process.execPath, args: ['-e', 'process.stderr.write("Error: the agent cannot open its license file /opt/agent/license.\\n"); process.exit(3)'] }],
   ]
   for (const [item, title, command] of starts) {
+    if (!wanted('failures', item)) continue
     const name = `failures-${title.replace(' ', '-')}`
     const project = await makeProject(root, name)
     const start = await setup(name, { 'children.permissionMode': 'allowEdits' }, { MEGACHAT_CLAUDE_ACP: JSON.stringify(command) })
@@ -925,6 +1014,262 @@ async function failures() {
     await client.close()
     await stopDaemon(start.home, start.env)
   }
+}
+
+// Item 15: the processes of a Claude child run at its end (the capability `child-processes`). While the daemon runs, a
+// stop of a run ends each process that the run started, also the shell of the Bash tool in its own session. A completed
+// run keeps a process that its task left. A child can restart the daemon from its own shell. Each case lists the
+// processes of the run, the order of their ends, and the processes that run 3 seconds after the end of the run. A
+// process of this smoke run outside the run must still run after the end of the run, and no supervisor may refuse a
+// signal (`log.child.refused`).
+const LEFT_MS = 3000
+/** The longest time from the end of a run to the exit of its supervisor: 6 seconds and a margin for the reads. */
+const SUPERVISOR_MS = 6500
+const TEMPORARY = realpathSync(tmpdir())
+
+/** The supervisor of the run [runId] and each process under it. The command line must be the one of a supervisor. */
+async function runTree(home, runId) {
+  const pid = (await snapshot(home)).runs[runId]?.pid
+  const list = await processes()
+  const supervisor = list.find(item => item.pid === pid)
+  if (!pid || !supervisor?.command.includes(join(LEASE, 'src', 'child-supervisor.mjs'))) throw new Error(`The PID of the run ${runId} is not its supervisor`)
+  return [supervisor, ...below(list, pid)]
+}
+
+/** The process whose PID a command of the child wrote to [file], when that PID runs [command] now. */
+async function pidFrom(file, command) {
+  const pid = Number((await readText(file))?.trim())
+  if (!Number.isSafeInteger(pid) || pid <= 1) return null
+  return await commandOf(pid) === command ? { pid, ppid: null, command } : null
+}
+
+/** A process of this smoke run outside each child run. The end of a run must not end it. */
+function outsider(seconds) {
+  const child = spawn('/bin/sleep', [String(seconds)], { detached: true, stdio: 'ignore' })
+  child.unref()
+  const item = { pid: child.pid, ppid: process.pid, command: `/bin/sleep ${seconds}` }
+  leftovers.push(item)
+  return item
+}
+
+/** A Stop of the row of the run, as the Stop button of Air sends it. */
+const stopRow = view => async runId => {
+  const row = openRow(view, runId)
+  const at = Date.now()
+  const answer = await view.stopTask(row.asyncTaskId)
+  return { at, facts: { by: 'row', answer, answerMs: Date.now() - at } }
+}
+
+/**
+ * A cancel through the main agent with `agents_cancel`. The time of the stop is the first look, every 100 ms, that sees
+ * the request of the cancel in the state.
+ */
+const cancelBy = (context, view, title) => async runId => {
+  const sentAt = Date.now()
+  const pending = turn(context, view, `Cancel the task "${title}" now with the tool agents_cancel. Do not start a task. Answer in one sentence.`)
+  for (const end = Date.now() + STALL_MS; Date.now() < end; await delay(100)) {
+    if ((await snapshot(context.home)).runs[runId]?.cancelRequested) {
+      const at = Date.now()
+      return { at, answer: pending, facts: { by: 'agents_cancel', requestMs: at - sentAt } }
+    }
+  }
+  throw new Error(`The main agent did not cancel the run ${title}`)
+}
+
+/**
+ * One case of item 15: one task of a Claude child in [project]. When the tool call that holds [tool] runs, the case lists
+ * the processes of the run and the processes in the files of [extra], and then calls [stop]. Without [stop], the run ends
+ * by itself. Each process of the run that still runs after the check gets SIGKILL.
+ */
+async function processCase(context, view, { item, title, project, task, tool, stop, extra = [] }) {
+  if (!wanted('processes', item)) return undefined
+  const count = runsOf(await snapshot(context.home)).length
+  await turn(context, view, prompts.one(project, title, task))
+  const runId = await view.waitFor(async () => byTitle(await snapshot(context.home), title)[0]?.id, 60000, `the run ${title}`)
+  await waitForTool(context.home, view, runId, tool)
+  // The supervisor reads the process table each second, so its record has the processes of the tool call.
+  await delay(3000)
+  const tree = await runTree(context.home, runId)
+  for (const [file, command] of extra) {
+    const found = await pidFrom(join(project, file), command)
+    if (found && !tree.some(entry => entry.pid === found.pid)) tree.push(found)
+  }
+  leftovers.push(...tree)
+  const other = outsider(900)
+  const refusedBefore = (await refusals(context.home)).length
+  const watcher = watch(tree)
+  // The first look shows each process of the run before the stop.
+  await watcher.ready
+  const stopped = stop ? await stop(runId) : {}
+  const ended = await waitState(context.home, value => terminalStates.has(value.runs[runId]?.status) ? value.runs[runId] : undefined,
+    240000, `the end of the run ${title}`)
+  await view.waitFor(() => watcher.ends.has(tree[0].pid) || undefined, 15000, 'the exit of the supervisor').catch(() => {})
+  await delay(Math.max(0, ended.finishedAt + LEFT_MS - Date.now()))
+  const left = await running(tree)
+  await watcher.stop()
+  const outsiderRuns = (await running([other])).length === 1
+  await survivors([...left, other])
+  const refused = (await refusals(context.home)).slice(refusedBefore)
+  const answer = stopped.answer ? await stopped.answer : null
+  await waitState(context.home, quiet(count + 1), 300000, `the report of the run ${title}`).catch(() => {})
+  // The row that ended last. A row of the phase approval ends when its permission request ends.
+  const rowEnd = rows(view.updates).filter(row => row.asyncTaskId.startsWith(`${runId}:`) && row.endState)
+    .sort((a, b) => a.endedAt - b.endedAt).at(-1)
+  const from = stopped.at ?? ended.finishedAt
+  const exit = watcher.ends.get(tree[0].pid)
+  return { item, status: ended.status, error: redact(ended.error ?? ''), stop: stopped.facts ?? null,
+    processes: tree.map(entry => ({ pid: entry.pid, ppid: entry.ppid, command: shortCommand(entry.command).slice(0, 120) })),
+    ends: endOrder(tree, watcher, from), left: left.map(entry => shortCommand(entry.command)),
+    ms: { from: stop ? 'the stop' : 'the end of the run', toRowEnd: rowEnd ? rowEnd.endedAt - from : null, toRunEnd: ended.finishedAt - from,
+      toSupervisorExit: exit ? exit - from : null, supervisorAfterRunEnd: exit ? exit - ended.finishedAt : null },
+    outsiderRuns, refused, answer: answer ? excerpt(replies(answer.updates).map(entry => entry.text).join(''), 300) : null }
+}
+
+const isShell = entry => /\/(z|ba)?sh /.test(entry.command)
+/** True when a stopped run had a shell and [command], and nothing of it ran after the stop. */
+const stopEnded = (evidence, command) => evidence.status === 'cancelled' && evidence.processes.some(isShell) && seenFirst(evidence)
+  && evidence.processes.some(entry => entry.command === command) && !evidence.left.length && quietEnd(evidence)
+/** True when the first look of the watch saw each process of the run. */
+const seenFirst = evidence => evidence.ends.every(entry => entry.lastSeenMs !== null)
+const quietEnd = evidence => evidence.ms.supervisorAfterRunEnd !== null && evidence.ms.supervisorAfterRunEnd <= SUPERVISOR_MS
+  && evidence.outsiderRuns && !evidence.refused.length
+
+const quote = value => `'${String(value).replaceAll("'", `'\\''`)}'`
+/**
+ * The script that a child runs to restart the daemon of [home]. It refuses each home that is not a home of this smoke run.
+ * The variant [dry] only shows the commands. [env] is the environment of the daemon.
+ */
+function restartScript({ project, home, env, dry }) {
+  const variables = Object.entries(env).map(([name, value]) => `${name}=${quote(value)}`).join(' ')
+  return `#!/bin/sh
+# The live smoke run wrote this script. It restarts the daemon of one temporary home of the run.
+trap '' HUP
+DIR=${quote(project)}
+ROOT=${quote(root)}
+HOME_DIR=${quote(home)}
+NODE=${quote(process.execPath)}
+MAIN=${quote(join(LEASE, 'src', 'main.mjs'))}
+${dry ? '' : 'exec >> "$DIR/restart.log" 2>&1'}
+case "$ROOT" in ${quote(TEMPORARY)}/megachat-live-*) ;; *) echo "Refused: the root of the run is not in the temporary directory."; exit 2 ;; esac
+case "$HOME_DIR" in "$ROOT"/home-*) ;; *) echo "Refused: the home is not below the root of the run."; exit 2 ;; esac
+[ -f "$HOME_DIR/settings.json" ] || { echo "Refused: the home has no settings.json."; exit 2; }
+[ -x "$NODE" ] && [ -f "$MAIN" ] || { echo "Refused: node or main.mjs is missing."; exit 2; }
+if [ -e "$DIR/restarted.txt" ]; then echo "The daemon restarted before. Nothing to do."; exit 0; fi
+daemon() { ${dry ? 'echo "would run:"' : `env -i ${variables}`} "$NODE" "$MAIN" "$1" "$HOME_DIR"; }
+daemon stop || { echo "The stop failed."; exit 1; }
+sleep 1
+daemon start || { echo "The start failed."; exit 1; }
+${dry ? 'echo "would write: $DIR/restarted.txt"' : 'date > "$DIR/restarted.txt"; echo "The daemon restarted."'}
+`
+}
+
+const runOf = (sh, file) => execute(sh, [file]).then(result => ({ code: 0, output: result.stdout + result.stderr }),
+  error => ({ code: error.code, output: `${error.stdout ?? ''}${error.stderr ?? ''}` }))
+/** The PID of the daemon of [home] from its connection file. Only the PID leaves this function. */
+async function daemonPid(home) {
+  try { return JSON.parse(await readFile(join(home, 'daemon', 'connection.json'), 'utf8')).pid ?? null }
+  catch { return null }
+}
+/** The PIDs of each Megachat daemon on the machine that does not run from this checkout. Read only. */
+const otherDaemons = async () => (await processes()).filter(entry => /\.m?js daemon( |$)/.test(entry.command) && !entry.command.includes(LEASE))
+  .map(entry => entry.pid).sort((a, b) => a - b)
+// True when the run must stop: a daemon that does not belong to this run changed.
+let abort = false
+
+/**
+ * Item 15.5: a child runs a script that stops and starts the daemon of its home. A stop of the daemon keeps the
+ * processes of its runs, so the shell of the script lives on, the start runs, and the run gets its continuation. A dry
+ * run of the script shows each path first, and a variant with the shared home of the user must refuse.
+ */
+async function daemonRestartCase(context, view, project) {
+  const item = '15.5 A child restarts the daemon'
+  if (!wanted('processes', item)) return
+  const main = join(LEASE, 'src', 'main.mjs')
+  await writeFile(join(project, 'restart.sh'), restartScript({ project, home: context.home, env: context.env, dry: false }), { mode: 0o700 })
+  const dryFile = join(root, 'restart-dry.sh')
+  const wrongFile = join(root, 'restart-wrong.sh')
+  await writeFile(dryFile, restartScript({ project, home: context.home, env: {}, dry: true }), { mode: 0o700 })
+  await writeFile(wrongFile, restartScript({ project, home: join(homedir(), '.jetbrains', 'air', 'megachat'), env: {}, dry: true }), { mode: 0o700 })
+  const dry = await runOf('/bin/sh', dryFile)
+  const wrong = await runOf('/bin/sh', wrongFile)
+  const line = command => `would run: ${process.execPath} ${main} ${command} ${context.home}`
+  const dryOk = dry.code === 0 && dry.output.includes(line('stop')) && dry.output.includes(line('start')) && wrong.code === 2
+    && !wrong.output.includes('would run')
+  const lines = text => text.split('\n').filter(Boolean).map(shortCommand)
+  const dryFacts = { dry: { code: dry.code, output: lines(dry.output) }, sharedHome: { code: wrong.code, output: lines(wrong.output) } }
+  if (!dryOk) { record(item, 'fail', { reason: 'The dry run of the script did not show the right paths.', ...dryFacts }); return }
+  const othersBefore = await otherDaemons()
+  const oldPid = await daemonPid(context.home)
+  const count = runsOf(await snapshot(context.home)).length
+  await turn(context, view, prompts.one(project, 'daemon restart', 'Run the shell command `sh restart.sh` in this project one time. Do not run it again, and do nothing else.'))
+  const runId = await view.waitFor(async () => byTitle(await snapshot(context.home), 'daemon restart')[0]?.id, 60000, 'the run daemon restart')
+  const marker = await view.waitFor(() => existsSync(join(project, 'restarted.txt')) || undefined, 300000, 'the marker of the restart').catch(() => false)
+  const daemonCommand = `${process.execPath} ${main} daemon ${context.home}`
+  const newPid = marker ? await view.waitFor(async () => {
+    const pid = await daemonPid(context.home)
+    return pid && pid !== oldPid && await commandOf(pid) === daemonCommand ? pid : undefined
+  }, 30000, 'the new daemon').catch(() => null) : null
+  const othersAfter = await otherDaemons()
+  const sameOthers = othersBefore.join() === othersAfter.join()
+  const log = (await readText(join(project, 'restart.log'))) ?? ''
+  if (!sameOthers) {
+    abort = true
+    record(item, 'fail', { reason: 'A Megachat daemon outside this run changed. The run stops.', before: othersBefore.length, after: othersAfter.length })
+    return
+  }
+  await view.close()
+  const after = await connect(context, [project], { name: 'view after the restart by the child', sessionId: view.sessionId })
+  const state = await waitState(context.home, quiet(count + 2), 480000, 'the continued task').catch(() => snapshot(context.home))
+  const runs = byTitle(state, 'daemon restart')
+  const first = state.runs[runId]
+  const next = runs.find(entry => entry.resumeOf === runId)
+  const refused = await refusals(context.home)
+  const facts = await Promise.all(runs.map(entry => transcript(context.home, entry.id)))
+  await after.close()
+  const ok = Boolean(marker) && Boolean(newPid) && first?.status === 'resumed' && next?.status === 'completed' && !refused.length
+  record(item, ok ? 'pass' : 'fail', { ...dryFacts, marker: Boolean(marker), daemonAgain: Boolean(newPid), otherDaemons: othersAfter.length,
+    otherDaemonsUnchanged: sameOthers, scriptLog: lines(log),
+    first: { status: first?.status, error: redact(first?.error ?? '') },
+    continuation: next ? { status: next.status, output: excerpt(next.output ?? '', 300) } : null, runs: runs.length, refused,
+    transcripts: facts.map(entry => excerpt((entry.text ?? '').split('\n').slice(-6).join('\n'), 600)) })
+}
+
+async function runProcesses() {
+  const projects = {}
+  for (const name of ['row', 'cancel', 'background', 'completed', 'restart']) projects[name] = await makeProject(root, `processes-${name}`)
+  const context = await setup('processes', { 'children.permissionMode': 'allowEdits', 'children.daemonRestart': 'allow' })
+  const view = await connect(context, Object.values(projects))
+  const row = await processCase(context, view, { item: '15.1 Stop of a row during a shell command', title: 'row sleep', project: projects.row,
+    task: 'Run the shell command `sleep 120`. Then create the file row.txt with the text row.', tool: 'sleep', stop: stopRow(view) })
+  if (row) record(row.item, stopEnded(row, 'sleep 120') ? 'pass' : 'fail', row)
+  const cancel = await processCase(context, view, { item: '15.2 agents_cancel during a shell command', title: 'cancel sleep',
+    project: projects.cancel, task: 'Run the shell command `sleep 120`. Then create the file cancel.txt with the text cancel.', tool: 'sleep',
+    stop: cancelBy(context, view, 'cancel sleep') })
+  if (cancel) record(cancel.item, stopEnded(cancel, 'sleep 120') ? 'pass' : 'fail', cancel)
+  // The first command leaves a process at once, which the spec does not cover. The second one leaves a process while its
+  // shell still runs for 3 seconds, so the record has it.
+  const background = await processCase(context, view, { item: '15.3 Stop of a row with background commands', title: 'background sleep',
+    project: projects.background, task: 'Run these three shell commands, each one as its own Bash tool call, in this order: first `nohup sleep 303 > /dev/null 2>&1 & echo $! > fast.pid`, then `nohup sleep 313 > /dev/null 2>&1 & echo $! > slow.pid; sleep 3`, then `sleep 60`. After that, create the file bg.txt with the text bg.',
+    tool: 'sleep 60', stop: stopRow(view), extra: [['fast.pid', 'sleep 303'], ['slow.pid', 'sleep 313']] })
+  if (background) {
+    const state = command => !background.processes.some(entry => entry.command === command) ? 'not found'
+      : background.left.includes(command) ? 'survived' : 'ended'
+    background.observed = { leftAtOnce: state('sleep 303'), leftAfterRead: state('sleep 313') }
+    const ok = background.status === 'cancelled' && background.observed.leftAfterRead === 'ended' && seenFirst(background)
+      && !background.left.some(command => command !== 'sleep 303') && quietEnd(background)
+    record(background.item, ok ? 'pass' : 'fail', background)
+  }
+  const completed = await processCase(context, view, { item: '15.4 A completed run keeps a process of its task', title: 'keep sleep',
+    project: projects.completed, task: 'Run the shell command `nohup sleep 304 > /dev/null 2>&1 & echo $! > bg.pid; sleep 8`. Then create the file done.txt with the text done. Do nothing else.',
+    tool: 'sleep 304', extra: [['bg.pid', 'sleep 304']] })
+  if (completed) {
+    const ok = completed.status === 'completed' && completed.processes.some(entry => entry.command === 'sleep 304')
+      && completed.left.includes('sleep 304') && quietEnd(completed)
+    record(completed.item, ok ? 'pass' : 'fail', completed)
+  }
+  await daemonRestartCase(context, view, projects.restart)
+  await view.close()
+  await stopDaemon(context.home, context.env)
 }
 
 /** The files in [home] and the log of the client that hold a value or an address of Central. */
@@ -956,15 +1301,19 @@ async function spend() {
   return { usd: Number(usd.toFixed(4)), piUsd: Number(piUsd.toFixed(4)) }
 }
 
-const scenarios = { chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw, waiting, failures }
+const scenarios = { chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw, waiting, failures,
+  processes: runProcesses }
 try {
   for (const name of selected) {
+    if (abort) break
     say(`Scenario ${name} starts at ${new Date().toISOString().slice(11, 19)}.`)
     try { await scenarios[name]() }
     catch (error) { record(`scenario ${name}`, 'fail', { error: redact(error.stack ?? error.message) }) }
   }
 }
 finally {
+  const killed = await survivors(leftovers).catch(() => [])
+  if (killed.length) say(`The run ended ${killed.length} processes of its children that still ran: ${killed.join('; ')}`)
   for (const { home, env } of homes) await stopDaemon(home, env).catch(() => {})
   // Each file of the run: the homes, the projects, the logs of the clients and of the tap.
   const leaked = (await scanLeaks(assertTemporary(root))).map(path => path.replace(root, '<root>'))

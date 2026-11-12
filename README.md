@@ -652,10 +652,11 @@ that sends what Air sends. It checks the reply stream, the prompt suggestion, th
 permission mode and the model of a Claude child, the rows of the background tasks with their Stop and their transcript,
 the parallel children, the steering, a Codex and a pi child, the wait of a child result outside the working hours, a
 restart of the daemon during a child, a reply with two tool calls in three turns in a row, the withdrawal of the prompt
-suggestion at a change of the mode, the answer of the main agent about a task whose result waits, and the error of a
-child run that fails. The scenarios are `chat`, `suggest`, `rules`, `permissions`, `tasks`, `steer`, `others`,
-`workday`, `restart`, `twotools`, `withdraw`, `waiting` and `failures`. Without a name, all of them run, in about 50
-minutes.
+suggestion at a change of the mode, the answer of the main agent about a task whose result waits, the error of a
+child run that fails, and the end of the processes of a child run. The scenarios are `chat`, `suggest`, `rules`,
+`permissions`, `tasks`, `steer`, `others`, `workday`, `restart`, `twotools`, `withdraw`, `waiting`, `failures` and
+`processes`. Without a name, all of them run, in about 60 minutes. Numbers after a colon select the items of the
+scenarios `failures` and `processes`, for example `failures:14.3b,14.4c`.
 
 - The run uses the Central account of the machine and costs real money. One full run cost about 0.5 USD for the main
   agent and the pi children in the count of the daemon. The Claude and Codex accounts paid for about 25 small children,
@@ -669,9 +670,17 @@ minutes.
   session file of Claude Code of its own children for the model that they used.
 - The scenario `failures` sends SIGKILL to a process of its own child run. It finds the process by the PID in the
   state of its home and checks its command line first. 3 seconds after the end of that run, each process of the run
-  that still runs with the same command line also gets SIGKILL, and the report lists it. The scenario also starts
-  Claude children with agent commands that fail at their start, through `MEGACHAT_CLAUDE_ACP` and files in the
-  temporary directory.
+  that still runs with the same command line also gets SIGKILL, and the report lists it. After a kill of the Claude
+  Code process, no process of the run may run when the continuation starts. The scenario also starts Claude children
+  with agent commands that fail at their start, through `MEGACHAT_CLAUDE_ACP` and files in the temporary directory.
+- The scenario `processes` stops Claude children during a shell command, through the Stop of a row and through
+  `agents_cancel`, also with commands in the background, and it lets one child complete with a command in the
+  background. It lists the processes under the supervisor of the run and the PIDs that the commands of the child write
+  to files of the project, and it records the end of each one. It also starts one `sleep` of its own outside the runs,
+  which must still run after each end. 3 seconds after the end of a run, each process of the run that still runs with
+  the same command line gets SIGKILL. One child runs a script that stops and starts the daemon of its home. The script
+  holds the absolute paths, and it refuses each home outside the temporary directory of the run. A dry run with `echo`
+  in place of the two daemon commands checks the paths first.
 - The output gives one line for each item, and `report.json` in the temporary directory gives the evidence. A turn of
   the main agent without an answer after 4 minutes is a stall: the run keeps the evidence, starts the daemon again, and
   goes on. `npm test` does not run the live smoke run.
