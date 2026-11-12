@@ -340,7 +340,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   and session ID, also outside the listed directories, from the end of its log: the last `limit` entries (20 by
   default, at most 100) in the order of the log, and a cursor to the older page. `query` must select the entries in the
   session. A page must read at most about 8 MB, so a log of 600 MB opens without a read of the whole file. Each entry
-  must come in exactly one page, also an entry whose line crosses the limit of 8 MB of a page. Each text
+  must come in exactly one page, also an entry whose line crosses the limit of 8 MB of a page. A cursor past the end
+  of a log that became shorter must fail with the error of an invalid cursor, and a page that reads no line must give
+  no cursor, so a caller that follows the cursor does not loop. Each text
   must pass the secret filter and be cut to about 2 KB. Without the consent, the tool must fail with a text that says
   that the session logs are off. The tool `session_history` of the children must keep its limit to the listed
   directories and must not have `order`.

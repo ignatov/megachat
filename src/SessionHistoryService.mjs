@@ -217,8 +217,15 @@ export class SessionHistoryService {
     // The consent can go off during an await. Then the read gives nothing.
     requireCondition(this.index?.logs === logs, 'sessionsLogsOff')
     requireCondition(record?.read, 'missing')
-    // A cursor holds an offset in one file. Another file or a rotation makes the offset meaningless.
+    // A cursor holds an offset in one file. Another file, a rotation or a cut of the file to a size below the offset
+    // makes the offset meaningless.
     if (position) requireCondition(count(position.before) && position.path === record.path && position.ino === record.ino)
+    if (position) {
+      let size
+      try { ({ size } = await logs.fs.stat(record.path)) }
+      catch { requireCondition(false, 'missing') }
+      requireCondition(position.before <= size)
+    }
     let page
     try { page = await newestPage(logs.fs, logs.source(agent), record.path, { before: position?.before, limit, query }) }
     catch { requireCondition(false, 'missing') }

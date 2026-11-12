@@ -13,7 +13,7 @@ import { RunningAgents, SNAPSHOT_TTL_MS } from '../src/RunningAgents.mjs'
 import { SessionCatalog, TAIL_BYTES } from '../src/SessionCatalog.mjs'
 import { SessionHistoryService } from '../src/SessionHistoryService.mjs'
 import { SessionIndex } from '../src/SessionIndex.mjs'
-import { PAGE_SCAN_BYTES } from '../src/SessionTail.mjs'
+import { newestPage, PAGE_SCAN_BYTES } from '../src/SessionTail.mjs'
 import { sessionSources } from '../src/SessionSources.mjs'
 import { IDLE_MS, sessionStatus, STUCK_MS } from '../src/SessionStatus.mjs'
 
@@ -419,6 +419,25 @@ test('the pages of a read from the end give each entry exactly one time, also a 
   }
   assert.ok(pages >= 4, `${pages} pages`)
   assert.deepEqual(seen, Array.from({ length: 300 }, (_, index) => `n${index}`))
+})
+
+test('a cursor past the end of a log that became shorter gives the invalid-cursor error, not the same cursor again', async t => {
+  const home = await temporary(t)
+  const records = Array.from({ length: 40 }, (_, index) => ({ uuid: `s${index}`, ...claude.prompt(`s${index} ${'v'.repeat(50 * 1024)}`) }))
+  const path = await claudeLog(home, '/work/cut', 'cut', records)
+  const { catalog } = await catalogOf(t, home)
+  const sessions = new SessionHistoryService(fakeState(), {}, { logs: catalog })
+  const page = await sessions.readNewest({ agent: 'claude', sessionId: 'cut', limit: 5 })
+  assert.ok(page.nextCursor)
+  // The log is cut in place: the inode stays, and the cursor is past the new end.
+  const { ino } = await stat(path)
+  const lines = (await readFile(path, 'utf8')).split('\n')
+  await writeFile(path, `${lines.slice(0, 3).join('\n')}\n`)
+  assert.equal((await stat(path)).ino, ino)
+  await assert.rejects(sessions.readNewest({ agent: 'claude', sessionId: 'cut', cursor: page.nextCursor }), { code: 'invalid' })
+  // A read that gives no line, such as of a file that became shorter during the read, gives no cursor.
+  const empty = await newestPage(fsp, catalog.source('claude'), path, { before: 2000000, limit: 5 })
+  assert.deepEqual(empty, { entries: [], before: null })
 })
 
 test('Megachat writes to no provider file: each file keeps its size and mtime, and the code opens it read-only', async t => {

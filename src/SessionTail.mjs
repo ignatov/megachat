@@ -70,14 +70,16 @@ export const PAGE_SCAN_BYTES = 8 * 1024 * 1024
 /**
  * One page of the entries of a session log, read backwards from the byte offset [before] or from the end of the file.
  * It gives the last [limit] entries whose text, after the secret filter, holds [query], in the order of the log, and
- * `before`: the offset of the oldest line that the page read, or null at the start of the file. A page reads at most
- * about 8 MB, so a large log opens without a read of the whole file. Each text is cut to about 2 KB.
+ * `before`: the offset of the oldest line that the page read, or null at the start of the file or when the read gave no
+ * line. A page reads at most about 8 MB, so a large log opens without a read of the whole file. Each text is cut to
+ * about 2 KB.
  */
 export async function newestPage(fs, source, path, { before, limit, query = '' }) {
   const end = before ?? (await fs.stat(path)).size
   const needle = query.toLowerCase()
   const entries = []
-  let oldest = end
+  // A read that gives no line, such as of a file that became shorter, gives no cursor, so a caller does not loop.
+  let oldest = 0
   for await (const { line, start } of readBackward(fs, path, { end, budget: PAGE_SCAN_BYTES })) {
     oldest = start
     const entry = line ? parseLine(source, line, path)?.parsed.entry : undefined
