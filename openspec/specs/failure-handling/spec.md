@@ -6,35 +6,17 @@ Megachat keeps the state and the work of the user when an agent, a model, Centra
 ## Requirements
 
 ### Requirement: End of a turn after a lost wake-up
-A turn MUST end when the tool calls of its step ended, also when the scheduler of Pi Durable 1.5.0 loses the wake-up of the step that waits for them.
+A turn MUST end when the tool calls of its step ended, also when the end of the last tool task comes while the scheduler of Pi Durable plans a pass. Megachat MUST NOT write a task record of Pi Durable for this. Pi Durable 1.5.0 lost the wake-up of the step in this case (issue #25), and Pi Durable 1.5.1 has the fix.
 
 Tests: `test/scheduler-wake.test.mjs`
+
+#### Scenario: Two tool calls in one reply
+- **WHEN** the main agent starts two tasks with `agents_spawn` in one reply, and the end of each tool task comes 0 to 300 microtasks late
+- **THEN** each turn ends, the conversation has no current turn, and the next model request of the main agent has the two tool results
 
 #### Scenario: Three tool calls in one reply
-- **WHEN** the main agent starts three tasks with `agents_spawn` in one reply, and the end of each tool task comes 0 to 48 microtasks late
+- **WHEN** the main agent starts three tasks with `agents_spawn` in one reply, and the end of each tool task comes 0 to 300 microtasks late
 - **THEN** each turn ends, the conversation has no current turn, and the next model request of the main agent has the three tool results
-
-### Requirement: Guard for a lost wake-up of the scheduler
-After each commit that ends a task of Pi Durable with an owner task, the daemon MUST examine the owner in a commit of its own, one macrotask later. When the owner still waits and each task of its wait ended, that commit MUST write the record of the owner again, with no change, so the scheduler runs the step. Limits: the guard has no timer and no time limit of its own.
-
-Tests: `test/scheduler-wake.test.mjs`
-
-#### Scenario: A delay at which the scheduler loses the wake-up
-- **WHEN** the end of a tool task comes at a delay at which the scheduler of Pi Durable 1.5.0 keeps the step waiting without the guard
-- **THEN** the guard writes the record of the owner again, and the turn ends with the three tool results
-
-### Requirement: Writes of the guard
-The guard MUST write nothing for a step that the scheduler already took, so no work starts twice and no tool result is lost. The log of the daemon MUST have one line for each record that the guard wrote. It covers only a task that waits for the tasks that it owns, as each wait of the main agent and of a pi child does. It uses the internal `setTask` of the Pi Durable transaction, so a new version of Pi Durable needs a check of the guard.
-
-Tests: `test/scheduler-wake.test.mjs`
-
-#### Scenario: A step that the scheduler took
-- **WHEN** the end of a tool task comes at a delay at which the scheduler does not lose the wake-up
-- **THEN** the guard writes no record, and the log has no line of the guard
-
-#### Scenario: A record that the guard wrote
-- **WHEN** the guard writes the record of a task again
-- **THEN** the log has the line "The task <ID> of Pi Durable waited after the end of each task of its wait. Megachat wrote its record again, so the scheduler runs it."
 
 ### Requirement: Interrupted task after an agent exit
 An agent exit MUST mark its running task interrupted before it continues.

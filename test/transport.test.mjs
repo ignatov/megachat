@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Watch } from '@earendil-works/chord'
+import { Watch } from '@earendil-works/chord/watch'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { MegachatError, message } from '../src/messages.mjs'

@@ -43,5 +43,5 @@ The later work on Megachat, in the order of the work. Each item gives its reason
    one storage of Pi Durable: its README says that one process owns a storage at a time. A cache lifetime of its own
    for a child request needs a rewrite of the provider request, because Pi Durable reads the stream options of the
    harness without the conversation.
-9. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
+9. **The deletion of an old pi conversation.** Pi Durable 1.5.1 cannot delete or archive a conversation, so
    `conversation.sqlite` keeps each pi child after the prune drops its runs.

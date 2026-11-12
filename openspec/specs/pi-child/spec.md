@@ -30,7 +30,7 @@ Tests: `test/pi-child.test.mjs`
 ### Requirement: Model of a pi child
 A pi child MUST use the model of the setting `children.piModel`, `provider/model`, which the model registry MUST know. The default is `anthropic/claude-haiku-5-5`.
 
-The setting `cache.ttl` applies to the requests of a pi child too. Pi Durable 1.5.0 reads the stream options of the harness without the conversation, so a child cannot get a cache lifetime of its own without a rewrite of the provider request.
+The setting `cache.ttl` applies to the requests of a pi child too. Pi Durable 1.5.1 reads the stream options of the harness without the conversation, so a child cannot get a cache lifetime of its own without a rewrite of the provider request.
 
 Tests: `test/settings.test.mjs`
 
@@ -199,7 +199,7 @@ Tests: `test/pi-child.test.mjs`
 - **THEN** the history gives the two messages of the user and the two answers of the child in order
 
 ### Requirement: Conversation of a pi child after the prune
-Pi Durable 1.5.0 cannot delete or archive a conversation. So `conversation.sqlite` MUST keep the conversation of a pi child after the prune drops its last run.
+Pi Durable 1.5.1 cannot delete or archive a conversation. So `conversation.sqlite` MUST keep the conversation of a pi child after the prune drops its last run.
 
 #### Scenario: The last run goes
 - **WHEN** the prune drops the last run of a pi child

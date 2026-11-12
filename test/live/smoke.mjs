@@ -625,16 +625,8 @@ async function turnItems(home, text) {
   return items.slice(start + 1, end < 0 ? undefined : end)
 }
 const toolCalls = item => item.role === 'assistant' ? (item.content ?? []).filter(block => block.type === 'toolCall') : []
-/**
- * The lines of the daemon log of [home] that tell of a write of the guard against a lost wake-up of the scheduler. A
- * line of the error output of a failed child starts with `  | `, and it does not count.
- */
-const wakeWrites = async home => ((await readText(join(home, 'daemon', 'daemon.log'))) ?? '').split('\n')
-  .filter(line => !line.startsWith('  | ') && /wrote its record again/.test(line)).length
-
-// Item 11: one reply of the main agent with two tool calls, in three turns in a row. Each turn must end. Before the
-// guard of `src/SchedulerWake.mjs`, the step that waits for its tool calls could lose its wake-up, and the turn then
-// had no end.
+// Item 11: one reply of the main agent with two tool calls, in three turns in a row. Each turn must end. With Pi Durable
+// 1.5.0, the step that waits for its tool calls could lose its wake-up, and the turn then had no end (issue #25).
 async function twotools() {
   const project = await makeProject(root, 'twotools')
   const context = await setup('twotools', {})
@@ -649,13 +641,12 @@ async function twotools() {
       toolCallsByReply: calls, twoInOneReply: calls.some(names => names.includes('agents_list') && names.includes('agents_settings')),
       answer: excerpt(replies(step.updates).map(item => item.text).join(''), 300) })
   }
-  const guardWrites = await wakeWrites(context.home)
   await view.close()
   await stopDaemon(context.home, context.env)
   const ended = steps.every(step => !step.stalled && step.stopReason === 'end_turn')
   const parallel = steps.every(step => step.twoInOneReply)
   record('11 Two tool calls in one reply', ended && parallel ? 'pass' : 'fail', { everyTurnEnded: ended, twoCallsInEachTurn: parallel,
-    guardWrites, steps })
+    steps })
 }
 
 // Item 12: a change of reply.suggestions from ghost to reply withdraws the shown prompt suggestion, and a new attach gets
