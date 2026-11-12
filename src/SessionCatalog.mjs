@@ -103,14 +103,18 @@ export class SessionCatalog {
     return found
   }
 
+  /** True after `close()`: the consent went off, so the table reads no file and gives no record of a read. */
+  get closed() { return Boolean(this.lifetime?.signal.aborted) }
+
   /** Reads the file at [path] now when the table has no read of it. Gives its record or undefined. */
   async ensure(path) {
-    if (!this.records.get(path)?.read) await this.read(path)
-    return this.records.get(path)
+    if (!this.closed && !this.records.get(path)?.read) await this.read(path)
+    return this.closed ? undefined : this.records.get(path)
   }
 
   /** The session of a running process from a process file of its agent, such as Claude Code writes, or undefined. */
   async processSession(agent, pid, startedAt) {
+    if (this.closed) return undefined
     return this.source(agent)?.processSession?.(pid, startedAt, this.fs)
   }
 
@@ -184,9 +188,10 @@ export class SessionCatalog {
     await this.index.dropLog(path)
   }
 
-  /** Reads the new data of one file. Two reads of one file run one after the other. */
+  /** Reads the new data of one file. Two reads of one file run one after the other. After `close()`, it reads nothing. */
   async read(path, stat) {
     while (this.locks.has(path)) await this.locks.get(path).catch(() => {})
+    if (this.closed) return
     const work = this.#read(path, stat)
     this.locks.set(path, work)
     try { return await work }

@@ -333,6 +333,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - `incomplete` must name the first pass of the table while it reads the files of the last 24 hours, the count of the
   rows without a certain log, and the count of the logs that Megachat could not read.
 - Megachat must write to no provider file and open each one read-only.
+- When the consent goes off, a call of `agents_running` or of `agents_session_history` that runs must read no more
+  session file, and a call after the change must get no data of a log, also from a scan that started before it.
   [@test] ../test/session-logs.test.mjs
 - `agents_session_history` of the main agent with `order` `newest` must read a session of the live table by its agent
   and session ID, also outside the listed directories, from the end of its log: the last `limit` entries (20 by

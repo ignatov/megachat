@@ -48,15 +48,26 @@ export class RunningAgents {
 
   /**
    * The view of the last 5 seconds, or a new one. Two calls at the same time share one scan. A change of the consent
-   * makes a new view at once.
+   * makes a new view at once, also when a scan with the old live table runs.
    */
   async view() {
-    if (this.last && this.clock.now() - this.last.scannedAt < SNAPSHOT_TTL_MS && this.last.logs === Boolean(this.logs())) return this.last
-    this.scanning ??= this.scan().then(view => { this.last = view; return view }).finally(() => { this.scanning = undefined })
+    const catalog = this.logs()
+    if (this.last && this.clock.now() - this.last.scannedAt < SNAPSHOT_TTL_MS && this.last.logs === Boolean(catalog)) return this.last
+    if (!this.scanning || this.scanningLogs !== catalog) {
+      const scanning = this.scan(catalog).then(view => {
+        if (this.scanning === scanning) { this.last = view; this.scanning = undefined }
+        return view
+      }, error => {
+        if (this.scanning === scanning) this.scanning = undefined
+        throw error
+      })
+      this.scanning = scanning
+      this.scanningLogs = catalog
+    }
     return this.scanning
   }
 
-  async scan() {
+  async scan(catalog = this.logs()) {
     const scannedAt = this.clock.now()
     const incomplete = []
     if (!this.table.supported) return { scannedAt, rows: [], incomplete: [message('running.incomplete.platform', this.table.platform)], logs: false }
@@ -71,7 +82,6 @@ export class RunningAgents {
     for (const [pid, known] of this.directories) if (live.get(pid) !== known.startedAt) this.directories.delete(pid)
     for (const [pid, known] of this.busy) if (live.get(pid) !== known.startedAt) this.busy.delete(pid)
     for (const row of sessions) if (row.cpu >= ACTIVE_CPU_PERCENT) this.busy.set(row.pid, { startedAt: row.startedAt, at: scannedAt })
-    const catalog = this.logs()
     await this.#resolve(sessions, catalog)
     // Only an agent that keeps its log open gives a link by an open file. Another agent, such as Claude Code, can have a
     // .jsonl file open that is no log of its session now, and `lsof` does not run again for its process.

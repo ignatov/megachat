@@ -656,3 +656,47 @@ test('with the consent off, agents_running reads no file and names the logs in i
   assert.match(rules, /agents_session_history\(agent, sessionId, order="newest"\)/)
   assert.match(rules, /Never say that a session waits for a permission unless its status says so\./)
 })
+
+test('after the consent goes off, the live table reads no file, and a call in progress gives no log data to a later call', async t => {
+  const home = await temporary(t)
+  await claudeLog(home, '/work/app', 'claude-one', [claude.title(), claude.prompt(), claude.call()], { mtime: NOW - MINUTE })
+  const processes = join(home, '.claude', 'sessions')
+  await mkdir(processes, { recursive: true })
+  await writeFile(join(processes, '10.json'), JSON.stringify({ pid: 10, sessionId: 'claude-one', cwd: '/work/app', procStart: lstart(NOW - 2 * HOUR + 10000) }))
+  const fs = countingFs()
+  const { catalog } = await catalogOf(t, home, { fs })
+  const sessions = new SessionHistoryService(fakeState(), {}, { logs: catalog })
+  const consent = sessions.index
+  // A read from the end: the consent goes off while the page reads the file.
+  const open = fs.open
+  fs.open = async (...args) => { consent.logs = undefined; return open(...args) }
+  await assert.rejects(sessions.readNewest({ agent: 'claude', sessionId: 'claude-one' }), { message: message('error.sessionsLogsOff') })
+  fs.open = open
+  consent.logs = catalog
+
+  // A scan of agents_running: the consent goes off while the scan with the live table waits for lsof.
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const table = fakeTable([proc(10, 2, 'claude')], { 10: { cwd: '/work/app' } })
+  const resolve = table.resolve
+  let waiting = false
+  table.resolve = async pids => { waiting = true; await gate; return resolve(pids) }
+  const view = new RunningAgents(fakeState(), { table, clock: fakeClock(), daemonPid: 900, logs: () => consent.logs })
+  const before = view.query()
+  while (!waiting) await new Promise(resolve => setImmediate(resolve))
+  consent.logs = undefined
+  await catalog.close()
+  const after = view.query()
+  release()
+  await before
+  const later = await after
+  assert.deepEqual([later.sessions[0].sessionId, later.sessions[0].title, later.sessions[0].status], ['', '', null])
+  assert.deepEqual(later.incomplete, [message('running.incomplete.logs')])
+
+  // The closed table reads no file and gives nothing.
+  const added = await claudeLog(home, '/work/new', 'claude-new', [claude.prompt()], { mtime: NOW })
+  fs.calls.length = 0
+  assert.deepEqual([await catalog.ensure(added), await catalog.read(added), await catalog.processSession('claude', 10, NOW - 2 * HOUR + 10000)],
+    [undefined, undefined, undefined])
+  assert.deepEqual(fs.calls, [])
+})
