@@ -200,6 +200,8 @@ async function start() {
 /** Starts a daemon process in the background. `ended` gets its exit code when it ends. */
 async function spawnDaemon() {
   const output = await open(join(directory, 'daemon', 'daemon.log'), 'a', 0o600)
+  // The log can hold the filtered error output of a failed child run. The mode of the open applies only to a new file.
+  if (process.platform !== 'win32') await output.chmod(0o600)
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', ...(explicit ? [directory] : [])], {
     detached: true, stdio: ['ignore', output.fd, output.fd], env: { ...process.env, ...(explicit ? {} : { MEGACHAT_HOME: directory }) },
   })

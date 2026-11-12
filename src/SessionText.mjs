@@ -193,6 +193,87 @@ export function redactSecrets(text, known) {
   return result.replace(ASSIGNMENT, (match, name, value, offset, whole) => whole.startsWith(marker, offset + name.length) ? match : `${name}${marker}`)
 }
 
+/** The characters of the error output of a child run that the daemon keeps in its memory: twice the logged text. */
+export const ERROR_OUTPUT_KEPT = 8000
+/** The characters of the error output of a failed child run that go to the log of the daemon. */
+export const ERROR_OUTPUT_LOGGED = 4000
+/** The characters of each part of the reason in the error of a failed run. */
+export const REASON_PART_LIMIT = 300
+/** An ANSI escape sequence: a CSI sequence, an OSC sequence, or a sequence of two characters. */
+const ANSI_SEQUENCE = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g
+/** Each control character except the tab and the line feed. */
+const CONTROL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
+/** The words that mark a line of an error output that tells the reason of a failure. */
+const REASON_WORDS = /error|fail|denied|refused|invalid|unauthorized|forbidden|cannot|unable|exception/i
+
+/** The end of [text] with at most [limit] characters. The cut does not separate the two halves of a character. */
+export function textEnd(text, limit) {
+  if (text.length <= limit) return text
+  const kept = text.slice(-limit)
+  return /^[\uDC00-\uDFFF]/.test(kept) ? kept.slice(1) : kept
+}
+
+/** The start of [text] with at most [limit] characters. The cut does not separate the two halves of a character. */
+export function textStart(text, limit) {
+  if (text.length <= limit) return text
+  const kept = text.slice(0, limit)
+  return /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept
+}
+
+/**
+ * [text] without ANSI escape sequences and control characters, with a line feed for each line end. A terminal that
+ * shows the log then shows only the text.
+ */
+export function plainText(text) {
+  return text.replace(/\r\n?/g, '\n').replace(ANSI_SEQUENCE, '').replace(CONTROL_CHARACTER, '')
+}
+
+/**
+ * The error output of a child run as the log and the error of the run get it. [raw] is the end of the output that the
+ * daemon kept. [cutStart] tells that the daemon dropped the start of the output: the first word can then be the second
+ * half of a secret, so it goes. [open] tells that the output did not end: the next chunk can complete a secret, so the
+ * last word and the longest end that is the start of a known value go. Then the full filter of [redactSecrets] runs on
+ * the whole text, with the exact values of [known], an optional `KnownSecrets`. The output did not go to a provider, so
+ * the other patterns apply too. The cut to [limit] characters comes last, after the filter.
+ */
+export function errorOutputText(raw, { cutStart = false, open = false, known, limit = ERROR_OUTPUT_LOGGED } = {}) {
+  let text = raw
+  if (cutStart) {
+    const space = text.search(/\s/)
+    text = space < 0 ? '' : text.slice(space + 1)
+  }
+  if (open) {
+    let end = text.length
+    while (end > 0 && !/\s/.test(text[end - 1])) end--
+    text = text.slice(0, end)
+    const partial = known?.partialEnd(text) ?? 0
+    if (partial) text = text.slice(0, -partial)
+  }
+  return textEnd(redactSecrets(plainText(text), known), limit)
+}
+
+/**
+ * The line of [text] for the reason in the error of a failed run: the last line with one of [REASON_WORDS], else the
+ * last line that is not empty, at most [REASON_PART_LIMIT] characters. The last line of a Node.js crash names the
+ * version of Node.js, so the line that names the error goes first. A line that [shown] holds already does not count.
+ */
+export function reasonLine(text, shown = '') {
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line && !shown.includes(line))
+  const line = lines.findLast(item => REASON_WORDS.test(item)) ?? lines.at(-1)
+  return line === undefined ? '' : textStart(line, REASON_PART_LIMIT)
+}
+
+/**
+ * The text of an error answer of an agent: its message, then the `details` of its data, else the data as JSON text,
+ * through the full filter. Both adapters of ACP give an internal error the message "Internal error" and the data
+ * `{ "details": <the message of the error> }`, so the cause is in the data. [known] is an optional `KnownSecrets`.
+ */
+export function answerText(answer, known) {
+  const { message: text, data } = answer
+  const details = typeof data?.details === 'string' ? data.details : data === undefined || data === null ? '' : JSON.stringify(data)
+  return redactSecrets(plainText([typeof text === 'string' ? text : '', details].filter(Boolean).join(': ')), known)
+}
+
 /**
  * The text of an entry as the session index keeps it: without secrets, and cut to about 2 KB. `clipped` tells that the
  * index lost a part of the text. The filter reads twice the limit first, so a secret across the limit is not cut in

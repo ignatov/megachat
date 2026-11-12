@@ -44,7 +44,8 @@ async function fixture(t, values, configuration, options = {}) {
     return configuration ? configuration.childLaunch(agent) : { env: process.env }
   } },
     { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], childRules: cwd => service.childRules(cwd),
-      settings: cwd => service.settings.values(cwd), ...options })
+      // The fake agent stays alive after a refusal, as the adapters do, so the wait for its error output is short here.
+      settings: cwd => service.settings.values(cwd), errorOutputWaitMs: 100, ...options })
   await children.start()
   await service.resume()
   t.after(async () => { await children.close(); await service.close() })
@@ -240,16 +241,19 @@ test('each value of children.permissionMode sends its mode of Claude Code before
   assert.equal((await modes()).length, 3)
 })
 
-test('a permission mode that the agent refuses fails the run before the prompt, with no continuation', { timeout: 20000 }, async t => {
+test('a permission mode that the agent refuses fails the run before the prompt, with no continuation, and the log gets the answer', { timeout: 20000 }, async t => {
   const env = { ...process.env, FAKE_ACP_MODES: 'default,acceptEdits,plan' }
   const { cwd, turn, prompts, modes } = await fixture(t, { 'children.permissionMode': 'auto' }, { childLaunch: async () => ({ env }) })
-  t.mock.method(process.stderr, 'write', () => true)
+  const lines = []
+  t.mock.method(process.stderr, 'write', text => { lines.push(String(text)); return true })
   const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
   const runs = Object.values(state.runs)
   assert.equal(runs.length, 1)
   assert.equal(runs[0].status, 'interrupted')
+  // The fixed text of the refusal stays, with no reason. The log gets the answer of the agent.
   assert.equal(runs[0].error, message('error.childMode', 'auto'))
   assert.equal(runs[0].autoResume, false)
+  assert.ok(lines.join('').includes(message('log.child.answer', 'session/set_mode', runs[0].id, -32602, '"Invalid params: Mode auto is not available in this session"', 'none')), lines.join(''))
   assert.deepEqual(await modes(), ['auto before the prompt'])
   await assert.rejects(prompts(), { code: 'ENOENT' })
 })

@@ -13,7 +13,7 @@ import { terminalStates } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { PiRunService } from '../src/PiRunService.mjs'
-import { ChildTextFilter, HELD_TEXT_LIMIT, KnownSecrets, redactOwnSecrets } from '../src/SessionText.mjs'
+import { answerText, ChildTextFilter, errorOutputText, HELD_TEXT_LIMIT, KnownSecrets, redactOwnSecrets } from '../src/SessionText.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 import { fakeModels, MAIN } from './parallel-models.mjs'
 
@@ -88,9 +88,9 @@ test('a secret in two parts of a child text goes as a whole, and a filter of the
 /**
  * A service with the secrets of a Central configuration that the daemon read, the ACP run service of the fake agent
  * with the key and the base URL in the environment of each child, and the pi run service. [child] gives the replies of
- * a pi child.
+ * a pi child. [env] adds variables to the environment of each ACP child.
  */
-async function open(t, { child = [] } = {}) {
+async function open(t, { child = [], env = {} } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-child-secrets-')))
   t.after(() => rm(directory, { force: true, recursive: true, maxRetries: 5 }))
   const cwd = join(directory, 'project')
@@ -102,8 +102,8 @@ async function open(t, { child = [] } = {}) {
   await service.state.addWorkspace(cwd)
   const pool = new ChildPool()
   const pi = new PiRunService(service.state, service.harness, { agent: project => service.childAgent(project), pool })
-  const acp = new AcpRunService(service.state, { childLaunch: async () => ({ env: { ...process.env, ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: ADDRESS } }) },
-    { args: [FAKE_ACP], pool })
+  const acp = new AcpRunService(service.state, { childLaunch: async () => ({ env: { ...process.env, ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: ADDRESS, ...env } }) },
+    { args: [FAKE_ACP], pool, errorOutputWaitMs: 150 })
   await pi.start()
   await acp.start()
   await service.resume()
@@ -167,4 +167,49 @@ test('the output of a pi child and the error text of a run have no key of Centra
   const failed = await admit(service, { cwd, prompt: 'wait' })
   await service.state.transition(failed.id, ['admitted', 'launching', 'ready', 'dispatched', 'running'], { status: 'failed', error: `The child stopped at ${ADDRESS}/v1` })
   assert.equal((await service.state.snapshot()).runs[failed.id].error, `The child stopped at ${MARKER}/v1`)
+})
+
+test('the filter of the error output removes a secret in two chunks, a cut secret at the start and the start of a secret at an open end', () => {
+  const secrets = known()
+  // The whole text goes through the full filter: the known values, the key after /wire/ and the other patterns.
+  assert.equal(errorOutputText(`key=${KEY.slice(0, 10)}${KEY.slice(10)} ${ADDRESS}/v1 sk-abcdefghijklmnopqrstuvwxyz\n`, { known: secrets }),
+    `key=${MARKER} ${MARKER}/v1 ${MARKER}\n`)
+  // The start of the kept text falls in the known key: the first word goes.
+  const cut = errorOutputText(`${KEY.slice(20)} after the cut\n`, { cutStart: true, known: secrets })
+  assert.equal(cut, 'after the cut\n')
+  assert.equal(errorOutputText('one-long-word-without-space', { cutStart: true, known: secrets }), '')
+  // The output did not end: the last word and the start of a known value go.
+  const open = errorOutputText(`Error: the key=${KEY.slice(0, 10)}`, { open: true, known: secrets })
+  assert.equal(open, 'Error: the ')
+  // The cut to the limit comes after the filter, and it does not separate the two halves of a character.
+  assert.equal(errorOutputText(`😀${'a'.repeat(4000)}`, { limit: 4001 }), 'a'.repeat(4000))
+  assert.equal(answerText({ message: 'Internal error', data: { details: `Request to ${ADDRESS}/v1 failed` } }, secrets),
+    `Internal error: Request to ${MARKER}/v1 failed`)
+})
+
+test('the log and the error of a failed run hold no key of Central and no other secret of the error output or of the answer', { timeout: 20000 }, async t => {
+  const lines = []
+  t.mock.method(process.stderr, 'write', text => { lines.push(String(text)); return true })
+  const chunks = [`key=${KEY.slice(0, 10)}`, `${KEY.slice(10)} ${ADDRESS} sk-abcdefghijklmnopqrstuvwxyz\n`]
+  const { cwd, service } = await open(t, { env: { FAKE_ACP_NEW: 'exit', FAKE_ACP_STDERR: JSON.stringify(chunks) } })
+  const run = await admit(service, { cwd, prompt: 'hello' })
+  const failed = (await ended(service, run.id)).runs[run.id]
+  const log = lines.join('')
+  assert.ok(log.includes(`  | key=${MARKER} ${MARKER} ${MARKER}`), log)
+  assert.ok(failed.error.includes(`key=${MARKER} ${MARKER} ${MARKER}`), failed.error)
+  for (const text of [log, failed.error]) {
+    assert.ok(!text.includes(KEY.slice(0, 10)) && !text.includes(KEY.slice(10)) && !text.includes('/wire/') && !text.includes('sk-abc'))
+  }
+})
+
+test('the answer of the agent with the base URL of Central goes to the log and to the error of the run without the key', { timeout: 20000 }, async t => {
+  const lines = []
+  t.mock.method(process.stderr, 'write', text => { lines.push(String(text)); return true })
+  const { cwd, service } = await open(t, { env: { FAKE_ACP_NEW: 'internal', FAKE_ACP_DETAILS: `Request to ${ADDRESS}/v1 failed` } })
+  const run = await admit(service, { cwd, prompt: 'hello' })
+  const failed = (await ended(service, run.id)).runs[run.id]
+  const log = lines.join('')
+  assert.ok(log.includes(`Request to ${MARKER}/v1 failed`))
+  assert.ok(failed.error.includes(`Request to ${MARKER}/v1 failed`))
+  for (const text of [log, failed.error]) assert.ok(!text.includes(KEY) && !text.includes('/wire/'))
 })

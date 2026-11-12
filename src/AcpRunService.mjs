@@ -2,16 +2,19 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
-import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
+import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk'
 import { resolveSettings as resolveClaudeSettings } from '@anthropic-ai/claude-agent-sdk'
 import { waitForState } from './waitForState.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
-import { logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
+import { logChildText, logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
+import { answerText, ERROR_OUTPUT_KEPT, ERROR_OUTPUT_LOGGED, errorOutputText, plainText, REASON_PART_LIMIT, reasonLine,
+  redactSecrets, textEnd, textStart } from './SessionText.mjs'
 import { CLAUDE_PERMISSION_MODES, modelRef } from './Settings.mjs'
 
 /**
@@ -47,6 +50,27 @@ const withoutBypass = request => Array.isArray(request?.options)
 const STEER_METHOD = '_session/steering'
 /** The limit of the error output of a child agent, in MB. Above it, Megachat stops the run. */
 const MAX_STDERR_MB = 1
+/** The ACP code of an agent that asks for a login. */
+const AUTH_REQUIRED = RequestError.authRequired().code
+/** The characters of the message and of the data of an error answer that go to the log. */
+const ANSWER_MESSAGE_LIMIT = 1000
+const ANSWER_DATA_LIMIT = 2000
+
+/** The error answer of an agent in [error]: an error with an integer JSON-RPC code, or the cause of a refusal. */
+const answerOf = error => Number.isInteger(error?.code) ? error : Number.isInteger(error?.cause?.code) ? error.cause : undefined
+
+/**
+ * Keeps [part] of the error output in [output], at most `ERROR_OUTPUT_KEPT` characters. The filter runs only at the
+ * read, on the whole kept text, so a secret in two chunks goes as a whole.
+ */
+function keepErrorOutput(output, part) {
+  if (!part) return
+  output.text += part
+  if (output.text.length > ERROR_OUTPUT_KEPT) {
+    output.text = textEnd(output.text, ERROR_OUTPUT_KEPT)
+    output.cut = true
+  }
+}
 /** The updates that show work of the model, with the part of a step that each one streams. */
 const workParts = new Map([['agent_message_chunk', 'message'], ['agent_thought_chunk', 'thought'], ['tool_call', 'tool'],
   ['tool_call_update', 'tool'], ['plan', 'plan']])
@@ -105,7 +129,7 @@ export function steerBlock(items) {
 export class AcpRunService {
   constructor(state, configuration, {
     command, args, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, pool = new ChildPool(),
-    settings = () => ({}), resolveSettings = resolveClaudeSettings, transcripts,
+    settings = () => ({}), resolveSettings = resolveClaudeSettings, transcripts, errorOutputWaitMs = 2000,
   } = {}) {
     this.state = state
     this.configuration = configuration
@@ -118,6 +142,8 @@ export class AcpRunService {
     this.resolveSettings = resolveSettings
     // The transcripts of the runs (`ChildTranscripts`). A test without it writes none.
     this.transcripts = transcripts
+    // The longest wait for the end of the error output of a failed run. A test makes it short.
+    this.errorOutputWaitMs = errorOutputWaitMs
     this.active = new Map()
     this.stopping = false
     this.closing = false
@@ -181,6 +207,12 @@ export class AcpRunService {
     let connection
     let updates = Promise.resolve()
     let dispatched = false
+    // The request that the run waits for, so the log and the error of a failed run name it.
+    let request = methods.agent.initialize
+    // The end of the error output of the agent, for the log and the error of a failed run (see `keepErrorOutput`).
+    const errorOutput = { text: '', cut: false }
+    // Resolves when the agent process ended and its error output closed.
+    let closed
     // The text of the first limit that the run reached, or null.
     let limited = null
     let waitingPermissions = 0
@@ -206,15 +238,20 @@ export class AcpRunService {
         launch.command ?? process.execPath, ...launch.args], {
         cwd: launch.cwd ?? run.cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       })
+      closed = Promise.all([new Promise(resolve => { child.once('exit', resolve); child.once('error', resolve) }),
+        new Promise(resolve => child.stderr.once('close', resolve))])
       child.once('error', () => { child.stdout.destroy(); child.stdin.destroy() })
       child.once('exit', () => connection?.close())
       work.lifetime.signal.addEventListener('abort', () => this.kill(child), { once: true })
       work.cancel = () => this.kill(child)
       let stderrBytes = 0
+      const decoder = new StringDecoder('utf8')
       child.stderr.on('data', chunk => {
         stderrBytes += chunk.length
         if (stderrBytes > MAX_STDERR_MB * 1024 * 1024) limit(message('error.outputLimit', MAX_STDERR_MB))
+        keepErrorOutput(errorOutput, decoder.write(chunk))
       })
+      child.stderr.once('end', () => keepErrorOutput(errorOutput, decoder.end()))
       await this.state.transition(run.id, ['launching'], { pid: child.pid })
       timer = setTimeout(timeLimit, this.launch.deadlineMs)
       connection = client({ name: 'air-megachat' })
@@ -267,29 +304,38 @@ export class AcpRunService {
       let sessionId
       if (run.providerSessionId) {
         requireCondition(initialized.agentCapabilities?.loadSession, 'agentLoad')
+        request = methods.agent.session.load
         await ctx.request(methods.agent.session.load, { ...params, sessionId: run.providerSessionId })
         sessionId = run.providerSessionId
       }
       else {
+        request = methods.agent.session.new
         const session = await ctx.request(methods.agent.session.new, params)
         sessionId = session.sessionId
       }
       // A refusal of the adapter is an error answer with a JSON-RPC code. The run then fails and sends no prompt. A closed
       // connection is another error, and the run then gets a continuation as after a crash.
-      const refused = (code, value) => error => { throw Number.isInteger(error?.code) ? new MegachatError(code, value) : error }
+      // The refusal keeps the answer as its cause, so the log gets the answer, and the run keeps the fixed text.
+      const refused = (code, value) => error => {
+        throw Number.isInteger(error?.code) ? Object.assign(new MegachatError(code, value), { cause: error }) : error
+      }
       if (model) {
         // The adapter switches a session to `model` of the settings of Claude Code, also of `~/.claude/settings.json`,
         // after the start with the model of the options, and a load continues with the model of the transcript. With
         // `inherit`, that stays so. An explicit model of the setting goes in its own request. It comes before the mode,
         // because a change of the model can change the mode `auto`. The Codex adapter takes the same request. It refuses
         // a model that is not in the model list of Codex, and the next turn uses the model that it took.
+        request = methods.agent.session.setConfigOption
         await ctx.request(methods.agent.session.setConfigOption, { sessionId, configId: 'model', value: modelRef(model).modelId })
           .catch(refused(agent === 'codex' ? 'childCodexModel' : 'childModel', model))
       }
       // The adapter takes the start mode from `permissions.defaultMode` of each settings file of Claude Code, also of the
       // files of the user, whatever `settingSources` says, and a load continues in the mode of the transcript. It ignores
       // `permissionMode` in the options. So a mode of the setting goes in its own request before the prompt.
-      if (mode) await ctx.request(methods.agent.session.setMode, { sessionId, modeId: mode }).catch(refused('childMode', choice))
+      if (mode) {
+        request = methods.agent.session.setMode
+        await ctx.request(methods.agent.session.setMode, { sessionId, modeId: mode }).catch(refused('childMode', choice))
+      }
       await this.state.transition(run.id, ['launching'], { providerSessionId: sessionId, status: 'ready' })
       work.cancel = () => {
         ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => this.kill(child))
@@ -311,6 +357,7 @@ export class AcpRunService {
       const repository = agent === 'claude' ? await claudeChildRules(run.cwd).catch(() => undefined) : undefined
       const task = run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}`
       work.transcript?.prompt(task, added)
+      request = methods.agent.session.prompt
       const prompting = ctx.request(methods.agent.session.prompt, {
         sessionId, prompt: [
           ...(this.historyServer ? [{ type: 'text', text: message('history.instructions') }] : []),
@@ -347,13 +394,18 @@ export class AcpRunService {
       work.ended = true
       await work.delivering
       const current = (await this.state.snapshot()).runs[run.id]
-      // The state keeps a fixed text for the user. The log keeps where the run failed.
-      if (!this.closing && !limited && !current.cancelRequested && !current.steerRestart) logFailure('log.child', error, run.id)
+      const failed = !this.closing && !limited && !current.cancelRequested && !current.steerRestart
+      // The log keeps where the run failed. A failure of the agent adds its answer and the end of its error output.
+      if (failed) logFailure('log.child', error, run.id)
+      const answer = answerOf(error)
+      const reason = failed && child && (answer || !(error instanceof MegachatError))
+        ? await this.childFailure(run.id, child, closed, { answer, request, dispatched, errorOutput }) : undefined
       await this.state.transition(run.id, ['launching', 'ready', 'dispatched', 'running', 'approval'], {
         status: current.cancelRequested ? 'cancelled' : 'interrupted',
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message
-          : limited ?? message('error.interrupted'),
-        autoResume: !limited && !(error instanceof MegachatError),
+          : limited ?? reason ?? message('error.interrupted'),
+        // A login does not come back by itself, so a run that asks for one gets no continuation.
+        autoResume: !limited && !(error instanceof MegachatError) && answer?.code !== AUTH_REQUIRED,
         ...(this.closing ? { plannedStop: true } : {}),
       })
     }
@@ -364,6 +416,58 @@ export class AcpRunService {
       connection?.close()
       this.kill(child)
     }
+  }
+
+  /**
+   * Waits for the end of the error output of a failed run, writes the answer of the agent and the end of its error
+   * output to the log, and gives the text of the error of the run, or undefined when the agent neither answered with an
+   * error nor ended by itself. An adapter can write its error just after its answer, so the wait gives the agent
+   * [errorOutputWaitMs] to end. Then the agent stops, and its error output gets a quarter of that time more. Only a
+   * failure calls this wait: a cancel, a limit, a stop for a message of the user and a stop of the daemon do not.
+   */
+  async childFailure(runId, child, closed, { answer, request, dispatched, errorOutput }) {
+    const { byItself, ended } = await this.errorOutputEnd(child, closed)
+    const exit = !answer && byItself ? child.signalCode ? message('error.child.signal', child.signalCode)
+      : message('error.child.exitCode', child.exitCode) : undefined
+    if (!answer && !exit) return undefined
+    const known = this.state.secrets
+    const output = errorOutputText(errorOutput.text, { cutStart: errorOutput.cut, open: !ended, known })
+    let replied = ''
+    if (answer) {
+      const text = answerText({ message: answer.message }, known)
+      const data = answer.data === undefined ? 'none' : redactSecrets(plainText(JSON.stringify(answer.data)), known)
+      logChildText('log.child.answer', [request, runId, answer.code, JSON.stringify(textStart(text, ANSWER_MESSAGE_LIMIT)),
+        textStart(data, ANSWER_DATA_LIMIT)])
+      replied = answerText(answer, known)
+    }
+    if (output.trim()) logChildText('log.child.output', [runId, ERROR_OUTPUT_LOGGED], output)
+    else logChildText('log.child.noOutput', [runId])
+    const [first = '', ...rest] = replied.split('\n')
+    const reply = textStart(first.trim(), REASON_PART_LIMIT)
+    const line = reasonLine([...rest, output].join('\n'), reply)
+    return [
+      answer?.code === AUTH_REQUIRED ? message('error.child.login') : '',
+      answer ? message(dispatched ? 'error.child.answer.after' : 'error.child.answer.before', request, answer.code)
+        : message(dispatched ? 'error.child.exit.after' : 'error.child.exit.before', exit),
+      reply ? message('error.child.reply', reply) : '',
+      line ? message('error.child.line', line) : '',
+      replied || output.trim() ? message('error.child.log') : '',
+    ].filter(Boolean).join(' ')
+  }
+
+  /**
+   * Waits at most [errorOutputWaitMs] for the end of [child] and of its error output ([closed]), then stops the agent
+   * and waits at most a quarter of that time more. `byItself` tells that the agent ended in the first wait and that
+   * Megachat did not stop it. `ended` tells that the error output ended.
+   */
+  async errorOutputEnd(child, closed) {
+    const wait = ms => new Promise(resolve => {
+      const timer = setTimeout(resolve, ms, false)
+      closed.then(() => { clearTimeout(timer); resolve(true) })
+    })
+    const byItself = await wait(this.errorOutputWaitMs) && !child.stoppedByMegachat
+    this.kill(child)
+    return { byItself, ended: byItself || await wait(this.errorOutputWaitMs / 4) }
   }
 
   /**
@@ -444,6 +548,8 @@ export class AcpRunService {
 
   kill(child) {
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return
+    // An agent that Megachat stopped did not end by itself, so the error of its run names no exit code.
+    child.stoppedByMegachat = true
     try { child.stdio[3]?.destroy(); child.kill('SIGTERM') }
     catch (error) { if (error.code !== 'ESRCH') throw error }
   }

@@ -52,6 +52,16 @@ export function logFailure(key, error, ...args) {
   process.stderr.write(`${new Date().toISOString()} ${message(key, ...args)} ${describeError(error)}\n`)
 }
 
+/**
+ * Writes one line about a failed child run to the standard error, and then each line of [text] with the prefix `  | `,
+ * so no line of an agent looks like a line of the daemon. [args] and [text] hold a text of an agent, so the caller
+ * gives them through the filter of the error output (`errorOutputText` and `answerText` of `SessionText.mjs`) first.
+ */
+export function logChildText(key, args, text = '') {
+  const block = text ? text.split('\n').filter((line, index, lines) => line || index < lines.length - 1).map(line => `  | ${line}\n`).join('') : ''
+  process.stderr.write(`${new Date().toISOString()} ${message(key, ...args)}\n${block}`)
+}
+
 /** Writes one line about an event to the standard error. Each argument is a number or a fixed word, never a content. */
 export function logEvent(key, ...args) {
   process.stderr.write(`${new Date().toISOString()} ${message(key, ...args)}\n`)

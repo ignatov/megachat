@@ -18,10 +18,26 @@ let steerings = 0
 let prompting = false
 let steered
 let prompted = false
+/** Writes [text] to the error output, and resolves when the pipe took it, so an exit after it loses no text. */
+const writeError = text => new Promise(resolve => process.stderr.write(text, resolve))
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+// The shapes of the adapters of ACP (see openspec/changes/archive/2026-11-12-keep-child-error-output/design.md). FAKE_ACP_STDERR
+// is a JSON array of chunks that the agent writes to its error output at its start, with a pause between the chunks, so
+// each chunk comes alone. FAKE_ACP_NEW sets the answer to session/new: internal (a plain Error with the message
+// FAKE_ACP_DETAILS, which the SDK of ACP gives as -32603 "Internal error" with the data { details }), auth (the ACP error
+// authRequired), exit (an exit with the code FAKE_ACP_EXIT, 3 by default, and no answer), late (internal, then the line
+// "late reason" on the error output and an exit), or app-server (the code 1001 of codex-acp with a message of two lines).
+const startFailure = process.env.FAKE_ACP_NEW
 agent({ name: 'fake-claude' })
-  .onRequest(methods.agent.initialize, () => ({ protocolVersion: 1,
-    agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [],
-    ...(answers[0] === 'off' ? {} : { _meta: { steering: { supported: true } } }) }))
+  .onRequest(methods.agent.initialize, async () => {
+    for (const chunk of JSON.parse(process.env.FAKE_ACP_STDERR ?? '[]')) {
+      await writeError(chunk)
+      await pause(20)
+    }
+    return { protocolVersion: 1,
+      agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [],
+      ...(answers[0] === 'off' ? {} : { _meta: { steering: { supported: true } } }) }
+  })
   .onRequest('_session/steering', params => params, async ctx => {
     if (answers[0] === 'off') throw RequestError.methodNotFound('_session/steering')
     const answer = answers[Math.min(steerings++, answers.length - 1)]
@@ -42,7 +58,16 @@ agent({ name: 'fake-claude' })
   })
   .onRequest(methods.agent.session.new, async ctx => {
     // An agent without a login refuses each new session, as Codex ACP and Claude ACP do.
-    if (process.env.FAKE_ACP_LOGIN === 'missing') throw RequestError.authRequired()
+    if (process.env.FAKE_ACP_LOGIN === 'missing' || startFailure === 'auth') throw RequestError.authRequired()
+    if (startFailure === 'exit') {
+      await writeError('')
+      process.exit(Number(process.env.FAKE_ACP_EXIT ?? 3))
+    }
+    if (startFailure === 'late') setTimeout(async () => { await writeError('late reason\n'); process.exit(1) }, 50)
+    if (startFailure === 'internal' || startFailure === 'late') throw new Error(process.env.FAKE_ACP_DETAILS ?? 'Claude Code process exited with code 1')
+    if (startFailure === 'app-server') {
+      throw new RequestError(1001, 'The Codex app-server exited with code 1. Restart the agent.\nError: unauthorized: the key is not valid')
+    }
     servers = ctx.params.mcpServers
     await writeFile(join(process.cwd(), 'session-request.json'), JSON.stringify({
       operation: 'new', claudeOptions: !!ctx.params._meta?.claudeCode,
@@ -98,6 +123,15 @@ async function answerPrompt(ctx) {
   // Each prompt with all of its blocks, so a test can read the blocks that the daemon adds before the task.
   await appendFile(join(process.cwd(), 'prompts'), `${JSON.stringify(ctx.params.prompt.map(block => block.text))}\n`)
   if (text === 'crash') process.exit(1)
+  // The prompt `fatal` writes the reason of a crash to the error output, then ends the agent during the prompt.
+  if (text === 'fatal') {
+    await writeError('Error: The adapter crashed.\n')
+    process.exit(1)
+  }
+  // The prompt `fail` throws a plain Error, which the SDK of ACP gives as -32603 with the data { details }.
+  if (text === 'fail') throw new Error('The turn failed.')
+  // The prompt `chatty` writes to the error output, as an adapter writes its debug lines, and completes.
+  if (text === 'chatty') await writeError('debug: the session starts\n')
   // The prompt `noisy` writes more error output than a child may write, then waits as `wait` does.
   if (text === 'noisy') process.stderr.write('x'.repeat(1024 * 1024 + 1))
   if (text === 'wait' || text === 'noisy') {

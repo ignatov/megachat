@@ -560,9 +560,12 @@ async function turnItems(home, text) {
   return items.slice(start + 1, end < 0 ? undefined : end)
 }
 const toolCalls = item => item.role === 'assistant' ? (item.content ?? []).filter(block => block.type === 'toolCall') : []
-/** The lines of the daemon log of [home] that tell of a write of the guard against a lost wake-up of the scheduler. */
+/**
+ * The lines of the daemon log of [home] that tell of a write of the guard against a lost wake-up of the scheduler. A
+ * line of the error output of a failed child starts with `  | `, and it does not count.
+ */
 const wakeWrites = async home => ((await readText(join(home, 'daemon', 'daemon.log'))) ?? '').split('\n')
-  .filter(line => /wrote its record again/.test(line)).length
+  .filter(line => !line.startsWith('  | ') && /wrote its record again/.test(line)).length
 
 // Item 11: one reply of the main agent with two tool calls, in three turns in a row. Each turn must end. Before the
 // guard of `src/SchedulerWake.mjs`, the step that waits for its tool calls could lose its wake-up, and the turn then

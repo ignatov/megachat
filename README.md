@@ -137,7 +137,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `spend.json` | The cost of the model requests of the main agent on this day, for `budget.dailyUsd`. |
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
-| `daemon/daemon.log` | The log of a daemon that `start` started. |
+| `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For a failed child run, it holds the answer of the agent and the end of its error output, without the known secrets. |
 
 Each directory has the mode 0700, and each file has the mode 0600. When the shared directory has no conversation, the
 daemon copies it once from `~/Library/Application Support/JetBrains/AirMegachat`. `MEGACHAT_LEGACY_DIRS` replaces that

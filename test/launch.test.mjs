@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { inspect } from 'node:util'
@@ -170,7 +170,7 @@ test('the Central configuration gives the secret filter its exact key and base U
   assert.ok(!JSON.stringify(configuration).includes(keys[1]))
 })
 
-test('a child agent gets the file mask of the user, and the daemon keeps the mask 077 for its own files', { timeout: 60000 }, async t => {
+test('a child agent gets the file mask of the user, the daemon keeps the mask 077 for its own files, and its log gets the mode 0600', { timeout: 60000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-mask-'))
   const agents = await realpath(await mkdtemp(join(tmpdir(), 'megachat-mask-agents-')))
   t.after(async () => {
@@ -181,6 +181,10 @@ test('a child agent gets the file mask of the user, and the daemon keeps the mas
     }
   })
   for (const name of ['claude', 'codex', 'workspace']) await mkdir(join(agents, name))
+  // A log of an earlier start with a wider mode. The open of a file that exists keeps its mode.
+  await mkdir(join(directory, 'daemon'), { mode: 0o700 })
+  await writeFile(join(directory, 'daemon', 'daemon.log'), '', { mode: 0o644 })
+  await chmod(join(directory, 'daemon', 'daemon.log'), 0o644)
   // The mask 027 differs from the usual 022 of the test runner and from the 077 of Megachat. `start` sets 077 before it
   // starts the daemon, so only the mask that `start` got can reach the agent.
   const starting = spawn('/bin/sh', ['-c', 'umask 027; exec "$0" "$@"', process.execPath, join(root, 'src', 'main.mjs'), 'start', directory], {
@@ -197,4 +201,5 @@ test('a child agent gets the file mask of the user, and the daemon keeps the mas
     assert.equal((await stat(join(agents, agent, 'session-request.json'))).mode & 0o777, 0o640, agent)
   }
   assert.equal((await stat(join(directory, 'conversation.sqlite'))).mode & 0o777, 0o600)
+  assert.equal((await stat(join(directory, 'daemon', 'daemon.log'))).mode & 0o777, 0o600)
 })
