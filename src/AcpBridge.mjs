@@ -16,18 +16,23 @@ export function taskTitle(prompt) {
 /** The name of the agent of a run for the chat. A run without the field is from before the choice of the agent. */
 const agentName = agent => agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude'
 
+/** The title of the task of [run]: its own title, else the title or the first prompt line of the first run of the task. */
+function runTitle(state, run) {
+  let first = run
+  while (first.resumeOf && state.runs[first.resumeOf]) first = state.runs[first.resumeOf]
+  return run.title ?? first.title ?? taskTitle(first.prompt)
+}
+
 /**
  * The background tasks of the chat for [state], by task ID: each unfinished child run, and a pass of the import of the
- * past sessions.
+ * past sessions. Each run has a row with its own phase, so the list shows each of the children that run at the same time.
  */
 export function taskRows(state) {
   const rows = new Map()
   for (const run of Object.values(state.runs)) {
     if (terminalStates.has(run.status)) continue
-    let first = run
-    while (first.resumeOf && state.runs[first.resumeOf]) first = state.runs[first.resumeOf]
     const phase = run.status === 'admitted' ? run.resumeOf ? 'resuming' : 'queued' : run.status === 'approval' ? 'approval' : 'running'
-    rows.set(`${run.id}:${phase}`, { name: run.title ?? first.title ?? taskTitle(first.prompt), description: message(`child.${phase}`,
+    rows.set(`${run.id}:${phase}`, { name: runTitle(state, run), description: message(`child.${phase}`,
       agentName(run.agent), basename(run.cwd)) })
   }
   // The import of the past sessions is a task too. Its ID changes at each tenth of the files, as a phase of a run does.
@@ -347,10 +352,12 @@ class AcpBridgeSession {
     for (const permission of Object.values(state.permissions)) {
       if (permission.status !== 'pending' || this.permissions.has(permission.id)) continue
       this.permissions.add(permission.id)
+      // Several children can ask at the same time, so the title names the agent and the task of the run.
+      const run = state.runs[permission.runId]
       this.connection.client.request(methods.client.session.requestPermission, {
         ...permission.request, sessionId: this.sessionId,
         toolCall: { ...permission.request.toolCall, toolCallId: permission.id,
-          title: message('permission.title', state.runs[permission.runId]?.agent === 'codex' ? 'Codex' : 'Claude', permission.request.toolCall?.title ?? '') },
+          title: message('permission.title', agentName(run?.agent), run ? runTitle(state, run) : message('title'), permission.request.toolCall?.title ?? '') },
       }).then(async result => {
         if (result.outcome.outcome === 'selected') {
           await this.daemon.json('/permission', { id: permission.id, decision: result.outcome.optionId })

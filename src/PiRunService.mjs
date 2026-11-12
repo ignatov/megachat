@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/context'
 import { ConversationBusy, ConversationIdle } from '@earendil-works/pi-durable'
 import { steerBlock } from './AcpRunService.mjs'
-import { ChildSlot } from './ChildSlot.mjs'
+import { ChildPool } from './ChildPool.mjs'
 import { maxAutomaticResumes, MegachatDoc, terminalStates } from './MegachatState.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { PiChildDoc } from './PiChild.mjs'
@@ -21,8 +21,8 @@ function assistantText(entry) {
  * Executes the admitted pi runs in the daemon process, as `AcpRunService` executes the Claude and Codex runs. A pi run
  * goes through the same states, so the reports, the limits and the prune rules stay the same. Each child session is an
  * ownerless conversation of the harness of the main agent, and the ID of that conversation is the provider session ID of
- * its runs. [agent] gives the choices of the child conversation for the directory of a run. [slot] is the one place for
- * a child that this service shares with the ACP run service.
+ * its runs. [agent] gives the choices of the child conversation for the directory of a run. [pool] holds the places for
+ * the children, and this service shares it with the ACP run service.
  *
  * A daemon stop leaves a dispatched run as it is: Pi Durable continues its conversation after the restart, and the next
  * service follows it to its end.
@@ -32,11 +32,11 @@ function assistantText(entry) {
  * in the same storage, so a message arrives one time, also after a restart.
  */
 export class PiRunService {
-  constructor(state, harness, { agent, slot = new ChildSlot(), deadlineMs = 1800000 } = {}) {
+  constructor(state, harness, { agent, pool = new ChildPool(), deadlineMs = 1800000 } = {}) {
     this.state = state
     this.harness = harness
     this.agent = agent
-    this.slot = slot
+    this.pool = pool
     this.deadlineMs = deadlineMs
     this.active = new Map()
     this.stopping = false
@@ -45,10 +45,10 @@ export class PiRunService {
 
   async start() {
     this.watch = await this.state.watch()
-    this.unsubscribe = this.slot.subscribe(() => { if (!this.stopping) this.observe(this.watch.value) })
+    this.unsubscribe = this.pool.subscribe(() => { if (!this.stopping) this.observe(this.watch.value) })
     const snapshot = this.watch.value
     for (const run of Object.values(snapshot.runs)) {
-      if (run.agent === 'pi' && run.status === 'dispatched' && this.slot.resume(snapshot, run)) this.begin(run)
+      if (run.agent === 'pi' && run.status === 'dispatched' && this.pool.resume(run)) this.begin(run)
     }
     this.observe(snapshot)
     this.watch.start(call => { if (call.kind === 'value') this.observe(call.value) })
@@ -62,7 +62,7 @@ export class PiRunService {
         if (!this.stopping) this.wakeAt(run.notBefore)
         continue
       }
-      if (run.status === 'admitted' && !this.stopping && this.slot.take(snapshot, run, now)) this.begin(run)
+      if (run.status === 'admitted' && !this.stopping && this.pool.take(snapshot, run, now)) this.begin(run)
       const work = this.active.get(run.id)
       if (work?.cancel && run.cancelRequested && !work.cancellationSent) {
         work.cancellationSent = true
@@ -78,7 +78,7 @@ export class PiRunService {
     this.active.set(run.id, work)
     work.promise = this.execute(run, work).finally(() => {
       this.active.delete(run.id)
-      this.slot.release(run.id)
+      this.pool.release(run.id)
       if (!this.stopping) this.observe(this.watch.value)
     })
     work.promise.catch(error => {
@@ -130,7 +130,7 @@ export class PiRunService {
       }
       else {
         const deadlineAt = Date.now() + this.deadlineMs
-        if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, deadlineAt })) return
+        if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, deadlineAt, startedAt: Date.now() })) return
         run = { ...run, deadlineAt }
         // A step before the dispatch can wait on the file system. A cancel, the deadline and a daemon stop end the wait,
         // and the run ends as for an error. The dispatch is one commit, so it gets no such end.

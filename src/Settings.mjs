@@ -39,6 +39,9 @@ export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
 export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
 /** The default agents of a new child task. A pi child cannot change code, so it is no default: the user names it. */
 export const CHILD_AGENTS = ['claude', 'codex']
+/** The count of the child runs that run at the same time by default, and the highest count of `children.parallel`. */
+export const DEFAULT_PARALLEL_CHILDREN = 3
+export const MAX_PARALLEL_CHILDREN = 8
 /** The steps of a child that the user allows, forbids, or allows only after a question. */
 export const CHILD_STEPS = ['commit', 'push', 'daemonRestart']
 const CHILD_PERMISSIONS = ['allow', 'ask', 'deny']
@@ -182,6 +185,13 @@ export const SETTINGS = [
     validate: choice(['short', 'normal', 'detailed']), allowed: () => ({ values: ['short', 'normal', 'detailed'] }) },
   { key: 'reply.quoteRequest', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   { key: 'children.agent', default: 'claude', applies: 'nextChild', validate: choice(CHILD_AGENTS), allowed: () => ({ values: CHILD_AGENTS }) },
+  // The value 1 runs one child at a time, as the builds up to v0.3.0 did.
+  { key: 'children.parallel', default: DEFAULT_PARALLEL_CHILDREN, applies: 'nextChild',
+    validate: value => {
+      const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+      return /^\d$/.test(text) && Number(text) >= 1 && Number(text) <= MAX_PARALLEL_CHILDREN ? Number(text) : undefined
+    },
+    allowed: () => ({ minimum: 1, maximum: MAX_PARALLEL_CHILDREN }) },
   // The list of the models is long, and `coordinator.model` gives it already.
   { key: 'children.piModel', default: DEFAULT_PI_MODEL, applies: 'nextChild', validate: knownModel,
     allowed: () => ({ other: message('settings.piModel.other') }) },

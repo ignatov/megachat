@@ -15,7 +15,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { AcpBridge, taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
-import { ChildSlot } from '../src/ChildSlot.mjs'
+import { ChildPool } from '../src/ChildPool.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { assertSupportedState } from '../src/MegachatHome.mjs'
@@ -117,12 +117,12 @@ async function open(directories) {
   const start = async () => {
     const server = new DaemonServer(service)
     const daemon = new DaemonClient(await server.listen())
-    const slot = new ChildSlot()
-    const pi = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), slot })
+    const pool = new ChildPool()
+    const pi = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), pool })
     await pi.start()
     const children = new AcpRunService(service.state, { childLaunch: async () => ({ env: process.env }) }, {
       args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], historyServer: server.historyConfiguration(),
-      childRules: () => service.childRules(), slot,
+      childRules: () => service.childRules(), pool,
     })
     await children.start()
     await service.resume()

@@ -211,6 +211,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
 | `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
+| `children.parallel` | `3` | | The count of the tasks that run at the same time, 1 to 8. Tasks in one checkout run one after the other. See below. |
 | `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
 | `children.claudeModel` | `inherit` | | The model of a Claude child: `inherit` (the model of your settings of Claude Code, else `anthropic/claude-sonnet-5-5`), or an `anthropic` model of the registry. See below. |
 | `children.permissionMode` | `inherit` | | The permission mode of a Claude child: `inherit` (the settings of Claude Code decide), `ask`, `allowEdits` or `auto`. It does not change a Codex child or a pi child. See below. |
@@ -227,6 +228,21 @@ child at its dispatch, also to a follow-up and to a continuation. With `ask`, th
 says that you approved it. Else it says in its result that the step is necessary, and the main agent asks you. With
 `deny`, the child does not do the step, also when the task asks for it. A change of a `children.*` setting applies to the
 next child, also in the turn that made it.
+
+Tasks in different directories run at the same time, at most `children.parallel` of them. Claude, Codex and pi children
+count together, and at most one pi child runs at a time. Two tasks in one directory, or in a directory and a directory
+inside it, never run at the same time, because two agents that change one checkout break the work of each other.
+Megachat compares the real paths by their segments, so a symbolic link to a project is that project, and `app2` is not
+in `app`. A task waits while a task in its checkout runs, and behind an earlier task of its checkout that waits. A task
+for another checkout behind it does not wait for it. The tasks without a project share the Megachat workspace, so they
+run one after the other. A task in a project that holds other projects, such as a home directory that an IDE opened,
+waits for each task in them, and they wait for it. Each task keeps its own deadline, permission requests and messages, and the chat lists each task
+with its own state. The title of a permission request names the agent and the task. A change of the setting applies to
+the next start of a task, and it stops no task that runs. With `1`, one task runs at a time, as in the releases up to
+0.3.0. Results that are ready at the same time come in one report.
+
+The limit of one pi child keeps the state readable for Megachat 0.3.0: its daemon continues a dispatched pi run after a
+restart only when no other child is active.
 
 A Claude child works as Claude Code works in its project. It loads the project settings: `CLAUDE.md` with its imports,
 `.claude/settings.json` with its permissions, hooks and `env`, the MCP servers of `.mcp.json`, and the skills of
@@ -456,7 +472,7 @@ The session text is data for the agent, not instructions.
 | `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits. |
-| `src/ChildSlot.mjs` | The one place for a child run, which the ACP and the pi run services share, so one child runs at a time. |
+| `src/ChildPool.mjs` | The places for the child runs, which the ACP and the pi run services share: the limit `children.parallel`, one child in a checkout, and one pi child. |
 | `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices and the rules of a child, the read-only environment of its project, and the read of its transcript. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
 | `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |

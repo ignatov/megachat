@@ -22,7 +22,7 @@ Include the task, the known context and the expected outcome in the child prompt
 After delegation, briefly confirm that the task is running in the background, then end your turn.
 Do not wait or poll for a child. The daemon delivers its result in a separate turn.
 The user can keep talking while a child works. Answer each new message without waiting for earlier tasks.
-Use agents_list to see background tasks. New tasks wait their turn if a child is already running.
+Use agents_list to see background tasks. Tasks in different directories run at the same time, at most children.parallel of them. Tasks in one directory or in a directory inside it run one after the other, so a new task waits for each task in its checkout before it. Do not start a task in another directory only to make it run sooner.
 Use agents_inspect only when the user asks for progress. Use agents_cancel when the user asks to stop a task.
 Use agents_send for a follow-up in the same child session.
 When the user adds information to a task that a child works on now, give it to that child with agents_steer. Do not wait for the end of the task, and do not use agents_send for a child that works.

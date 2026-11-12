@@ -117,7 +117,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
-    'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
+    'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
@@ -164,6 +164,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.length': [['detailed', 'detailed'], ['normal', 'normal']],
     'reply.quoteRequest': [['yes', true], [false, false]],
     'children.agent': [['codex', 'codex'], [' claude ', 'claude']],
+    'children.parallel': [[1, 1], [' 8 ', 8], ['3', 3]],
     'children.piModel': [[FAST, FAST], [` ${DEEP} `, DEEP]],
     'children.permissionMode': [['ask', 'ask'], [' allowEdits ', 'allowEdits'], ['auto', 'auto'], ['inherit', 'inherit']],
     // The fake registry has no anthropic model. The test with the anthropic registry covers the models.
@@ -196,6 +197,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.quoteRequest': ['never'],
     // A pi child cannot change code, so it is no default agent.
     'children.agent': ['gemini', 'Claude', true, 'pi'],
+    'children.parallel': [0, 9, -1, 2.5, '10', 'many', true],
     'children.piModel': ['anthropic/claude-haiku-5-5', 'small', 'faux/', 7],
     // The setting takes its own names, not the mode names of Claude Code. It never offers the modes plan and bypassPermissions.
     'children.permissionMode': ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'Ask', true],
@@ -556,7 +558,7 @@ test('the setup rules name each setting of this build and no other setting', asy
 
 test('each setting of the children, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
-  const values = { 'children.agent': 'codex', 'children.piModel': DEEP, 'children.permissionMode': 'allowEdits', 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
+  const values = { 'children.agent': 'codex', 'children.parallel': 1, 'children.piModel': DEEP, 'children.permissionMode': 'allowEdits', 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
     'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
   const first = await open(t, directory)
   for (const [key, value] of Object.entries(values)) await first.tool({ action: 'set', key, value })

@@ -12,7 +12,7 @@ import { AcpBridge } from './AcpBridge.mjs'
 import { checkAccounts } from './AgentAccountCheck.mjs'
 import { CentralConfigurationService } from './CentralConfigurationService.mjs'
 import { AcpRunService } from './AcpRunService.mjs'
-import { ChildSlot } from './ChildSlot.mjs'
+import { ChildPool } from './ChildPool.mjs'
 import { DaemonClient } from './DaemonClient.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
@@ -95,14 +95,14 @@ async function daemon() {
     server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build })
     const descriptor = await server.listen()
     proceed()
-    // The daemon runs at most one child at a time, ACP or pi. A pi run that was dispatched before a restart takes the
-    // slot first, because Pi Durable continues it.
-    const slot = new ChildSlot()
-    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), slot })
+    // The daemon runs at most `children.parallel` children at a time, ACP and pi together, and one child in a checkout.
+    // A pi run that was dispatched before a restart takes its place first, because Pi Durable continues it.
+    const pool = new ChildPool({ limit: () => service.settings.entry('children.parallel').value })
+    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), pool })
     await piChildren.start()
     proceed()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),
-      childRules: () => service.childRules(), settings: () => service.settings.values(), slot })
+      childRules: () => service.childRules(), settings: () => service.settings.values(), pool })
     await children.start()
     proceed()
     await service.resume()

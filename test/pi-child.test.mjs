@@ -12,7 +12,7 @@ import { MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
-import { ChildSlot } from '../src/ChildSlot.mjs'
+import { ChildPool } from '../src/ChildPool.mjs'
 import { serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
 import { message } from '../src/messages.mjs'
 import { childEnvironment, readTool, repositoryRules } from '../src/PiChild.mjs'
@@ -85,7 +85,7 @@ async function temporary(t) {
 }
 
 /**
- * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one slot. The
+ * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one pool. The
  * main agent uses the free model, and [values] go to `settings.json`.
  */
 async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs, launch } = {}) {
@@ -94,12 +94,12 @@ async function open(t, { directory, cwd }, { values = {}, storage = new MemorySt
   const service = await PiMegachatService.open(storage, models, undefined, {}, { settingsPath: join(directory, 'settings.json'),
     spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {}, resumeDelayMs })
   await service.state.addWorkspace(cwd)
-  const slot = new ChildSlot()
-  const pi = new PiRunService(service.state, service.harness, { agent: launch ?? (directory => service.childAgent(directory)), slot, deadlineMs })
+  const pool = new ChildPool()
+  const pi = new PiRunService(service.state, service.harness, { agent: launch ?? (directory => service.childAgent(directory)), pool, deadlineMs })
   if (startPi) await pi.start()
   const launched = []
   const children = acp ? new AcpRunService(service.state, { childLaunch: async agent => { launched.push(agent); return { env: process.env } } },
-    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], slot }) : undefined
+    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], pool }) : undefined
   await children?.start()
   await service.resume()
   let closed = false
@@ -312,7 +312,7 @@ test('a daemon restart during a pi run continues the same run in the same conver
   assert.equal((await reports(second.service)).length, 1)
 })
 
-test('the daemon runs one child at a time: a pi run waits for an ACP run, and an ACP run waits for a pi run', { timeout: 30000 }, async t => {
+test('one child runs in a directory at a time: a pi run waits for an ACP run in its directory, and an ACP run waits for a pi run', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd } = project
   const { service, requests, main, child, turn } = await open(t, project, { acp: true,
