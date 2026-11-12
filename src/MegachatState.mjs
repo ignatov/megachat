@@ -112,7 +112,8 @@ function scheduleResume(state, run, previousStatus, delayMs) {
     || attempt >= maxAutomaticResumes && !run.steerRestart) return
   const sent = run.dispatched || sentStates.has(previousStatus)
   if (sent && !run.providerSessionId) return
-  const prompt = !sent ? run.prompt : message(run.steerRestart ? 'child.steer.restarted' : 'child.continue')
+  // A pi child only reads, so its text names no git status and no file that it created.
+  const prompt = !sent ? run.prompt : message(`${run.steerRestart ? 'child.steer.restarted' : 'child.continue'}${run.agent === 'pi' ? '.pi' : ''}`)
   addContinuation(state, run, {
     prompt, task: run.task ?? (sent ? run.prompt : undefined), steered: run.steerRestart ? 'restarted' : null, sent,
     resumeAttempt: run.plannedStop || run.steerRestart ? attempt : attempt + 1,

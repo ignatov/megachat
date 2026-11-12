@@ -473,6 +473,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - `agents_session_history` with the agent `pi` and the session ID of a pi run in its directory must read the transcript of that child, also without the index of past sessions.
 - A pi child shares the event loop and the memory of the daemon. The turn limit, the deadline, the size of a read and the size of the stored output bound it.
 - Pi Durable 1.5.0 cannot delete or archive a conversation. So `conversation.sqlite` must keep the conversation of a pi child after the prune drops its last run.
+- `agents_steer` must work for a pi run with the same record, limit, outcomes and refusals as for an ACP run. For a pi run, the submission of a message is a commit in the same storage as the state: the commit that submits the message to the conversation of the child also marks it `delivered`, with the request ID of the tool call, so a message arrives one time, also after a restart.
+- A message for a pi run that did not send its prompt must go in that prompt, as a block after the task (`queued`). A message for a pi child that works must go to its conversation with `whenBusy: "steer"` and `whenIdle: "reject"`, so Pi Durable places it after the current tool round (`injected`). The run must end only after the run of each such message.
+- A message that the conversation refuses because its turn ended must wait, and the end of the run must give a follow-up in the same conversation with the message (`followUp`). The mode `interrupt`, and each other refusal, must abort the turn and continue in the same conversation with the message (`restarted`).
+- After a daemon restart, a `pending` message of a pi run must still arrive.
+- The continuation of an interrupted pi run, and the continuation after a stop for a message, must have texts of their own that name no git status, because a pi child only reads.
+- The setting `cache.ttl` applies to the requests of a pi child too. Pi Durable 1.5.0 reads the stream options of the harness without the conversation, so a child cannot get a cache lifetime of its own without a rewrite of the provider request.
   [@test] ../test/pi-child.test.mjs
   [@test] ../test/settings.test.mjs
 
@@ -505,7 +511,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - Megachat does not install a login service.
 - It does not resume a tool call through a daemon crash. The continuation prompt asks the agent to check its work.
 - It does not start parallel child tasks, also not parallel pi children.
-- A pi child does not run a command, change a file, steer, or apply the skills and the settings of Claude Code.
+- A pi child does not run a command, change a file, or apply the skills and the settings of Claude Code.
 - Air does not show the transcript of a pi child.
 - It does not expose IDE tools to children.
 

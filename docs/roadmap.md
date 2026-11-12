@@ -49,8 +49,8 @@ The later work on Megachat, in the order of the work. Each item gives its reason
     sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.
     Also decide whether the pi children move out of the daemon process, to a worker thread or to a second process.
     Today a child shares the event loop and the memory of the daemon. Nobody checked whether two processes may open
-    one storage of Pi Durable: its README says that one process owns a storage at a time.
-13. **The steering of a pi child.** `submit({ whenBusy: "steer" })` adds a message to a pi child that works. Connect it
-    to the tool of issue #4.
-14. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
+    one storage of Pi Durable: its README says that one process owns a storage at a time. A cache lifetime of its own
+    for a child request needs a rewrite of the provider request, because Pi Durable reads the stream options of the
+    harness without the conversation.
+13. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
     `conversation.sqlite` keeps each pi child after the prune drops its runs.

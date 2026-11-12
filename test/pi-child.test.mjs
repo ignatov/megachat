@@ -87,7 +87,7 @@ async function temporary(t) {
  * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one slot. The
  * main agent uses the free model, and [values] go to `settings.json`.
  */
-async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false } = {}) {
+async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true } = {}) {
   await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values: { 'coordinator.model': MAIN, ...values } }), { mode: 0o600 })
   const { models, requests } = fakeModels(main, child)
   const service = await PiMegachatService.open(storage, models, undefined, {}, { settingsPath: join(directory, 'settings.json'),
@@ -95,7 +95,7 @@ async function open(t, { directory, cwd }, { values = {}, storage = new MemorySt
   await service.state.addWorkspace(cwd)
   const slot = new ChildSlot()
   const pi = new PiRunService(service.state, service.harness, { agent: directory => service.childAgent(directory), slot, deadlineMs })
-  await pi.start()
+  if (startPi) await pi.start()
   const launched = []
   const children = acp ? new AcpRunService(service.state, { childLaunch: async agent => { launched.push(agent); return { env: process.env } } },
     { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], slot }) : undefined
@@ -346,4 +346,157 @@ test('the environment of a pi child reads the files of its project and refuses e
   assert.equal((await env.remove(join(cwd, 'README.md'), undefined, context)).ok, false)
   assert.equal((await env.exec('touch new.txt', undefined, context)).ok, false)
   assert.equal(await readFile(join(cwd, 'README.md'), 'utf8'), README)
+})
+
+const STEER = 'Also check the license.'
+/** Makes a turn of [kind] current, or no turn with `null`, as the tool calls of a turn see it. */
+const setCurrent = (service, kind) => service.state.change(state => { state.current = kind ? { id: kind, requestId: kind, cancelling: false, kind } : null })
+const occurrences = (text, part) => text.split(part).length - 1
+
+test('a steer during the turn of a pi child reaches its next model request one time, and the run ends with one report', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  let release
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('Reported.')],
+    child: [() => new Promise(resolve => { release = () => resolve(call('read', { path: 'README.md' })) }), fauxAssistantMessage('Done with the license.')],
+  })
+  await service.submit('spawn', 'Work')
+  const run = await waitForState(service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(async () => release && !(await service.state.snapshot()).current)
+  await setCurrent(service, 'user')
+  const args = { childSessionId: run.childSessionId, prompt: STEER, mode: 'queue' }
+  const first = await service.steer('tool:steer-1:steer', args)
+  // A repeated tool call gives the first record and sends nothing.
+  const again = await service.steer('tool:steer-1:steer', args)
+  await setCurrent(service, null)
+  assert.deepEqual([first.outcome, again.outcome, again.steerId], ['injected', 'injected', first.steerId])
+  release()
+  const state = await finished(service)
+  assert.deepEqual(Object.values(state.runs).map(item => [item.status, item.output]), [['completed', 'Done with the license.']])
+  const childRequests = requests.filter(request => request.child)
+  assert.equal(childRequests.length, 2)
+  assert.equal(occurrences(childRequests[1].messages, STEER), 1)
+  assert.ok(childRequests[1].messages.includes(message('child.steer')))
+  assert.equal((await reports(service)).length, 1)
+})
+
+test('a steer of a queued pi run goes in its prompt', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  let release
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'First task.', agent: 'pi' }), call('agents_spawn', { cwd, prompt: 'Second task.', agent: 'pi' }),
+      fauxAssistantMessage('Started.')],
+    child: [() => new Promise(resolve => { release = () => resolve(fauxAssistantMessage('First.')) }), fauxAssistantMessage('Second.')],
+  })
+  await service.submit('spawn', 'Work')
+  await until(async () => release && !(await service.state.snapshot()).current)
+  const [, queued] = Object.values((await service.state.snapshot()).runs)
+  assert.equal(queued.status, 'admitted')
+  await setCurrent(service, 'user')
+  const steered = await service.steer('tool:steer-2:steer', { childSessionId: queued.childSessionId, prompt: STEER, mode: 'queue' })
+  await setCurrent(service, null)
+  assert.equal(steered.outcome, 'queued')
+  release()
+  await finished(service)
+  const second = requests.filter(request => request.child)[1]
+  assert.ok(second.messages.includes('Second task.') && second.messages.includes(message('child.steer.added')))
+  assert.equal(occurrences(second.messages, STEER), 1)
+})
+
+test('a steer after the end of the turn of a pi child becomes a follow-up in the same conversation', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd, directory } = project
+  const path = join(directory, 'conversation.sqlite')
+  const first = await open(t, project, { storage: await openNodeSqliteStorage(path),
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.')], child: [hang] })
+  await first.service.submit('spawn', 'Work')
+  const run = await waitForState(first.service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(async () => !(await first.service.state.snapshot()).current && first.requests.some(request => request.child))
+  await first.close()
+  // The next daemon finishes the turn before its pi run service starts, so the run still works and the turn ended.
+  const second = await open(t, project, { storage: await openNodeSqliteStorage(path), startPi: false,
+    main: [fauxAssistantMessage('Reported.')], child: [fauxAssistantMessage('The README says hello.'), fauxAssistantMessage('No license file.')] })
+  await (await second.service.harness.conversation(Number(run.providerSessionId), context)).waitForIdle(context)
+  await setCurrent(second.service, 'user')
+  const recorded = await second.service.state.steer('tool:steer-3:steer', { childSessionId: run.childSessionId, prompt: STEER, mode: 'queue' })
+  await setCurrent(second.service, null)
+  assert.equal(recorded.delivery, 'pending')
+  await second.pi.start()
+  const state = await finished(second.service)
+  const [stopped, followUp] = Object.values(state.runs)
+  assert.deepEqual([stopped.status, stopped.resumedBy, followUp.status, followUp.providerSessionId], ['resumed', followUp.id, 'completed', run.providerSessionId])
+  assert.equal(followUp.output, 'The README says hello.\n\nNo license file.')
+  assert.equal(stopped.steers[0].outcome, 'followUp')
+  const childRequests = second.requests.filter(request => request.child)
+  assert.ok(childRequests[1].messages.includes(message('child.steer.followUp')) && childRequests[1].messages.includes('The README says hello.'))
+  assert.equal(occurrences(childRequests[1].messages, STEER), 1)
+  assert.equal((await reports(second.service)).length, 1)
+})
+
+test('a steer with mode interrupt aborts the turn of a pi child, and a continuation in the same conversation holds the message', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('Reported.')],
+    child: [hang, fauxAssistantMessage('Redirected.')],
+  })
+  await service.submit('spawn', 'Work')
+  const run = await waitForState(service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(async () => !(await service.state.snapshot()).current && requests.some(request => request.child))
+  await setCurrent(service, 'user')
+  const steered = await service.steer('tool:steer-4:steer', { childSessionId: run.childSessionId, prompt: STEER, mode: 'interrupt' })
+  await setCurrent(service, null)
+  assert.equal(steered.outcome, 'restarted')
+  const state = await finished(service)
+  const [stopped, continued] = Object.values(state.runs)
+  assert.deepEqual([stopped.status, continued.status, continued.providerSessionId, continued.output], ['resumed', 'completed', run.providerSessionId, 'Redirected.'])
+  const second = requests.filter(request => request.child)[1]
+  assert.ok(second.messages.includes(message('child.steer.restarted.pi')))
+  assert.equal(occurrences(second.messages, STEER), 1)
+  assert.equal((await reports(service)).length, 1)
+})
+
+test('a pending message of a pi run arrives after a daemon restart', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd, directory } = project
+  const path = join(directory, 'conversation.sqlite')
+  const first = await open(t, project, { storage: await openNodeSqliteStorage(path),
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.')], child: [hang] })
+  await first.service.submit('spawn', 'Work')
+  const run = await waitForState(first.service.state, state => Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(async () => !(await first.service.state.snapshot()).current && first.requests.some(request => request.child))
+  // The run service stops first, so the message stays pending in the stored state.
+  await first.pi.close()
+  await setCurrent(first.service, 'user')
+  assert.equal((await first.service.state.steer('tool:steer-5:steer', { childSessionId: run.childSessionId, prompt: STEER, mode: 'queue' })).delivery, 'pending')
+  await setCurrent(first.service, null)
+  await first.close()
+  const second = await open(t, project, { storage: await openNodeSqliteStorage(path),
+    main: [fauxAssistantMessage('Reported.')], child: [call('read', { path: 'README.md' }), fauxAssistantMessage('Done.'), fauxAssistantMessage('Done.')] })
+  const state = await finished(second.service)
+  assert.ok(Object.values(state.runs).every(item => item.status === 'completed' || item.status === 'resumed'))
+  assert.ok(Object.values(state.runs).flatMap(item => item.steers ?? []).every(item => item.delivery !== 'pending'))
+  const childRequests = second.requests.filter(request => request.child)
+  assert.equal(occurrences(childRequests.at(-1).messages, STEER), 1)
+  assert.equal((await reports(second.service)).length, 1)
+})
+
+test('a turn of a project event or of a child result cannot steer a pi child, and a pi continuation names no git status', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { service } = await open(t, project, { startPi: false })
+  await setCurrent(service, 'user')
+  const run = await service.state.admitChild('spawn', { cwd, prompt: 'Read.', agent: 'pi' })
+  for (const kind of ['event', 'report']) {
+    await setCurrent(service, kind)
+    await assert.rejects(service.steer(`tool:${kind}:steer`, { childSessionId: run.childSessionId, prompt: STEER, mode: 'queue' }), { code: 'steerEvent' })
+  }
+  await setCurrent(service, null)
+  await service.state.transition(run.id, ['admitted'], { status: 'dispatched', providerSessionId: '5', generation: 'g' })
+  await service.state.transition(run.id, ['dispatched'], { status: 'interrupted' })
+  const continued = Object.values((await service.state.snapshot()).runs).find(item => item.resumeOf === run.id)
+  assert.equal(continued.prompt, message('child.continue.pi'))
+  assert.doesNotMatch(continued.prompt, /git/)
 })

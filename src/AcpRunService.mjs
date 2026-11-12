@@ -29,8 +29,9 @@ function countWork(stream, work) {
 
 /**
  * The prompt block of the messages that the user added to the task of a run. The block is the last one, after the task.
+ * The pi run service gives the same block.
  */
-function steerBlock(items) {
+export function steerBlock(items) {
   return [message('child.steer.added'), ...items.map((item, index) =>
     `${message(item.repeat ? 'child.steer.repeat' : 'child.steer.message', index + 1)}\n${item.text}`)].join('\n\n')
 }

@@ -265,7 +265,8 @@ Code to Claude or Codex. The main agent uses pi only when you name it, and `chil
 
 A pi child is a task as the others are: the chat lists it as a background task of the agent Pi, it waits its turn, it
 stops at the deadline of 30 minutes and after 20 tool rounds, and you can cancel it. A follow-up goes to the same
-conversation. A daemon restart continues the run. Its cost is in the daily spend. Megachat cannot delete the
+conversation. A message that you add with `agents_steer` reaches the child after its current tool round. A daemon
+restart continues the run. Its cost is in the daily spend. Megachat cannot delete the
 conversation of a pi child, so `conversation.sqlite` keeps it after the run leaves the state.
 
 ## The sessions that run on the machine
