@@ -22,8 +22,9 @@ export class MegachatHistoryServer {
       inputSchema: { cwd: z.string(), agent: z.enum(['claude', 'codex', 'pi', 'all']).optional(), query: z.string().max(200).optional(), cursor: z.string().optional() },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async args => ({ content: [{ type: 'text', text: JSON.stringify(await this.service.sessions.search(args)) }] }))
+    // The tool of the children has no `order`, so it has a text of its own without the read from the end.
     server.registerTool('session_history', {
-      description: message('tool.session_history'),
+      description: message('history.session_history'),
       inputSchema: { cwd: z.string(), agent: z.enum(['claude', 'codex', 'pi']), sessionId: z.string(), query: z.string().max(200).optional(), cursor: z.string().optional() },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async args => ({ content: [{ type: 'text', text: JSON.stringify(await this.service.sessions.read(args)) }] }))

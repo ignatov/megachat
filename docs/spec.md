@@ -349,8 +349,10 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   no cursor, so a caller that follows the cursor does not loop. Each text
   must pass the secret filter and be cut to about 2 KB. Without the consent, the tool must fail with a text that says
   that the session logs are off. The tool `session_history` of the children must keep its limit to the listed
-  directories and must not have `order`.
+  directories and must not have `order`. Its description must not offer `order` or a read outside the listed
+  directories.
   [@test] ../test/session-logs.test.mjs
+  [@test] ../test/session-history.test.mjs
 - With the setting `sessions.index` on, Megachat must keep an index of the past Claude Code, Codex and pi sessions in `sessions.sqlite` in the state directory. The default is off.
 - The setup must ask for the consent with "Index past Claude, Codex and pi sessions in your projects, and read the logs of the agent sessions that run on this machine to show their status? Megachat reads the content of a session only when you ask. Everything stays local." The main agent must set `sessions.index` to on only when the user agrees.
 - With the setting off, Megachat must read no session file for the index or for the live table of `agents_running`, watch no directory of a provider, and keep no `sessions.sqlite`. A change to off must stop the import and delete the file.

@@ -113,6 +113,10 @@ test('the child MCP tools search and read both providers without mutation tools'
   const { tools } = await client.listTools()
   assert.deepEqual(tools.map(tool => tool.name), ['history', 'sessions', 'session_history'])
   assert.ok(tools.every(tool => tool.annotations.readOnlyHint))
+  // The tool of the children has no order, so its text offers no read from the end and no read outside the listed directories.
+  const child = tools.find(tool => tool.name === 'session_history')
+  assert.deepEqual(Object.keys(child.inputSchema.properties).sort(), ['agent', 'cursor', 'cwd', 'query', 'sessionId'])
+  assert.ok(!/order|newest|outside/i.test(child.description), child.description)
   const found = await client.callTool({ name: 'sessions', arguments: { cwd } })
   const pages = JSON.parse(found.content[0].text).pages
   assert.equal(pages.length, 2)
