@@ -1,3 +1,4 @@
+import { constants } from 'node:fs'
 import { open, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { defineDoc, defineExtension, GenerationTask, hook } from '@earendil-works/pi-durable'
@@ -57,7 +58,8 @@ async function repositoryRules(cwd) {
     if (!isInside(root, path)) continue
     let file
     try {
-      file = await open(path, 'r')
+      // A FIFO must not wait for a writer, and the real path must not end in a symbolic link that came later.
+      file = await open(path, process.platform === 'win32' ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
       if (!(await file.stat()).isFile()) continue
       const buffer = Buffer.alloc(RULES_LIMIT + 1)
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)

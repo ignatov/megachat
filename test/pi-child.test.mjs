@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -87,14 +88,14 @@ async function temporary(t) {
  * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one slot. The
  * main agent uses the free model, and [values] go to `settings.json`.
  */
-async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs } = {}) {
+async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs, launch } = {}) {
   await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values: { 'coordinator.model': MAIN, ...values } }), { mode: 0o600 })
   const { models, requests } = fakeModels(main, child)
   const service = await PiMegachatService.open(storage, models, undefined, {}, { settingsPath: join(directory, 'settings.json'),
     spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {}, resumeDelayMs })
   await service.state.addWorkspace(cwd)
   const slot = new ChildSlot()
-  const pi = new PiRunService(service.state, service.harness, { agent: directory => service.childAgent(directory), slot, deadlineMs })
+  const pi = new PiRunService(service.state, service.harness, { agent: launch ?? (directory => service.childAgent(directory)), slot, deadlineMs })
   if (startPi) await pi.start()
   const launched = []
   const children = acp ? new AcpRunService(service.state, { childLaunch: async agent => { launched.push(agent); return { env: process.env } } },
@@ -248,6 +249,45 @@ test('a pi child ends after 20 tool rounds as failed with the reason code', { ti
   const [run] = Object.values((await turn('spawn')).runs)
   assert.deepEqual([run.status, run.stopReason, run.error], ['failed', 'turn_limit', message('error.pi.stopped', 'turn_limit')])
   assert.equal(requests.filter(request => request.child).length, 20)
+})
+
+test('an AGENTS.md that is a FIFO does not hold the start of a pi child, and the child gets no repository rules', { timeout: 20000, skip: process.platform === 'win32' }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  await rm(join(cwd, 'AGENTS.md'))
+  execFileSync('mkfifo', [join(cwd, 'AGENTS.md')])
+  const { requests, turn } = await open(t, project, { deadlineMs: 5000,
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('Reported.')],
+  })
+  const [run] = Object.values((await turn('spawn')).runs)
+  assert.deepEqual([run.status, run.output], ['completed', 'Child answer.'])
+  const [request] = requests.filter(item => item.child)
+  assert.doesNotMatch(request.system, /repository_rules/)
+})
+
+test('a cancel, the deadline and a daemon stop end a pi run whose start waits', { timeout: 30000 }, async t => {
+  const waiting = () => new Promise(() => {})
+  const start = async (options = {}) => {
+    const project = await temporary(t)
+    const opened = await open(t, project, { launch: waiting, ...options,
+      main: [call('agents_spawn', { cwd: project.cwd, prompt: 'Read.', agent: 'pi' }), fauxAssistantMessage('Started.'), ...options.main ?? []] })
+    await opened.service.submit('spawn', 'Work')
+    const run = await waitForState(opened.service.state, state => state.current ? undefined
+      : Object.values(state.runs).find(run => run.status === 'launching'))
+    return { ...opened, run }
+  }
+  const cancelled = await start()
+  cancelled.main.push(call('agents_cancel', { runId: cancelled.run.id }), fauxAssistantMessage('Cancelling.'), fauxAssistantMessage('It stopped.'))
+  assert.equal((await cancelled.turn('cancel')).runs[cancelled.run.id].status, 'cancelled')
+
+  const limited = await start({ deadlineMs: 300, main: [fauxAssistantMessage('It ran out of time.')] })
+  const ended = (await finished(limited.service)).runs[limited.run.id]
+  assert.deepEqual([ended.status, ended.error, ended.autoResume, ended.resumedBy], ['interrupted', message('error.limit'), false, undefined])
+
+  const stopped = await start()
+  await stopped.pi.close()
+  const left = (await stopped.service.state.snapshot()).runs[stopped.run.id]
+  assert.deepEqual([left.status, left.plannedStop], ['resumed', true])
 })
 
 test('a daemon restart during a pi run continues the same run in the same conversation', { timeout: 30000 }, async t => {

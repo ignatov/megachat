@@ -132,20 +132,37 @@ export class PiRunService {
         const deadlineAt = Date.now() + this.deadlineMs
         if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, deadlineAt })) return
         run = { ...run, deadlineAt }
-        const agent = await this.agent(run.cwd)
+        // A step before the dispatch can wait on the file system. A cancel, the deadline and a daemon stop end the wait,
+        // and the run ends as for an error. The dispatch is one commit, so it gets no such end.
+        const launch = new AbortController()
+        const stopped = new Promise((_, reject) => launch.signal.addEventListener('abort',
+          () => reject(limited ? new MegachatError('limit') : new Error('stopped')), { once: true }))
+        stopped.catch(() => {})
+        const step = promise => Promise.race([promise, stopped])
+        work.lifetime.signal.addEventListener('abort', () => launch.abort(), { once: true })
+        work.cancel = () => launch.abort()
+        timer = setTimeout(() => {
+          limited = true
+          launch.abort()
+        }, this.deadlineMs)
+        const agent = await step(this.agent(run.cwd))
         if (run.providerSessionId) {
-          conversation = await this.harness.conversation(Number(run.providerSessionId), context)
+          conversation = await step(this.harness.conversation(Number(run.providerSessionId), context))
           requireCondition(conversation, 'missing')
-          await conversation.configure(agent, context)
+          await step(conversation.configure(agent, context))
         }
-        else conversation = await this.create(run, agent)
+        else conversation = await step(this.create(run, agent))
         if (!await this.state.transition(run.id, ['launching'], { status: 'ready' })) return
-        work.cancel = () => conversation.abort(context).catch(() => {})
+        work.cancel = () => {
+          launch.abort()
+          return conversation.abort(context).catch(() => {})
+        }
         if ((await this.state.snapshot()).runs[run.id].cancelRequested) {
           await this.state.transition(run.id, ['ready'], { status: 'cancelled' })
           return
         }
-        baseline = (await conversation.entries({ order: 'descending' }, 1, undefined, context)).items[0]?.id ?? 0
+        baseline = (await step(conversation.entries({ order: 'descending' }, 1, undefined, context))).items[0]?.id ?? 0
+        clearTimeout(timer)
         submissionId = await this.dispatch(run, generation, conversation, baseline)
         if (submissionId === null) {
           await this.state.transition(run.id, ['ready'], { status: 'cancelled' })
@@ -183,7 +200,7 @@ export class PiRunService {
       // After a daemon stop, Pi Durable continues a dispatched run in the next daemon.
       if (this.closing && dispatched) return
       const current = (await this.state.snapshot()).runs[run.id]
-      if (!this.closing && !current.cancelRequested && !current.steerRestart) logFailure('log.child', error, run.id)
+      if (!this.closing && !limited && !current.cancelRequested && !current.steerRestart) logFailure('log.child', error, run.id)
       // A continuation must not meet the old run of the same conversation.
       if (dispatched) await conversation?.abort(context).catch(() => {})
       await this.state.transition(run.id, ['launching', 'ready', 'dispatched'], {
