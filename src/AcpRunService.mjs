@@ -261,20 +261,26 @@ export class AcpRunService {
     }
   }
 
-  /** Sends the waiting messages of the user, one at a time. A call during a send makes the send look again at its end. */
+  /**
+   * Sends the waiting messages of the user, one at a time. A call during a send makes the send look again at its end.
+   * The last look at `again` and the clear of `delivering` are one synchronous step, so a later call starts a new send.
+   */
   deliverSteers(runId, generation, work, agent) {
     if (work.delivering) {
       work.again = true
       return work.delivering
     }
     work.delivering = (async () => {
-      do {
-        work.again = false
-        await this.sendSteers(runId, generation, work, agent)
-      } while (work.again && !work.ended)
+      try {
+        do {
+          work.again = false
+          await this.sendSteers(runId, generation, work, agent)
+        } while (work.again && !work.ended)
+      }
+      finally { work.delivering = null }
     })().catch(error => {
       if (!this.closing) logFailure('log.child', error, runId)
-    }).finally(() => { work.delivering = null })
+    })
     return work.delivering
   }
 

@@ -17,7 +17,7 @@ import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { MegachatError, message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { terminalStates } from '../src/MegachatState.mjs'
+import { findSteer, terminalStates } from '../src/MegachatState.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
 async function finishChildren(service) {
@@ -956,6 +956,49 @@ test('a steer gives a message to the turn that runs, and the run ends with one r
   const [request] = await steerings(cwd)
   assert.equal(request.sessionId, 'fake-session')
   assert.deepEqual(request._meta, { steering: { idleBehavior: 'promptRequired' } })
+})
+
+test('a steer that the state records at once after the dispatch reaches the turn without a later update of the run', { timeout: 15000 }, async t => {
+  const { cwd, fake, service } = await fixture(t, 'steer')
+  const steer = Promise.withResolvers()
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+    // The turn of the user is current while the model answers, so the state accepts the steer.
+    async () => {
+      const watch = await service.state.watch()
+      const run = await new Promise(resolve => watch.start(call => {
+        const value = call.kind === 'value' && Object.values(call.value.runs).find(item => item.status === 'dispatched')
+        if (value) resolve(value)
+      }))
+      steer.resolve(await service.state.steer('at-once', { childSessionId: run.childSessionId, prompt: 'Use the link', mode: 'queue' }))
+      await watch.stop()
+      return fauxAssistantMessage('Delegated.')
+    },
+  ])
+  await service.submit('work', 'Work')
+  const { id, runId } = await steer.promise
+  // The fake turn waits for the message. Only the first send after the dispatch can give it.
+  const delivery = await waitForState(service.state, state => state.runs[runId].steers[0].delivery === 'pending' ? undefined
+    : state.runs[runId].steers[0].delivery, { timeoutMs: 5000 })
+  assert.equal(delivery, 'delivered')
+  assert.equal(findSteer(await service.state.snapshot(), id).item.outcome, 'injected')
+})
+
+test('a call for a send at the end of a send starts one more send', { timeout: 5000 }, async () => {
+  const children = new AcpRunService(null, null)
+  const work = { delivering: null, ended: false }
+  let sends = 0
+  children.sendSteers = () => {
+    sends++
+    // The second reaction runs after the loop of the send looked at `again` for the last time. A steer that the state
+    // records then must get its own send.
+    if (sends === 1) Promise.resolve().then(() => {}).then(() => children.deliverSteers('run', 'generation', work, {}))
+    return Promise.resolve()
+  }
+  await children.deliverSteers('run', 'generation', work, {})
+  await new Promise(resolve => setImmediate(resolve))
+  await work.delivering
+  assert.equal(sends, 2)
 })
 
 test('a steer after the end of the turn becomes a follow-up in the same session with one report', { timeout: 15000 }, async t => {
