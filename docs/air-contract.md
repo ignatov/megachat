@@ -33,6 +33,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 |---|---|---|---|
 | `_workspaces/list` | Megachat | `{}` | Air returns `directories`: the trusted open project directories. Megachat registers each one in the daemon, and skips a directory that the daemon cannot read. Megachat asks on each attach and every 15 seconds while a view is open. |
 | `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code or Codex, so Megachat sends no record for it. |
+| `session/request_permission` | Megachat | `sessionId`, `toolCall`, `options`, `_meta.jetbrains.air.permission` | Air shows the request of a child, and the stop request of the main agent, as a permission dialog. See "The permissions" and "The stop dialog" below. |
 | `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat cancels the child run of that row, and no other work. It answers `{ "stopped": true }` when it accepted the stop, and `{ "stopped": false }` for each other case. Then the row ends with its terminal update. See "The Stop of a row" below. |
 
 Megachat sends `_session/service/record` once for each attach, for each address in the `serviceSessions` map of the
@@ -196,3 +197,55 @@ to the message with the same ID, and a new ID starts a new message. This needs n
 Megachat sends each pending permission request of a child through `session/request_permission` in the main session.
 The `toolCallId` is the ID of the permission record. The title names the agent. Megachat gives the selected option
 to the daemon. A request stays pending in the daemon when no client is connected.
+
+## The stop dialog
+
+The tool `agents_stop` of the main agent sends a signal only after an answer of the user in this dialog. The main agent
+cannot answer it. Megachat uses the base request `session/request_permission` and the presentation key
+`_meta.jetbrains.air.permission` (version 1) that Air of today reads. It needs no change in Air.
+
+```json
+{
+  "sessionId": "megachat-<UUID>",
+  "toolCall": { "toolCallId": "megachat-stop-<request ID>", "title": "Stop 2 agent processes with SIGTERM?",
+    "kind": "execute", "status": "pending", "rawInput": { "command": "PID 4242: Claude Code, project demo-app\nPID 4243: Codex, project demo-tool" } },
+  "options": [
+    { "optionId": "stop", "kind": "allow_once", "name": "Stop these processes", "_meta": { "jetbrains": { "air": { "permission": { "version": 1, "description": "..." } } } } },
+    { "optionId": "keep", "kind": "reject_once", "name": "Do not stop", "_meta": { "jetbrains": { "air": { "permission": { "version": 1, "description": "No signal goes out." } } } } }
+  ],
+  "_meta": { "jetbrains": { "air": { "permission": { "version": 1, "title": "Stop 2 agent processes with SIGTERM?", "description": "..." } } } }
+}
+```
+
+What Megachat builds on, from the code of Air:
+
+- Air takes the title and the description of the dialog from `_meta.jetbrains.air.permission` of the request, only
+  with `version` 1 (`AcpPermissionPresentation.kt`). The title is one line, and Air cuts it at 240 characters. The
+  description can have lines, and Air cuts it at 240 characters too. A tooltip shows the full text
+  (`AirConfirmationHeaderView.kt`). The description of an option is the second line of that option.
+- Air shows `rawInput.command` in a code viewer of the dialog: 5 rows, then a scroll and an expand action
+  (`ToolRepresentationSelector.kt`, `AirConfirmationContentView.kt`). So the list of the processes is there, one line
+  for each process: the PID, the agent and the base name of the project directory. A tool call without a command and
+  with the kind `other` would show no body.
+- Air sorts the options by kind and selects the first `allow_once`. Esc selects the first `reject_once`
+  (`AirConfirmationActionsView.kt`). So Enter selects the stop. The only code of Air that selects an option is the
+  answer of the user in the dialog, or in a mobile client (`respondApproval` in `AcpSessionRuntimeOwner.kt`). Air keeps
+  no `allow_always` decision for a later request.
+- A request of the turn that the view runs belongs to that turn. Air closes it with `cancelled` at the end of the turn
+  and at a Stop of the user. A request that arrives while the view runs no turn belongs to the connection, and it stays
+  until an answer (`AcpSessionRuntimeOwner.kt`).
+- Air closes a dialog with `cancelled` when the agent sends a final `tool_call_update` (`completed` or `failed`) for
+  its `toolCallId` (`AcpSessionRuntimeOwner.kt`, "Tool call finished before user decision").
+
+What Megachat does:
+
+- The daemon keeps each stop request in its memory, not in the state, and sends the open requests and the status of
+  the last closed requests to each client in the event `stops` of `/events`. A client of an earlier build ignores the
+  event, so it shows no dialog, and the request expires.
+- The bridge sends the request to each view. The answer `selected` goes to the daemon through `/stop/answer`. The
+  answer `cancelled` sends nothing.
+- Only the first answer counts. When a request closes, the bridge sends a final `tool_call_update` for it to each view
+  that showed it: `completed` after the answer `stop`, `failed` else. So Air removes the dialog of the other views.
+  The daemon refuses each later answer, also one that comes before that update, and it sends no signal.
+- The main agent waits in the turn for the answer, at most 5 minutes. In the view that sent the prompt, the dialog
+  belongs to the turn, so a Stop of the turn closes it, and the daemon closes the request.

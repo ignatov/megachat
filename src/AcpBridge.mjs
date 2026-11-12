@@ -24,6 +24,35 @@ function runTitle(state, run) {
   return run.title ?? first.title ?? taskTitle(first.prompt)
 }
 
+/** The name of an agent of `agents_running` for the stop dialog. */
+const sessionAgentName = agent => ({ claude: 'Claude Code', codex: 'Codex', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
+
+/** The presentation of Air for a permission request or an option (`_meta.jetbrains.air.permission`, version 1). */
+const permissionMeta = fields => ({ jetbrains: { air: { permission: { version: 1, ...fields } } } })
+
+/**
+ * The parameters of `session/request_permission` for a stop request of the main agent, without the session ID. Air
+ * shows the title on one line and the description below it, each at most 240 characters. Air shows `rawInput.command`
+ * in a code viewer that scrolls, so the list of the processes is there, one line for each process.
+ */
+export function stopPermission(request) {
+  const count = request.targets.length
+  const title = message(count === 1 ? 'stop.dialog.title.one' : 'stop.dialog.title.many', request.signal, count)
+  const lines = request.targets.map(target => target.cwd ? message('stop.dialog.line', target.pid, sessionAgentName(target.agent), basename(target.cwd))
+    : message('stop.dialog.line.noProject', target.pid, sessionAgentName(target.agent)))
+  return {
+    toolCall: { toolCallId: stopToolCallId(request.id), title, kind: 'execute', status: 'pending', rawInput: { command: lines.join('\n') } },
+    options: [
+      { optionId: 'stop', kind: 'allow_once', name: message(`stop.option.stop.${request.signal}`),
+        _meta: permissionMeta({ description: message('stop.option.stop.description', request.signal) }) },
+      { optionId: 'keep', kind: 'reject_once', name: message('stop.option.keep'), _meta: permissionMeta({ description: message('stop.option.keep.description') }) },
+    ],
+    _meta: permissionMeta({ title, description: message(`stop.dialog.description.${request.signal}`, Math.max(1, Math.ceil((Date.parse(request.expiresAt) - Date.now()) / 60000))) }),
+  }
+}
+
+const stopToolCallId = id => `megachat-stop-${id}`
+
 /** The phases of a child run in the ID of its row. */
 const phases = ['queued', 'resuming', 'approval', 'running']
 
@@ -149,6 +178,8 @@ class AcpBridgeSession {
     this.abort = new AbortController()
     this.entries = new Set()
     this.permissions = new Set()
+    // The stop requests of the main agent that this view showed.
+    this.stops = new Set()
     this.serial = Promise.resolve()
     this.promptInFlight = false
     this.promptRunId = null
@@ -241,6 +272,7 @@ class AcpBridgeSession {
     this.serial = Promise.resolve()
     this.entries.clear()
     this.permissions.clear()
+    this.stops.clear()
     this.childTasks.clear()
     this.reply = null
     this.lastReplyTask = 0
@@ -267,6 +299,7 @@ class AcpBridgeSession {
       }
       if (event.type === 'tasks') await this.tasks(event.value)
       if (event.type === 'stream') await this.stream(event.value)
+      if (event.type === 'stops') await this.stopRequests(event.value)
       received.add(event.type)
       if (received.has('conversation') && received.has('tasks')) resolveReady()
     }), abort.signal).then(() => { if (!abort.signal.aborted) throw new Error('Daemon stream ended') }).catch(error => {
@@ -402,6 +435,30 @@ class AcpBridgeSession {
     }
     if (this.nativeTurns) await this.childRows(state)
     if (this.ready) await this.suggest(state)
+  }
+
+  /**
+   * Shows each open stop request of the main agent through `session/request_permission`, and gives a selected answer to
+   * the daemon. Only the first answer counts: the daemon refuses each later one. When a request that this view showed
+   * closes, the view ends its tool call with a final status. Air then removes the dialog, if it still shows it, for
+   * example after an answer in another view. A cancel of Air sends nothing to the daemon.
+   */
+  async stopRequests(view) {
+    const open = new Set(view.requests.map(request => request.id))
+    for (const request of view.requests) {
+      if (this.stops.has(request.id)) continue
+      this.stops.add(request.id)
+      this.connection.client.request(methods.client.session.requestPermission, { ...stopPermission(request), sessionId: this.sessionId })
+        .then(async result => {
+          if (result.outcome.outcome === 'selected') await this.daemon.json('/stop/answer', { id: request.id, optionId: result.outcome.optionId })
+        }).catch(() => {})
+    }
+    const closed = new Map(view.closed.map(item => [item.id, item.status]))
+    for (const id of this.stops) {
+      if (open.has(id)) continue
+      this.stops.delete(id)
+      await this.notify({ sessionUpdate: 'tool_call_update', toolCallId: stopToolCallId(id), status: closed.get(id) === 'allowed' ? 'completed' : 'failed' })
+    }
   }
 
   /**

@@ -29,7 +29,7 @@ export class DaemonClient {
     })
     if (!response.ok) {
       const error = await response.json()
-      throw new MegachatError(['busy', 'conflict', 'missing', 'stale', 'inactive', 'unauthorized'].includes(error.error)
+      throw new MegachatError(['busy', 'conflict', 'missing', 'stale', 'inactive', 'unauthorized', 'stopClosed'].includes(error.error)
         ? error.error : 'invalid')
     }
     return response

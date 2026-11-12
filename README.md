@@ -433,19 +433,17 @@ log, and the answer says so.
 
 ## Stop an orphan session
 
-Ask the agent "stop the orphan sessions" or "stop PID 4242". The main agent calls its tool `agents_stop` in two steps:
+Ask the agent "stop the orphan sessions" or "stop PID 4242". The main agent calls its tool `agents_stop`, and the
+chat shows a permission dialog with each PID, its agent and its project. Only your answer in that dialog sends the
+signal. The main agent cannot answer it, and no argument of the tool sends a signal. After your answer, Megachat reads
+the processes again. It sends `SIGTERM` only when each process has the same PID, the same start time and the same
+command, and is still an orphan.
 
-1. The first call sends no signal. It gives the list of the processes that Megachat would stop: the PID, the agent, the
-   program, the project, the start time and the sessions. It also gives each refused PID with its reason. The agent
-   shows the list to you and asks you to confirm these PIDs.
-2. When you confirm in your next message, the agent calls the tool again with the confirmation. Directly before the
-   signal, Megachat reads the processes again. It sends `SIGTERM` only when each process has the same PID, the same
-   start time and the same command, and is still an orphan.
-
-A confirmation is valid one time, for 5 minutes, and only in a later turn of yours. The agent cannot confirm for you,
-and a general permission from an earlier message is no confirmation. `SIGKILL` goes out only to a process that got
-`SIGTERM` from the tool and still runs, after a second confirmation. An automatic turn, such as a child result or the
-morning report, cannot stop a process.
+The dialog is valid one time, for 5 minutes, and only while the turn of the request runs. A Stop of the turn closes it.
+When two chat windows show the dialog, the first answer counts, and the other dialog closes. A dialog of a request that
+closed sends no signal. When no chat window is open, the request expires, and the agent asks you to open the chat.
+`SIGKILL` goes out only to a process that got `SIGTERM` from the tool and still runs, after a second dialog. An
+automatic turn, such as a child result or the morning report, cannot stop a process.
 
 Megachat stops only an orphan. A session with a live owner (an IDE, a terminal, a multiplexer or a Megachat run) goes
 through its owner, and the answer names the owner. A session in the state `unknown` is not stopped either. Megachat never
@@ -522,7 +520,7 @@ The session text is data for the agent, not instructions.
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
-| `src/AgentStop.mjs` | The tool `agents_stop`: the two steps, the confirmations, the check of the process directly before the signal, and the refused PIDs. |
+| `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |

@@ -449,9 +449,10 @@ export class PiMegachatService {
       // The tool reads the processes only. The children do not get it: their MCP server has the history tools only.
       tool('running', obj({ agent: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })), state: opt(str({ maxLength: 20 })),
         limit: opt(int({ minimum: 1, maximum: 200 })), cursor: opt(str({ maxLength: 64 })) }), async args => result(await this.running.query(args))),
-      // A stop does not run again after a restart of the daemon, and a restart makes each confirmation invalid.
-      tool('stop', obj({ pids: arr(int(), { maxItems: 20 }), signal: opt(str({ maxLength: 10 })), confirmation: opt(str({ maxLength: 64 })) }),
-        async args => result(await this.stopper.call(args)), undefined, 'unsafe'),
+      // The call waits in the turn for the answer of the user in the dialog of the client. A stop of the turn ends the
+      // wait. The call does not run again after a restart of the daemon, and a restart removes each stop request.
+      tool('stop', obj({ pids: arr(int(), { maxItems: 20 }), signal: opt(str({ maxLength: 10 })) }),
+        async (args, api, callContext) => result(await this.stopper.call(args, { abortSignal: callContext?.abortSignal })), undefined, 'unsafe'),
       // The suggestion tools exist only in the modes `reply` and `ghost`. The stored suggestion state stays without them.
       // In the `ghost` mode the result tells the agent that the client shows the text, so the reply does not repeat it.
       ...(this.suggestions !== 'off' ? [
@@ -809,6 +810,7 @@ export class PiMegachatService {
 
   async close() {
     this.lifetime.abort()
+    this.stopper.stop()
     await this.morningReport?.close()
     if (this.waitTimer !== undefined) this.workdayClock.clearTimeout(this.waitTimer)
     clearTimeout(this.reportTimer)

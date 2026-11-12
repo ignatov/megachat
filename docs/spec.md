@@ -452,35 +452,47 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   not have the tool.
   [@test] ../test/running.test.mjs
   [@test] ../test/session-logs.test.mjs
-- The tool `agents_stop` of the main agent must stop an orphan session of `agents_running` with a signal, in two steps.
-  The MCP server of the children must not have the tool. A restart of the daemon must not run a cut-off call again.
-- The first step, a call with `pids` and without `confirmation`, must send no signal. It must give the targets (the PID,
-  the start time, the agent, the program, the project, the owner and the sessions of each process), the refused PIDs
-  with a reason that the model can give to the user, and a confirmation for the targets. A list without a target must
-  give no confirmation.
-- The confirmation must be bound to the PIDs, their start times, the digests of their command lines, the signal and the
-  turn. It must be valid one time only, also when its check fails, for 5 minutes, and only in a later turn of the user.
-  A confirmation of the same turn, of other PIDs or of another signal, an expired one, a used one and an unknown one
-  must send no signal. The confirmations must stay in the memory of the daemon only.
-- Directly before the signal, Megachat must read the process table again. Each process must have the same PID, the
-  same start time and the same command, and its state must still be `orphan`. Else no process of the call must get the
-  signal, and the result must give the reason for each changed process.
-- Only a turn of the user must call the tool. An automatic turn and a call without a turn must be refused in both
-  steps.
+- The tool `agents_stop` of the main agent must stop an orphan session of `agents_running` with a signal, only after
+  an answer of the user in the permission dialog of the client. The MCP server of the children must not have the tool.
+  A restart of the daemon must not run a cut-off call again.
+- A call must send no signal. It must make a stop request for its targets and wait in the turn for the answer, at most
+  5 minutes. A list without a target must give the outcome `none` and show no dialog. The result must give the targets
+  (the PID, the start time, the agent, the program, the project, the owner and the sessions of each process), the
+  refused PIDs with a reason that the model can give to the user, and the outcome: `stopped`, `declined`, `expired`,
+  `changed`, `replaced` or `none`.
+- No argument of a tool call must send a signal. The tool must take no confirmation. Only the answer `stop` of the
+  user through `/stop/answer` must send it.
+- The bridge must show each open stop request in each view through `session/request_permission`. The dialog must name
+  each PID with its agent and its project. It must offer `stop` (`allow_once`) and `keep` (`reject_once`), and no
+  option for always. A view that opens while the request is open must show it too.
+- Only the first answer to an open request must count. An answer to a request that got an answer, that expired, that a
+  newer request replaced, whose turn stopped, or that the daemon does not know must be refused, and it must send no
+  signal. A new call must replace the open request. When a request closes, each view that showed it must end its tool
+  call with a final status, so Air removes the dialog. A cancel of Air must send nothing to the daemon.
+- The requests must stay in the memory of the daemon only, not in the state. A restart of the daemon must remove each
+  one. Without a client, the request must wait and expire. When no client stream got the request, the result must tell
+  the main agent to ask the user to open the chat.
+- A stop of the turn must close the request. When the turn of the request does not run any more at the answer, no
+  signal must go out.
+- After the answer, directly before the signal, Megachat must read the process table again. Each process must have the
+  same PID, the same start time and the same command, and its state must still be `orphan`. Else no process of the
+  call must get the signal, and the result must give the reason for each changed process.
+- Only a turn of the user must call the tool. An automatic turn, a turn that stops and a call without a turn must be
+  refused, and they must show no dialog.
 - Megachat must stop only an orphan. A session with a live owner, such as an IDE, a terminal, a multiplexer or a
   Megachat run, must be refused with the name of its owner, so the user stops it through the owner. A session in the
   state `unknown` and a PID that is no agent session must be refused too.
-- The first signal must be `SIGTERM`. `SIGKILL` must go out only through a second confirmation of the same kind, and
-  only to a process that got `SIGTERM` from this tool and still lives with the same start time and command.
+- The first signal must be `SIGTERM`. `SIGKILL` must go out only after a second dialog and answer, and only to a
+  process that got `SIGTERM` from this tool and still lives with the same start time and command.
 - Before each other check, the tool must refuse PID 1 and below, the PID of the daemon, its parent, each process above
-  them, and a process of another user or of an unknown user. On a platform where `agents_running` gives no row, the tool
-  must refuse.
-- The signal function and the process table must come by injection, so a test sends no real signal. The default signal
-  function must be `process.kill`.
-- The result and the log of the daemon must hold the PIDs and the outcome (`sent`, `ended`, `denied` or `failed`), and
-  no content of a session and no command line.
-- The instructions of the main agent must tell it to show the list to the user, to ask for a confirmation of exactly
-  these PIDs, and never to confirm for the user.
+  them, and a process of another user or of an unknown user. Megachat must check this again before the signal. On a
+  platform where `agents_running` gives no row, the tool must refuse.
+- The signal function, the process table and the timer of the expiry must come by injection, so a test sends no real
+  signal. The default signal function must be `process.kill`.
+- The result, the stop request and the log of the daemon must hold no content of a session and no command line. The
+  log must hold the PIDs and the outcome (`sent`, `ended`, `denied` or `failed`).
+- The instructions of the main agent must tell it to call the tool one time for the PIDs that the user asked for, that
+  only the answer of the user in the dialog sends the signal, and that it cannot answer the dialog.
   [@test] ../test/stop.test.mjs
 - With the consent `sessions.index`, Megachat must keep a live table of each session file of Claude Code, Codex and pi
   on the machine, also outside the listed directories, without the archived and the compressed Codex session files, in a table of its own in `sessions.sqlite`: the path, the inode,

@@ -130,6 +130,12 @@ export class DaemonServer {
         send({ cancelled: await this.service.cancel(body.mainRunId) })
         return
       }
+      case '/stop/answer': {
+        // The answer of the user in the dialog of a stop request of the main agent. Only an answer here lets the tool send the signal.
+        requireCondition(this.service.stopper && typeof body.id === 'string' && typeof body.optionId === 'string')
+        send(this.service.stopper.answer(body.id, body.optionId))
+        return
+      }
       case '/child/stop': {
         // The Stop action of a row in the chat. It needs no turn, so it does not use `/cancel`.
         requireCondition(typeof body.runId === 'string' && body.runId.length <= 200)
@@ -189,6 +195,15 @@ export class DaemonServer {
         await stream?.observe(call.value)
       })
       tasks.start(async call => { if (call.kind === 'value') await publish('tasks', call.value) })
+      // The stop requests of the main agent are in the memory of the daemon, not in the state. A client of an earlier
+      // build ignores this event type.
+      const stopper = this.service.stopper
+      if (stopper) {
+        const stops = async value => { await publish('stops', value); if (!response.destroyed) stopper.delivered(value) }
+        const unwatch = stopper.watch(value => { stops(value).catch(() => {}) })
+        views.push({ stop: async () => unwatch() })
+        await stops(stopper.view())
+      }
       if (response.destroyed) await stop()
     }
     catch (error) {
