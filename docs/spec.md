@@ -83,9 +83,11 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   state is the channel, as for a cancel. When the `initialize` answer of the agent gave `_meta.steering.supported` and
   the mode is `queue`, the run service must send `_session/steering` with `_meta.steering.idleBehavior:
   "promptRequired"`, so the adapter starts no turn of its own. The answer `injected` must mark the message delivered.
-- When the turn ended first (`promptRequired`), or when the agent took the message and the stream gave no model work
-  after the answer before the end of the turn, the run must get a follow-up in the same provider session with the
-  message. The outcome must be `followUp`.
+- When the turn ended first (`promptRequired`), or when the agent took the message and the stream started no new part
+  of model work after the answer before the end of the turn, the run must get a follow-up in the same provider session
+  with the message. The outcome must be `followUp`. A new part is an update of another kind than the update before it
+  (a message chunk, a thought chunk, a tool call or its update, a plan), or a new tool call. More chunks of the reply
+  that streamed at the answer are no new part: the Codex adapter can send them after its answer.
 - The answer `failed`, an error, no answer in 20 seconds, an agent without steering, and the mode `interrupt` must use
   the fallback: `session/cancel`, and after the end of the prompt a continuation in the same provider session. Its
   prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`.

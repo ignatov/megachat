@@ -10,8 +10,9 @@ let cancelled = false
 let servers = []
 // The prompt `steer` waits for a steering request or a cancel. FAKE_ACP_STEERING gives the answers to the steering
 // requests in their order, separated by commas, and the last answer repeats: injected (the default), promptRequired,
-// failed, error, drop (injected, and the turn ends with no work after it), or hang (no answer). off is an agent without
-// the steering extension.
+// failed, error, drop (injected, and the turn ends with no work after it), trail (injected, with a chunk of the reply
+// before the answer and one more chunk of the same reply after it, then the end of the turn), or hang (no answer). off is an agent
+// without the steering extension.
 const answers = (process.env.FAKE_ACP_STEERING ?? 'injected').split(',')
 let steerings = 0
 let prompting = false
@@ -31,7 +32,11 @@ agent({ name: 'fake-claude' })
     // The turn ended before the request arrived.
     if (answer === 'promptRequired') { steered?.({ text, work: false }); return { outcome: 'promptRequired', reason: 'noRunningTurn' } }
     if (!prompting) return { outcome: 'promptRequired', reason: 'noRunningTurn' }
-    if (steered) setImmediate(steered, { text, work: answer !== 'drop' })
+    // The reply of the step streams at the time of the request. The Codex adapter can send the rest after its answer.
+    if (answer === 'trail') await ctx.client.notify(methods.client.session.update, {
+      sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'The reply ' } },
+    })
+    if (steered) setImmediate(steered, { text, work: answer !== 'drop' && answer !== 'trail', trail: answer === 'trail' })
     return { outcome: 'injected' }
   })
   .onRequest(methods.agent.session.new, async ctx => {
@@ -76,6 +81,9 @@ async function answerPrompt(ctx) {
     const message = cancelled ? null : await new Promise(resolve => { steered = resolve; cancel = () => resolve(null) })
     steered = undefined
     if (!message) return { stopReason: cancelled ? 'cancelled' : 'end_turn' }
+    if (message.trail) await ctx.client.notify(methods.client.session.update, {
+      sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ends here.\n' } },
+    })
     if (!message.work) return { stopReason: 'end_turn' }
     await ctx.client.notify(methods.client.session.update, {
       sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `steered: ${message.text}\n` } },

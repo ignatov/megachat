@@ -1076,6 +1076,26 @@ test('a message that the agent takes but does not answer before the end of its t
   assert.deepEqual(reportsOf(state), [[next.id]])
 })
 
+test('the rest of the reply that streamed at the answer is no work for the message, so the message gets a follow-up', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'codex', { env: { FAKE_ACP_STEERING: 'trail' } })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer', agent: 'codex' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  assert.equal((await steerTurn(service, daemon, fake, 'trail', { childSessionId: run.childSessionId, prompt: 'Also test it' })).outcome, 'injected')
+  const state = await finishChildren(service)
+  const [first, next] = Object.values(state.runs)
+  assert.equal(first.output, 'The reply ends here.\n')
+  assert.equal(first.status, 'resumed')
+  assert.equal(next.status, 'completed')
+  assert.equal(next.prompt, message('child.steer.followUp'))
+  assert.deepEqual(next.steers.map(item => [item.text, item.repeat]), [['Also test it', true]])
+  assert.deepEqual(reportsOf(state), [[next.id]])
+})
+
 test('a steer keeps a permission request pending, and a steer of a queued run changes its prompt and calls no agent', { timeout: 15000 }, async t => {
   const { cwd, daemon, fake, service } = await fixture(t)
   fake.setResponses([

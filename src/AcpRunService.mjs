@@ -12,16 +12,27 @@ import { terminalStates } from './MegachatState.mjs'
 
 /** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
 const STEER_METHOD = '_session/steering'
-/** The updates that show work of the model. One of them after a message of the user shows that the turn went on. */
-const workUpdates = new Set(['agent_message_chunk', 'agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
+/** The updates that show work of the model, with the part of a step that each one streams. */
+const workParts = new Map([['agent_message_chunk', 'message'], ['agent_thought_chunk', 'thought'], ['tool_call', 'tool'],
+  ['tool_call_update', 'tool'], ['plan', 'plan']])
 
 /**
- * Counts the updates of model work in the order of the stream, and keeps the count at the answer to a steering
- * request. A handler sees a message later, and the next message can already be in its count.
+ * Counts the starts of the parts of model work in the order of the stream, and keeps the count at the answer to a
+ * steering request. A handler sees a message later, and the next message can already be in its count.
+ * A start after the answer shows that the turn went on after the message of the user. A part starts with an update of
+ * another part than the update before it, and each `tool_call` starts a part: the model gets the message in its
+ * request after the tool. A chunk of the same part does not count. The Codex adapter sends its answer without a wait
+ * for its queue of updates, so the rest of the reply that streamed at the answer can come after the answer, and the
+ * turn can then end without a read of the message. A message without a start after it gets a follow-up, which says
+ * that the message can be a repeat. Only a queue that holds the start of a new part gives a wrong count.
  */
 function countWork(stream, work) {
   return { writable: stream.writable, readable: stream.readable.pipeThrough(new TransformStream({ transform(item, controller) {
-    if (item.method === 'session/update' && workUpdates.has(item.params?.update?.sessionUpdate)) work.updates++
+    const part = item.method === 'session/update' ? workParts.get(item.params?.update?.sessionUpdate) : undefined
+    if (part) {
+      if (part !== work.part || item.params.update.sessionUpdate === 'tool_call') work.updates++
+      work.part = part
+    }
     else if (item.method === undefined && typeof item.result?.outcome === 'string') work.answered = work.updates
     controller.enqueue(item)
   } })) }
@@ -205,6 +216,8 @@ export class AcpRunService {
       }
       if (!await this.state.transition(run.id, ['ready'], { status: 'dispatched' })) return
       dispatched = true
+      // The replay of a loaded session is no part of the new turn.
+      work.part = undefined
       // A message of the user from before the dispatch goes in the prompt. A later one goes through the steering request.
       const added = ((await this.state.snapshot()).runs[run.id].steers ?? []).filter(item => item.delivery === 'fallback')
       const rules = this.childRules?.()
@@ -225,7 +238,8 @@ export class AcpRunService {
       await work.delivering
       await updates
       // A Codex turn can end after the agent took a message and before the model read it. The adapter then drops the
-      // message. So a message without work of the model after it waits again, and the end of the run sends it again.
+      // message. So a message without the start of a part of model work after it (see `countWork`) waits again, and
+      // the end of the run sends it again.
       for (const [id, entry] of work.steered) {
         if (entry.updates === work.updates) await this.state.updateSteer(run.id, generation, id, { delivery: 'pending' })
       }
