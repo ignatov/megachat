@@ -19,9 +19,10 @@ const call = (name, args) => fauxAssistantMessage(fauxToolCall(name, args), { st
 
 /**
  * A service with `settings.json` in a temporary directory, a run service with the fake agent, and the rules paragraph
- * of the daemon. `turn` gives the replies of the model in their order, and `Answer.` follows them.
+ * of the daemon. `turn` gives the replies of the model in their order, and `Answer.` follows them. [options] go to the run
+ * service.
  */
-async function fixture(t, values, configuration) {
+async function fixture(t, values, configuration, options = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-children-')))
   t.after(() => rm(directory, { force: true, recursive: true }))
   const settingsPath = join(directory, 'settings.json')
@@ -42,7 +43,8 @@ async function fixture(t, values, configuration) {
     launched.push(agent)
     return configuration ? configuration.childLaunch(agent) : { env: process.env }
   } },
-    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], childRules: () => service.childRules() })
+    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], childRules: () => service.childRules(),
+      settings: () => service.settings.values(), ...options })
   await children.start()
   await service.resume()
   t.after(async () => { await children.close(); await service.close() })
@@ -54,7 +56,8 @@ async function fixture(t, values, configuration) {
       && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
   }
   const prompts = async () => (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-  return { service, cwd, launched, turn, prompts, settingsPath }
+  const modes = async () => (await readFile(join(cwd, 'modes'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
+  return { service, cwd, launched, script, turn, prompts, modes, settingsPath }
 }
 
 test('a task without a named agent goes to the agent of children.agent, and a follow-up stays with its session', { timeout: 20000 }, async t => {
@@ -171,4 +174,69 @@ test('a Codex child gets no AGENTS.md block, because Codex reads AGENTS.md by it
   await writeFile(join(cwd, 'AGENTS.md'), 'Run npm test after each change.\n')
   await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
   assert.deepEqual((await prompts())[0].slice(1), ['first task'])
+})
+
+test('each value of children.permissionMode sends its mode of Claude Code before the prompt, and inherit sends none', { timeout: 30000 }, async t => {
+  // A settings.json of an earlier build has no key children.permissionMode. It opens with the default inherit.
+  const { service, cwd, turn, modes } = await fixture(t, { 'children.commit': 'deny' })
+  assert.deepEqual([service.settings.entry('children.permissionMode').value, service.settings.entry('children.permissionMode').source],
+    ['inherit', 'default'])
+  let state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  assert.deepEqual(await modes(), [])
+  const [first] = Object.values(state.runs)
+  // A change applies to the next child, also in the turn that made it. A follow-up loads its session and gets the mode too.
+  state = await turn('second', call('agents_settings', { action: 'set', key: 'children.permissionMode', value: 'ask' }),
+    call('agents_send', { childSessionId: first.childSessionId, cwd, prompt: 'follow-up' }), fauxAssistantMessage('Sent.'))
+  assert.deepEqual(Object.values(state.runs).map(run => run.status), ['completed', 'completed'])
+  for (const [index, [value, mode]] of [['allowEdits', 'acceptEdits'], ['auto', 'auto']].entries()) {
+    await turn(`mode-${index}`, call('agents_settings', { action: 'set', key: 'children.permissionMode', value }),
+      call('agents_spawn', { cwd, prompt: `task ${mode}` }), fauxAssistantMessage('Started.'))
+  }
+  assert.deepEqual(await modes(), ['default before the prompt', 'acceptEdits before the prompt', 'auto before the prompt'])
+  // Inherit sends no mode again, and a Codex child never gets one.
+  await turn('inherit', call('agents_settings', { action: 'set', key: 'children.permissionMode', value: 'inherit' }),
+    call('agents_spawn', { cwd, prompt: 'inherit task' }), fauxAssistantMessage('Started.'))
+  await turn('codex', call('agents_settings', { action: 'set', key: 'children.permissionMode', value: 'ask' }),
+    call('agents_spawn', { cwd, agent: 'codex', prompt: 'codex task' }), fauxAssistantMessage('Started.'))
+  assert.equal((await modes()).length, 3)
+})
+
+test('a permission mode that the agent refuses fails the run before the prompt, with no continuation', { timeout: 20000 }, async t => {
+  const env = { ...process.env, FAKE_ACP_MODES: 'default,acceptEdits,plan' }
+  const { cwd, turn, prompts, modes } = await fixture(t, { 'children.permissionMode': 'auto' }, { childLaunch: async () => ({ env }) })
+  t.mock.method(process.stderr, 'write', () => true)
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  const runs = Object.values(state.runs)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'interrupted')
+  assert.equal(runs[0].error, message('error.childMode', 'auto'))
+  assert.equal(runs[0].autoResume, false)
+  assert.deepEqual(await modes(), ['auto before the prompt'])
+  await assert.rejects(prompts(), { code: 'ENOENT' })
+})
+
+test('an agent that ends in the mode request interrupts the run, and the run gets a continuation', { timeout: 20000 }, async t => {
+  const env = { ...process.env, FAKE_ACP_MODES: 'exit' }
+  const { service, cwd, script } = await fixture(t, { 'children.permissionMode': 'ask' }, { childLaunch: async () => ({ env }) })
+  t.mock.method(process.stderr, 'write', () => true)
+  script.push(call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  await service.submit('first', 'Work')
+  const run = await waitForState(service.state, state => Object.values(state.runs).find(item => terminalStates.has(item.status)), { timeoutMs: 15000 })
+  assert.ok(['interrupted', 'resumed'].includes(run.status), run.status)
+  assert.notEqual(run.error, message('error.childMode', 'ask'))
+  assert.equal(run.autoResume, true)
+})
+
+test('a failed read of the project settings goes to the log without its message, and the Claude child starts', { timeout: 20000 }, async t => {
+  const lines = []
+  const resolveSettings = async () => { throw new SyntaxError('Unexpected token in {"env":{"ANTHROPIC_BASE_URL":"http://secret"}}') }
+  const { cwd, turn } = await fixture(t, undefined, undefined, { resolveSettings })
+  t.mock.method(process.stderr, 'write', chunk => { lines.push(String(chunk)); return true })
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  const logged = lines.filter(line => line.includes(message('log.projectSettings')))
+  assert.equal(logged.length, 1)
+  assert.match(logged[0], /name=SyntaxError/)
+  assert.doesNotMatch(lines.join(''), /secret|ANTHROPIC_BASE_URL":/)
 })

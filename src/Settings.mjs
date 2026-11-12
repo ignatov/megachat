@@ -37,6 +37,13 @@ export const CHILD_AGENTS = ['claude', 'codex']
 /** The steps of a child that the user allows, forbids, or allows only after a question. */
 export const CHILD_STEPS = ['commit', 'push', 'daemonRestart']
 const CHILD_PERMISSIONS = ['allow', 'ask', 'deny']
+/**
+ * The permission mode of Claude Code for each value of `children.permissionMode`. This is the one map from a value of
+ * the setting to a mode name of Claude Code. `inherit` sends no mode, so the settings of Claude Code decide. Megachat
+ * offers no `bypassPermissions`. It offers no `plan` either: the approval of a plan has options that switch the child
+ * to `auto` or to `bypassPermissions`, so the answer to a permission request, not the setting, gives the next mode.
+ */
+export const CLAUDE_PERMISSION_MODES = { inherit: undefined, ask: 'default', allowEdits: 'acceptEdits', auto: 'auto' }
 const SCHEMA = 1
 
 const toBoolean = value => typeof value === 'boolean' ? value
@@ -164,6 +171,8 @@ export const SETTINGS = [
   // The list of the models is long, and `coordinator.model` gives it already.
   { key: 'children.piModel', default: DEFAULT_PI_MODEL, applies: 'nextChild', validate: knownModel,
     allowed: () => ({ other: message('settings.piModel.other') }) },
+  { key: 'children.permissionMode', default: 'inherit', applies: 'nextChild', validate: choice(Object.keys(CLAUDE_PERMISSION_MODES)),
+    allowed: () => ({ values: Object.keys(CLAUDE_PERMISSION_MODES) }) },
   { key: 'children.commit', default: 'allow', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.push', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS),

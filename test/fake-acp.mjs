@@ -17,6 +17,7 @@ const answers = (process.env.FAKE_ACP_STEERING ?? 'injected').split(',')
 let steerings = 0
 let prompting = false
 let steered
+let prompted = false
 agent({ name: 'fake-claude' })
   .onRequest(methods.agent.initialize, () => ({ protocolVersion: 1,
     agentCapabilities: { loadSession: true, mcpCapabilities: { http: process.env.FAKE_ACP_HTTP !== '0' } }, authMethods: [],
@@ -61,9 +62,20 @@ agent({ name: 'fake-claude' })
     })
     return {}
   })
+  // Each mode request, so a test can read the mode that the daemon sends. FAKE_ACP_MODES lists the modes of the
+  // session, as the adapter lists the modes that the settings of Claude Code allow. The value exit ends the agent.
+  .onRequest(methods.agent.session.setMode, async ctx => {
+    await appendFile(join(process.cwd(), 'modes'), `${ctx.params.modeId} ${prompted ? 'after' : 'before'} the prompt\n`)
+    // An agent that ends in the request, as after a crash.
+    if (process.env.FAKE_ACP_MODES === 'exit') process.exit(1)
+    if (!(process.env.FAKE_ACP_MODES ?? 'default,acceptEdits,plan,auto').split(',').includes(ctx.params.modeId))
+      throw RequestError.invalidParams(undefined, `Mode ${ctx.params.modeId} is not available in this session`)
+    return {}
+  })
   .onNotification(methods.agent.session.cancel, () => { cancelled = true; cancel?.() })
   .onRequest(methods.agent.session.prompt, async ctx => {
     prompting = true
+    prompted = true
     try { return await answerPrompt(ctx) }
     finally { prompting = false }
   })

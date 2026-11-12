@@ -212,6 +212,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
 | `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
 | `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
+| `children.permissionMode` | `inherit` | | The permission mode of a Claude child: `inherit` (the settings of Claude Code decide), `ask`, `allowEdits` or `auto`. It does not change a Codex child or a pi child. See below. |
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
@@ -234,6 +235,15 @@ skills or your plugins. When the `env` of `.claude/settings.json` sets `ANTHROPI
 Claude child, because the child would send the key of Megachat to that address. The failure names the file. Claude Code
 does not read `AGENTS.md`. When the project has an `AGENTS.md` and no `CLAUDE.md`, the daemon adds `AGENTS.md` to the
 prompt of the child, at most 32 KB. A Codex child reads `AGENTS.md` by itself.
+
+The adapter of Claude Code takes the permission mode of a Claude child from `permissions.defaultMode` of each settings
+file, also of `~/.claude/settings.json`. With `children.permissionMode` `inherit`, Megachat keeps that: when your
+settings say `auto`, each Claude child starts in the mode `auto`, and a project can set the mode `plan`. Each other value
+wins over each settings file: `ask` is the mode `default` of Claude Code, so the child asks before each change and each
+command. `allowEdits` is the mode `acceptEdits`, so the child changes files without a question and asks before a
+command. `auto` lets the classifier of Claude Code decide. A question of the child goes to the main conversation.
+Megachat offers no `bypassPermissions` and no `plan`. When Claude Code refuses the mode, for example because your
+settings turn off the mode `auto`, the task fails before it starts.
 
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.

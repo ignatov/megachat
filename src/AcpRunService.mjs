@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import { resolveSettings } from '@anthropic-ai/claude-agent-sdk'
+import { resolveSettings as resolveClaudeSettings } from '@anthropic-ai/claude-agent-sdk'
 import { waitForState } from './waitForState.mjs'
 import { ChildSlot } from './ChildSlot.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
@@ -12,6 +12,7 @@ import { VERSION } from './MegachatBuild.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
+import { CLAUDE_PERMISSION_MODES } from './Settings.mjs'
 
 /**
  * Refuses a Claude child in [cwd] when its project settings set `ANTHROPIC_BASE_URL` in `env`. Claude Code applies the
@@ -19,10 +20,14 @@ import { claudeChildRules } from './PiChild.mjs'
  * Megachat, would go to the gateway of the project. `resolveSettings` of the SDK reads the files as Claude Code does:
  * only `.claude/settings.json` of [cwd], and no file that is not valid. This is a guard against an accident, not against
  * a hostile project: a project hook runs in the environment of the child and can read the key. The message names the
- * file and the variable, and never the value.
+ * file and the variable, and never the value. When the read fails, the run goes on, and the log
+ * of the daemon tells that the guard did not run. The log line has no content of the settings.
  */
-async function refuseProjectBaseUrl(cwd) {
-  const resolved = await resolveSettings({ cwd, settingSources: ['project'] }).catch(() => undefined)
+async function refuseProjectBaseUrl(cwd, resolveSettings) {
+  const resolved = await resolveSettings({ cwd, settingSources: ['project'] }).catch(error => {
+    logFailure('log.projectSettings', error)
+    return undefined
+  })
   const source = resolved?.sources.find(entry => entry.source === 'project'
     && Object.hasOwn(entry.settings?.env ?? {}, 'ANTHROPIC_BASE_URL'))
   if (source) throw new MegachatError('projectBaseUrl', source.path ?? join(cwd, '.claude', 'settings.json'))
@@ -80,10 +85,13 @@ export function steerBlock(items) {
  * Only this process has the connection to the agent. So the tool `agents_steer` records a message in the state, and
  * this service sends it, as it does for a cancel. [steerTimeoutMs] limits the wait for the answer of the agent.
  * [slot] is the one place for a child that this service shares with the pi run service. A pi run is not for this service.
+ * [settings] gives the effective settings at the time of each dispatch. [resolveSettings] reads the project settings of
+ * Claude Code. A test replaces it.
  */
 export class AcpRunService {
   constructor(state, configuration, {
     command, args, model, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, slot = new ChildSlot(),
+    settings = () => ({}), resolveSettings = resolveClaudeSettings,
   } = {}) {
     this.state = state
     this.configuration = configuration
@@ -92,6 +100,8 @@ export class AcpRunService {
     this.historyServer = historyServer
     this.childRules = childRules
     this.slot = slot
+    this.settings = settings
+    this.resolveSettings = resolveSettings
     this.active = new Map()
     this.stopping = false
     this.closing = false
@@ -161,7 +171,10 @@ export class AcpRunService {
     try {
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation })) return
       const agent = run.agent ?? 'claude'
-      if (agent === 'claude') await refuseProjectBaseUrl(run.cwd)
+      if (agent === 'claude') await refuseProjectBaseUrl(run.cwd, this.resolveSettings)
+      // The settings of the dispatch. A change during the run applies to the next child.
+      const choice = this.settings()['children.permissionMode'] ?? 'inherit'
+      const mode = agent === 'claude' ? CLAUDE_PERMISSION_MODES[choice] : undefined
       const configured = await this.configuration.childLaunch(agent)
       const launch = { ...configured, ...Object.fromEntries(Object.entries(this.launch).filter(([, value]) => value !== undefined)) }
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
@@ -233,6 +246,16 @@ export class AcpRunService {
       else {
         const session = await ctx.request(methods.agent.session.new, params)
         sessionId = session.sessionId
+      }
+      // The adapter takes the start mode from `permissions.defaultMode` of each settings file of Claude Code, also of the
+      // files of the user, whatever `settingSources` says, and a load continues in the mode of the transcript. It ignores
+      // `permissionMode` in the options. So a mode of the setting goes in its own request before the prompt. When the
+      // adapter refuses the mode, the run fails and sends no prompt. A refusal is an error answer of the adapter, with
+      // a JSON-RPC code. A closed connection is another error, and the run then gets a continuation as after a crash.
+      if (mode) {
+        await ctx.request(methods.agent.session.setMode, { sessionId, modeId: mode }).catch(error => {
+          throw Number.isInteger(error?.code) ? new MegachatError('childMode', choice) : error
+        })
       }
       await this.state.transition(run.id, ['launching'], { providerSessionId: sessionId, status: 'ready' })
       work.cancel = () => {

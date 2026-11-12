@@ -102,7 +102,7 @@ async function daemon() {
     await piChildren.start()
     proceed()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),
-      childRules: () => service.childRules(), slot })
+      childRules: () => service.childRules(), settings: () => service.settings.values(), slot })
     await children.start()
     proceed()
     await service.resume()
