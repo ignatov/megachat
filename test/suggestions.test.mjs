@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -8,6 +8,7 @@ import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
+import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { AcpBridge } from '../src/AcpBridge.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
@@ -98,25 +99,29 @@ test('with the suggestions on, the tools, the rules and the event prompt come ba
  * A daemon in the mode [mode] on a fake model, with a bridge for each view. [turn] gives the replies of the model for
  * the next turn. Each request is kept as text, so a test can read the rules and the tool results.
  */
-async function ghostFixture(t, { mode = 'ghost', lifetimeMs } = {}) {
+async function ghostFixture(t, { mode = 'ghost', lifetimeMs, settingsPath, storage = new MemoryStorage() } = {}) {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'megachat-ghost-')))
   const fake = fauxProvider()
   const requests = []
   const models = createModels()
   models.setProvider(fake.provider)
   const model = fake.getModel()
-  const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, {},
-    { suggestions: mode, keepAlive: { enabled: false }, ...(lifetimeMs === undefined ? {} : { promptSuggestionLifetimeMs: lifetimeMs }) })
+  // With [settingsPath], the mode comes from that settings file, so a test can change it as the user does.
+  const service = await PiMegachatService.open(storage, models, { provider: model.provider, modelId: model.id }, {},
+    { ...(settingsPath ? { settingsPath, environment: {} } : { suggestions: mode }), keepAlive: { enabled: false },
+      ...(lifetimeMs === undefined ? {} : { promptSuggestionLifetimeMs: lifetimeMs }) })
   await service.state.addWorkspace(cwd)
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
   await service.resume()
-  t.after(async () => { await server.close(); await service.close(); await rm(cwd, { force: true, recursive: true }) })
+  let closed
+  const close = () => closed ??= server.close().then(() => service.close())
+  t.after(async () => { await close(); await rm(cwd, { force: true, recursive: true }) })
   const turn = (...replies) => fake.setResponses(replies.map(reply => async context => {
     requests.push(JSON.stringify(context))
     return reply
   }))
-  return { cwd, service, daemon, requests, turn }
+  return { cwd, service, daemon, requests, turn, close }
 }
 
 const suggest = proposal => fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal }), { stopReason: 'toolUse' })
@@ -341,4 +346,69 @@ test('a cancel of the turn drops the suggestion of that turn, and a stored sugge
   const late = await view(t, daemon, cwd, { sessionId: viewer.sessionId })
   await sleep(100)
   assert.deepEqual(late.suggestions(), [])
+})
+
+/** The mode of the suggestions that the user sets through the main agent. */
+const setMode = async (service, value) => {
+  const settings = service.extension().tools.find(item => item.name === 'agents_settings')
+  await settings.execute({ action: 'set', key: 'reply.suggestions', value })
+}
+const settingsFile = async (t, mode) => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-ghost-settings-')))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const path = join(directory, 'settings.json')
+  await writeFile(path, JSON.stringify({ schema: 1, onboarding: 'done', values: { 'reply.suggestions': mode } }), { mode: 0o600 })
+  return path
+}
+
+test('a change of the mode from ghost withdraws the shown suggestion at once, and a change back sends no old suggestion', { timeout: 20000 }, async t => {
+  const { cwd, daemon, service, turn } = await ghostFixture(t, { settingsPath: await settingsFile(t, 'ghost') })
+  const viewer = await view(t, daemon, cwd)
+  turn(suggest('Run the tests'), fauxAssistantMessage('Done.'))
+  await viewer.prompt('Fix the parser')
+  assert.deepEqual(viewer.suggestions(), ['Run the tests'])
+  // The change from ghost to reply withdraws the suggestion in the open view, and a new attach gets none.
+  await setMode(service, 'reply')
+  await until(() => viewer.suggestions().length === 2, 'no withdrawal after the change to reply')
+  assert.deepEqual(viewer.suggestions(), ['Run the tests', null])
+  assert.equal((await service.state.snapshot()).initiative.promptSuggestion, null)
+  const loaded = await view(t, daemon, cwd, { sessionId: viewer.sessionId })
+  // The change back to ghost sends no old suggestion to the two views, nor to a new attach.
+  await setMode(service, 'ghost')
+  const late = await view(t, daemon, cwd, { sessionId: viewer.sessionId })
+  await sleep(100)
+  assert.deepEqual([viewer.suggestions(), loaded.suggestions(), late.suggestions()], [['Run the tests', null], [], []])
+  // A new turn in the mode ghost sends a suggestion again, and the change to off withdraws it in each view.
+  turn(suggest('Commit the change'), fauxAssistantMessage('Done.'))
+  await viewer.prompt('Fix the lexer')
+  await until(() => late.suggestions().length === 1, 'no suggestion in the mode ghost')
+  await setMode(service, 'off')
+  await until(() => viewer.suggestions().length === 4 && late.suggestions().length === 2, 'no withdrawal after the change to off')
+  assert.deepEqual(late.suggestions(), ['Commit the change', null])
+  const last = await view(t, daemon, cwd, { sessionId: viewer.sessionId })
+  await sleep(100)
+  assert.deepEqual(last.suggestions(), [])
+})
+
+test('a change of the mode in the turn of the suggestion sends no suggestion, and a start in another mode drops a stored one', { timeout: 20000 }, async t => {
+  const settingsPath = await settingsFile(t, 'ghost')
+  const { cwd, daemon, service, turn } = await ghostFixture(t, { settingsPath })
+  const viewer = await view(t, daemon, cwd)
+  // The main agent makes a suggestion, and then the user turns the mode to reply in the same turn.
+  turn(suggest('Run the tests'),
+    fauxAssistantMessage(fauxToolCall('agents_settings', { action: 'set', key: 'reply.suggestions', value: 'reply' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Done.'))
+  await viewer.prompt('Fix the parser and turn the grey suggestions off')
+  await sleep(100)
+  assert.deepEqual(viewer.suggestions(), [])
+  assert.equal((await service.state.snapshot()).initiative.promptSuggestion, null)
+  // A stored suggestion of the mode ghost does not survive a start of the daemon in the mode reply.
+  const database = join(cwd, 'conversation.sqlite')
+  const ghost = await ghostFixture(t, { settingsPath: await settingsFile(t, 'ghost'), storage: await openNodeSqliteStorage(database) })
+  ghost.turn(suggest('Commit the change'), fauxAssistantMessage('Done.'))
+  await (await view(t, ghost.daemon, ghost.cwd)).prompt('Fix the lexer')
+  assert.equal((await ghost.service.state.snapshot()).initiative.promptSuggestion.text, 'Commit the change')
+  await ghost.close()
+  const reply = await ghostFixture(t, { settingsPath: await settingsFile(t, 'reply'), storage: await openNodeSqliteStorage(database) })
+  assert.equal((await reply.service.state.snapshot()).initiative.promptSuggestion, null)
 })

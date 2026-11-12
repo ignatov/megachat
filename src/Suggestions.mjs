@@ -8,7 +8,7 @@ import { environmentSetting } from './Settings.mjs'
  * - `ghost`: the agent gets the rules of `resources/instructions-suggestions-ghost.md` and the same tools. The proposal
  *   is not in the reply text. The bridge sends it as a prompt suggestion to each client. Air shows it as grey text in
  *   its empty prompt input, and a client that does not know the key ignores it.
- * The stored suggestion state stays in each mode.
+ * The stored suggestion state stays in each mode. Only the prompt suggestion of the mode `ghost` ends when the mode changes.
  */
 export { SUGGESTION_MODES, SUGGESTIONS_VARIABLE } from './Settings.mjs'
 

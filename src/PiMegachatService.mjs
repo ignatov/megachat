@@ -212,6 +212,7 @@ export class PiMegachatService {
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
     service.stopper = new AgentStop(state, { table: service.running.table, running: service.running, clock, ...stopOptions })
     service.adopt(values)
+    await service.dropPromptSuggestion()
     service.workdayClock = reportOptions.clock ?? workdayClock
     service.morningReport = new MorningReport({ clock: service.workdayClock, values: () => service.settings.values(),
       lastDate: async () => (await state.snapshot()).morningReport.lastDate, prepare: date => service.prepareMorningReport(date) })
@@ -308,6 +309,7 @@ export class PiMegachatService {
       this.settingsPending = false
       const values = this.settings.values()
       const renewed = this.adopt(values)
+      await this.dropPromptSuggestion()
       this.registry.install(this.extension())
       const agent = agentOf(values, this.rules)
       if (JSON.stringify(agent) !== JSON.stringify(this.agent)) {
@@ -751,6 +753,17 @@ export class PiMegachatService {
       Math.max(0, Date.parse(suggestion.expiresAt) - Date.now()))
     timer.unref()
     this.expiry = { id: suggestion.id, timer }
+  }
+
+  /**
+   * Withdraws the stored prompt suggestion when the mode is not `ghost`, so that no view shows it. This occurs at the
+   * start of the daemon and at a change of the setting. During a turn the change applies before the end of the turn, so
+   * no view shows the suggestion of that turn.
+   */
+  async dropPromptSuggestion() {
+    if (this.suggestions === 'ghost') return
+    const suggestion = (await this.state.snapshot()).initiative.promptSuggestion
+    if (suggestion) await this.state.withdrawPromptSuggestion(suggestion.id)
   }
 
   /** Withdraws the prompt suggestion [id] at a cancel of the user while no turn runs. Tells whether it was live. */
