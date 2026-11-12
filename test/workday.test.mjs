@@ -209,8 +209,9 @@ const text = content => typeof content === 'string' ? content : content.filter(b
 
 /**
  * A service with `settings.json` that holds [values], a fake model, and a fake clock that starts at the UTC time [start].
- * [requests] gets each model request with its kind, its UTC time, whether its context holds the summary, and the size of
- * its context in characters. [replies] gives the replies of the first turn requests, else `Answer.`.
+ * The keep-alive and the working day of the service (the wait of the child results) both use this clock. [requests]
+ * gets each model request with its kind, its UTC time, whether its context holds the summary, and the size of its
+ * context in characters. [replies] gives the replies of the first turn requests, else `Answer.`.
  */
 async function serviceFixture(t, { start, values, replies = [] }) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-workday-')))
@@ -230,7 +231,7 @@ async function serviceFixture(t, { start, values, replies = [] }) {
   models.setProvider(fake.provider)
   const model = fake.getModel()
   const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, undefined,
-    { settingsPath: join(directory, 'settings.json'), environment: {}, keepAlive: { clock, minTokens: 1000 } })
+    { settingsPath: join(directory, 'settings.json'), environment: {}, keepAlive: { clock, minTokens: 1000 }, morningReport: { clock } })
   await service.state.addWorkspace(directory)
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
@@ -247,7 +248,7 @@ async function serviceFixture(t, { start, values, replies = [] }) {
     const settings = service.extension().tools.find(item => item.name === 'agents_settings')
     return JSON.parse((await settings.execute(args)).output[0].text)
   }
-  const advance = ms => clock.advance(ms, () => service.keepAlive?.running)
+  const advance = ms => clock.advance(ms, () => Promise.all([service.keepAlive?.running, service.waitCheck]))
   return { service, requests, say, tool, advance, directory, clock }
 }
 
@@ -286,24 +287,28 @@ test('a turn at night works, and the idle rule stops the keep-alive request that
   assert.deepEqual(off.requests.map(request => request.kind), ['turn', 'ping'])
 })
 
-test('a child result at night starts its turn at once, and the idle rule applies after that turn', { timeout: 30000 }, async t => {
-  const { service, requests, say, advance, clock } = await serviceFixture(t, { start: '2026-11-11T23:00:00Z', values: UTC_WORKDAY, replies: [
+test('a child task continues while the conversation sleeps, and its result at 02:00 waits for the start of the working day', { timeout: 30000 }, async t => {
+  const { service, requests, say, advance } = await serviceFixture(t, { start: '2026-11-11T23:00:00Z', values: UTC_WORKDAY, replies: [
     cwd => fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'Run the long build.' }), { stopReason: 'toolUse' }),
   ] })
   await say('task', large('alpha'))
   const [run] = Object.values((await service.state.snapshot()).runs)
   const lines = await logLines(t, async () => {
     await advance(3 * HOUR)
-    // The sleep does not stop the child. Its result at 02:00 starts a turn at once.
+    // The sleep does not stop the child. Its result comes at 02:00, while the conversation sleeps, so it starts no turn.
     await service.state.transition(run.id, ['admitted'], { status: 'completed', output: 'The build passed.' })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    assert.ok(!(await service.state.snapshot()).runs[run.id].reported)
+    assert.equal(requests.length, 2)
+    await advance(7 * HOUR - MINUTE)
+    assert.equal(requests.length, 2)
+    // The result turn starts at 09:00, the start of the next working day.
+    await advance(MINUTE)
     await waitForState(service.state, state => !state.current && state.runs[run.id].reported ? true : undefined)
-    for (let attempt = 0; attempt < 200 && service.keepAlive.busy; attempt++) await new Promise(resolve => setTimeout(resolve, 10))
-    assert.equal(service.keepAlive.idleSince, clock.now())
-    await advance(9 * HOUR)
   })
-  assert.deepEqual(requests.map(request => `${request.kind} ${request.at}`), ['turn 11-11 23:00', 'turn 11-11 23:00', 'turn 11-12 02:00'])
-  // The conversation went to sleep after the turn of the user and again after the turn of the child result.
-  assert.equal(lines.filter(line => line.includes('went to sleep')).length, 2)
+  assert.deepEqual(requests.map(request => `${request.kind} ${request.at}`), ['turn 11-11 23:00', 'turn 11-11 23:00', 'turn 11-12 09:00'])
+  // The conversation went to sleep one time, after the turn of the user. No turn came at night after that.
+  assert.equal(lines.filter(line => line.includes('went to sleep')).length, 1)
 })
 
 test('a settings.json without the working-day keys opens, and the settings change the keep-alive of a running daemon', { timeout: 30000 }, async t => {

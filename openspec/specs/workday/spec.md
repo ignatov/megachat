@@ -119,7 +119,7 @@ Tests: `test/workday.test.mjs`
 
 #### Scenario: A child task during the sleep
 - **WHEN** a turn of the user at 23:00 UTC starts a child task, and the conversation then goes to sleep
-- **THEN** the child task continues, and it finishes at 02:00 with its result
+- **THEN** the child task continues, it finishes at 02:00 with its result, and the result starts no turn before 09:00, the start of the next working day
 
 ### Requirement: Working day without the keep-alive
 With `keepAlive.enabled` off, the working day MUST have no effect on the keep-alive requests and on the summary. The wait of the child results below stays.
