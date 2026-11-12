@@ -592,24 +592,24 @@ test('a delegated session stays a service session after its runs are dropped', {
   assert.deepEqual(older.registrations, [{ agentId: 'codex', sessionId: 'fake-session', cwd }])
 })
 
-test('a project event delivers a proposal to an idle view and replay hides its internal prompt', { timeout: 10000 }, async t => {
+test('an event turn delivers a proposal to an idle view and replay hides its internal prompt', { timeout: 10000 }, async t => {
   const { daemon, cwd, fake, service } = await fixture(t, 'approval', 'claude', { suggestions: true })
   fake.setResponses([
-    fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal: 'Review the code change?' }), { stopReason: 'toolUse' }),
-    fauxAssistantMessage('Review the code change?'),
+    fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal: 'Resume the parser session?' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Resume the parser session?'),
   ])
   const viewer = await attach(daemon, cwd, { native: true })
   t.after(() => viewer.connection.close())
-  const reply = viewer.connection.nextUpdate(event => event.update.content?.text === 'Review the code change?')
-  const event = { cwd, revision: 'change-1', paths: ['src/main.kt'] }
-  assert.equal((await daemon.json('/project-event', event)).notify, true)
+  const reply = viewer.connection.nextUpdate(event => event.update.content?.text === 'Resume the parser session?')
+  await service.state.sessionsIndexed({ passId: 'pass-1', sessions: 2, projects: 1, entries: 12, agents: { claude: 2, codex: 0, pi: 0 }, unfinished: [] })
   await reply
   await waitForState(service.state, state => state.current === null ? true : undefined)
-  assert.equal((await daemon.json('/project-event', event)).accepted, false)
   assert.equal(Object.keys((await service.state.snapshot()).runs).length, 0)
+  // The daemon has no route for a change of the files of a project.
+  await assert.rejects(daemon.json('/project-event', { cwd, revision: 'change-1', paths: ['src/main.kt'] }), { code: 'invalid' })
   const restored = await attach(daemon, cwd, { native: true })
   t.after(() => restored.connection.close())
-  assert.ok(restored.updates.some(event => event.update.content?.text === 'Review the code change?'))
+  assert.ok(restored.updates.some(event => event.update.content?.text === 'Resume the parser session?'))
   assert.equal(restored.updates.filter(event => event.update.sessionUpdate === 'user_message_chunk').length, 0)
 })
 
@@ -852,7 +852,7 @@ test('a user message interrupts an automatic event turn', { timeout: 10000 }, as
     },
     fauxAssistantMessage('User reply.'),
   ])
-  await daemon.json('/project-event', { cwd, revision: 'interruptible-event', paths: ['src/main.kt'] })
+  await service.state.sessionsIndexed({ passId: 'pass-1', sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] })
   await started.promise
   const receipt = await daemon.json('/input', { requestId: 'user-priority', text: 'My task comes first' })
   await daemon.json(`/wait?submission=${receipt.submissionId}`)
@@ -1208,7 +1208,7 @@ test('after one message fails over to the stop, the other waiting messages go to
   assert.deepEqual(state.runs[run.id].steers.map(item => item.outcome), ['restarted', 'restarted'])
 })
 
-test('a turn of a project event or of a child result cannot steer, and a follow-up to a working child names agents_steer', { timeout: 15000 }, async t => {
+test('a turn of a child result or of the sessions summary cannot steer, and a follow-up to a working child names agents_steer', { timeout: 15000 }, async t => {
   const { cwd, daemon, fake, service, server } = await fixture(t)
   const results = []
   const capture = context => {
@@ -1229,11 +1229,8 @@ test('a turn of a project event or of a child result cannot steer, and a follow-
   await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
   await waitForState(service.state, () => results.length === 1 ? true : undefined)
   await waitForState(service.state, state => state.current === null ? true : undefined)
-  // A change in a directory with a running child starts no event turn. So the event comes from another project.
-  const other = await mkdtemp(join(tmpdir(), 'megachat-other-project-'))
-  t.after(() => rm(other, { recursive: true, force: true }))
-  await service.state.addWorkspace(other)
-  await daemon.json('/project-event', { cwd: other, revision: 'steer-event', paths: ['src/main.kt'] })
+  // The summary of the first pass of the session index starts the second such turn.
+  await service.state.sessionsIndexed({ passId: 'pass-1', sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] })
   await waitForState(service.state, () => results.length === 2 ? true : undefined)
   assert.deepEqual(results, [{ isError: true, text: message('error.steerEvent') }, { isError: true, text: message('error.steerEvent') }])
   const [, waiting] = Object.values((await service.state.snapshot()).runs)

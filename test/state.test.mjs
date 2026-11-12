@@ -357,44 +357,59 @@ test('three refusals survive restart and a duplicate feedback does not spend ano
   opened = await open(await openNodeSqliteStorage(database))
   t.after(() => opened.harness.close(BACKGROUND_CONTEXT))
   assert.equal((await opened.state.proposal('fourth', 'One more')).allowed, false)
-  await opened.state.projectChanged({ cwd: '/workspace', revision: 'new-code', paths: ['src/main.kt'] })
-  const event = await opened.state.nextProjectEvent()
-  assert.ok(event)
-  assert.equal((await opened.state.proposal('new-event', 'Review the code change')).allowed, true)
+  // An automatic turn does not reset the count of the refusals, and it cannot start work.
+  await opened.state.sessionsIndexed({ passId: 'pass-1', sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] })
+  assert.ok(await opened.state.nextSessionsEvent())
+  assert.equal((await opened.state.proposal('after-event', 'Review the sessions')).allowed, false)
   await assert.rejects(opened.state.admitChild('automatic-work', { cwd: '/workspace', prompt: 'Change a file' }), { code: 'proposalOnly' })
+  assert.equal((await opened.state.feedback('new-task', 'accepted')).allowed, true)
+  assert.equal((await opened.state.proposal('after-task', 'Review the sessions')).allowed, true)
 })
 
-test('explicit silence suppresses project events until the user asks to resume', { timeout: 10000 }, async t => {
+test('explicit silence suppresses proposals until the user asks to resume', { timeout: 10000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))
-  await state.projectChanged({ cwd: '/workspace', revision: 'one', paths: ['src/main.kt'] })
   await state.feedback('stop', 'silence')
-  assert.equal(await state.nextProjectEvent(), null)
-  assert.equal((await state.projectChanged({ cwd: '/workspace', revision: 'two', paths: ['src/main.kt'] })).notify, false)
   await state.feedback('task', 'accepted')
   assert.equal((await state.proposal('while-silent', 'Next')).allowed, false)
   await state.feedback('resume', 'resume')
   assert.equal((await state.proposal('after-resume', 'Next')).allowed, true)
 })
 
-test('project events deduplicate, coalesce, and do not react to an active child', { timeout: 10000 }, async t => {
-  const { harness, state } = await open()
-  t.after(() => harness.close(BACKGROUND_CONTEXT))
-  await state.addWorkspace('/second')
-  const first = { cwd: '/workspace', revision: 'one', paths: ['src/main.kt'] }
-  assert.equal((await state.projectChanged(first)).notify, true)
-  assert.equal((await state.projectChanged(first)).accepted, false)
-  assert.equal((await state.projectChanged({ ...first, revision: 'two' })).notify, false)
-  const main = await state.submit('work', 'Work')
-  await state.admitChild('child', { cwd: '/second', prompt: 'Work' })
-  assert.equal((await state.projectChanged({ cwd: '/second', revision: 'own-change', paths: ['src/main.kt'] })).notify, false)
-  assert.equal(await state.nextProjectEvent(), null)
-  await state.cancel(main.mainRunId)
-  await state.settleInput(main.mainRunId, 'cancelled')
-  assert.ok(await state.nextProjectEvent())
-  assert.equal(Object.keys((await state.snapshot()).initiative.pending).length, 0)
+test('a state with the waiting changes of the project events of v0.3.0 opens, and the changes start no turn', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-project-events-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const database = join(directory, 'state.sqlite')
+  const models = createModels()
+  const faux = fauxProvider()
+  const prompts = []
+  faux.setResponses(Array.from({ length: 10 }, () => context => {
+    prompts.push(JSON.stringify(context.messages.at(-1)))
+    return fauxAssistantMessage('Done')
+  }))
+  models.setProvider(faux.provider)
+  const model = { provider: faux.getModel().provider, modelId: faux.getModel().id }
+  let service = await PiMegachatService.open(await openNodeSqliteStorage(database), models, model)
+  await service.state.addWorkspace('/workspace')
+  // v0.3.0 kept the last revision of each project and the change that waited for its turn.
+  await service.state.change(state => {
+    state.initiative.projects = { '/workspace': { revision: 'one', notifiedAt: Date.now() } }
+    state.initiative.pending = { '/workspace': { cwd: '/workspace', revision: 'one', paths: ['src/main.kt'] } }
+  })
+  await service.close()
+  service = await PiMegachatService.open(await openNodeSqliteStorage(database), models, model)
+  t.after(() => service.close())
+  const opened = await service.state.snapshot()
+  // The fields stay as empty objects, because a daemon of v0.3.0 can open the state again and reads them.
+  assert.deepEqual([opened.initiative.projects, opened.initiative.pending], [{}, {}])
+  await service.resume()
+  // The summary of the session index is the next automatic turn. No turn of a project event comes before it.
+  await service.state.sessionsIndexed({ passId: 'pass-1', sessions: 1, projects: 1, entries: 3, agents: { claude: 1, codex: 0, pi: 0 }, unfinished: [] })
+  const state = await waitForState(service.state, value => !value.current && Object.keys(value.inputs).length ? value : undefined)
+  assert.deepEqual(Object.keys(state.inputs).map(key => key.split(':')[0]), ['sessions'])
+  assert.equal(prompts.length, 1)
+  assert.match(prompts[0], /Megachat finished the first import of the past sessions/)
 })
-
 
 test('the model reads retained history after context replacement and a restart', { timeout: 10000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-memory-'))

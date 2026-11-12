@@ -118,7 +118,6 @@ export class DaemonServer {
         return
       }
       case '/input': send(await this.service.submit(body.requestId, body.text)); return
-      case '/project-event': send(await this.service.state.projectChanged(body)); return
       case '/permission': await this.service.state.respondPermission(body.id, body.decision); send({ accepted: true }); return
       case '/cancel': {
         // A client from before the turn ID sends no ID. Then the stop is for the current turn, as before.

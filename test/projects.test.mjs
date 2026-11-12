@@ -158,11 +158,13 @@ test('the known list survives a restart, and an automatic turn cannot add a repo
   const state = opened.service.state
   assert.deepEqual((await state.snapshot()).projects, [directories.repository])
   assert.equal(await state.directory('~/src/repository'), directories.repository)
-  await state.addWorkspace(directories.outside)
-  await state.projectChanged({ cwd: directories.outside, revision: 'change', paths: ['src/main.kt'] })
-  assert.ok(await state.nextProjectEvent())
   await mkdir(join(directories.home, 'other'))
-  await assert.rejects(state.addProject('~/other'), { code: 'proposalOnly' })
+  // The kind `report` is the turn of a child result, and the kind `event` is the turn of the summary of the past sessions.
+  for (const kind of ['report', 'event']) {
+    await state.change(value => { value.current = { id: kind, requestId: kind, cancelling: false, kind } })
+    await assert.rejects(state.addProject('~/other'), { code: 'proposalOnly' })
+  }
+  await state.change(value => { value.current = null })
 })
 
 test('a session search accepts a known repository and the workspace, and refuses another directory', { timeout: 10000 }, async t => {

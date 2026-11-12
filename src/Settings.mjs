@@ -3,7 +3,6 @@ import { basename, isAbsolute } from 'node:path'
 import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai/models'
 import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
 import { logEvent, message, requireCondition } from './messages.mjs'
-import { DEFAULT_EVENT_IGNORE, eventPatterns } from './ProjectEventFilter.mjs'
 import { expandHome } from './ProjectDirectories.mjs'
 
 /** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
@@ -107,9 +106,6 @@ export const SETTINGS = [
   { key: 'children.push', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', validate: choice(CHILD_PERMISSIONS),
     allowed: () => ({ values: CHILD_PERMISSIONS }) },
-  { key: 'events.enabled', default: true, applies: 'nextEvent', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
-  { key: 'events.ignore', default: DEFAULT_EVENT_IGNORE, applies: 'nextEvent', validate: eventPatterns,
-    allowed: () => ({ other: message('settings.ignore.other') }) },
   { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
     // The value must be a path that each create can use: an absolute path after the expansion of `~`, as the create
     // expands it on this platform.
@@ -137,6 +133,12 @@ export const SETTINGS = [
 ]
 
 const definitions = new Map(SETTINGS.map(definition => [definition.key, definition]))
+/**
+ * The keys of the settings that an earlier build had and this build removed. Megachat up to v0.3.0 had the settings of
+ * the project events, `events.enabled` and `events.ignore`. This build ignores a stored value of them, as it ignores
+ * each key that it does not know, and the next write of the file drops them. A key of a newer build stays in the file.
+ */
+const REMOVED_KEYS = ['events.enabled', 'events.ignore']
 
 /** The value of a variable for [definition], or `undefined` when the variable is unset, blank or invalid. */
 function environmentValue(definition, environment) {
@@ -203,6 +205,7 @@ export class SettingsStore {
     const next = this.queue.then(async () => {
       const data = structuredClone(this.data)
       operation(data)
+      for (const key of REMOVED_KEYS) delete data.values[key]
       if (this.path) {
         const temporary = `${this.path}.${process.pid}.tmp`
         await writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 })

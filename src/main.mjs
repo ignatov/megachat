@@ -22,7 +22,6 @@ import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, le
 import { install } from './MegachatInstall.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { PiRunService } from './PiRunService.mjs'
-import { ProjectWatchService } from './ProjectWatchService.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
 import { withoutNpm } from './npmEnvironment.mjs'
 
@@ -54,7 +53,6 @@ async function daemon() {
   let children
   let piChildren
   let server
-  let projects
   let stopping
   let starting
   // A stop in the start waits for the end of the start, so it closes each part that the start opened. The start ends at
@@ -63,7 +61,7 @@ async function daemon() {
     await starting?.catch(() => {})
     try { await server?.close() }
     finally {
-      try { await projects?.close(); await children?.close(); await piChildren?.close() }
+      try { await children?.close(); await piChildren?.close() }
       finally {
         try { await service?.close() }
         finally { await owner.close() }
@@ -108,9 +106,6 @@ async function daemon() {
     await children.start()
     proceed()
     await service.resume()
-    proceed()
-    projects = new ProjectWatchService(service.state)
-    await projects.start()
     proceed()
     await owner.publish(descriptor)
   })()

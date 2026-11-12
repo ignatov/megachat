@@ -187,7 +187,9 @@ async function upgrade(t, variant) {
   assert.deepEqual(recovered.sessionIndex, { task: null, summary: null })
   assert.equal(recovered.megachatWorkspace, await realpath(join(directories.state, 'workspace')))
   assert.equal(recovered.initiative.suggestion, 'Add a test for the parser.')
-  assert.ok(recovered.initiative.projects[workspace])
+  // v0.2.0 recorded the revision of the project at its project event. The open drops it, and the input of the turn stays.
+  assert.deepEqual([recovered.initiative.projects, recovered.initiative.pending], [{}, {}])
+  assert.equal(Object.entries(recovered.inputs).find(([key]) => key.startsWith('project:'))?.[1].status, 'completed')
   assert.ok(Object.values(recovered.serviceSessions).some(session => session.providerSessionId === 'fake-session' && session.cwd === workspace))
   assert.ok(runs.every(run => !('updates' in run) && !('updateBytes' in run)))
   const summary = task('Notes summary')
@@ -234,6 +236,9 @@ async function upgrade(t, variant) {
   await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} })
   await connection.agent.request(methods.agent.session.load, { cwd: workspace, mcpServers: [], sessionId: 'megachat' })
   assert.ok(JSON.stringify(updates).includes('I started two tasks.'))
+  // The reply to the old project event is in the replay, and its internal prompt is not.
+  assert.ok(JSON.stringify(updates).includes('The notes changed. Nothing to do.'))
+  assert.ok(!JSON.stringify(updates).includes('A project changed.'))
   connection.close()
 
   // The report that waited goes out, and the queued task starts.
@@ -313,6 +318,9 @@ async function upgrade(t, variant) {
   assert.ok(found.indexedThroughEntryId > indexed.last_entry_id)
   const page = await service.history({})
   assert.ok(page.entries.length > 0)
+  // The history tool and the search index read the entry of the old project event.
+  const changed = await service.history({ query: 'project changed notes.md' })
+  assert.ok(changed.hits.some(hit => hit.role === 'event' && hit.snippet.includes('notes.md')), JSON.stringify(changed.hits))
   assert.equal((await service.state.readRun(summary.id)).output, 'Summarize notes.md\n')
   await started.stop()
 

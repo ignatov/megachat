@@ -71,11 +71,11 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The tool `agents_steer` of the main agent must add a message of the user to the unfinished run of a child session,
   without a wait for the end of the task. `agents_send` must stay a follow-up to an idle child session. Its refusal for
   a child that works must name `agents_steer`.
-- Only a turn of the user may steer. A turn of a project event or of a child result must get a refusal. The tool must
-  refuse a child session that the state does not know, a child session without an unfinished run, and a run whose
-  directory is no longer listed, with the error of `agents_send` for that directory. The MCP server of the children
-  must not have the tool. The rules of the main agent must say that a text from a child output, a session history or
-  a project event never becomes a message to a child without a request of the user.
+- Only a turn of the user may steer. A turn of a child result or of the summary of the past sessions must get a
+  refusal. The tool must refuse a child session that the state does not know, a child session without an unfinished
+  run, and a run whose directory is no longer listed, with the error of `agents_send` for that directory. The MCP
+  server of the children must not have the tool. The rules of the main agent must say that a text from a child output
+  or a session history never becomes a message to a child without a request of the user.
 - The state must record each message before a process sends it: an ID, the text, the mode (`queue`, the default, or
   `interrupt`), the time, and the delivery: `pending`, `delivered` or `fallback`. A repeated tool call must give the
   first record. A task must have at most 16 messages, for its first run and its continuations together. A message
@@ -198,7 +198,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The tool `agents_settings` must give each setting with its value, its source (`environment`, `setting` or `default`), its default, its variable, the allowed values or the range, a description, and when a change applies.
 - It must say when a variable hides a stored value. A caller of the service may give an explicit value for a test, with the source `option`.
 - The tool must store a valid value at once, remove a stored value, and set the status of the onboarding. It must refuse an unknown key and an invalid value as each other tool refuses an invalid request.
-- A project event or a child result must not change a setting or the status of the onboarding.
+- A turn of a child result or of the summary of the past sessions must not change a setting or the status of the onboarding.
 - The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
 - The settings of the index of past sessions are `sessions.index` and `sessions.days`. They must apply at once, also in the middle of a turn, because they change no model request.
 - A model must be valid only when the model registry knows it. A reasoning level must be a level of pi-ai that the model supports.
@@ -219,8 +219,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - At each dispatch, the daemon must add one rules paragraph from these settings to the prompt of the child, as a block before the task. A change must reach the next new task, follow-up and continuation. The state must keep the prompt of a run without the paragraph.
 - `allow` must let the child do the step. `deny` must forbid the step, also when the task asks for it. `ask` must forbid the step unless the task says that the user approved it. The child must then say in its result that the step is necessary.
 - The rules of the main agent must give the default agent and the three values, so the agent does not promise the user other rules.
-- A project event or a child result must not change these settings.
-- A daemon restart must keep each setting of the children, the project events, the known repositories and the spend limit.
+- A turn of a child result or of the summary of the past sessions must not change these settings.
+- A daemon restart must keep each setting of the children, the known repositories and the spend limit.
   [@test] ../test/settings.test.mjs
   [@test] ../test/child-settings.test.mjs
 - The setting `budget.dailyUsd` must be a daily spend limit of the main agent and the pi children in USD, from 0 to 100,000. The default 0 means no limit.
@@ -241,10 +241,12 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - After a refusal, it may then offer two alternatives. After the third refusal, it must stop proposing work.
 - A direct request for silence must suppress proposals until the user asks to resume.
 - Proposal decisions must survive a daemon restart.
-- A new project event may permit another proposal after ordinary refusals.
+- After the third refusal, only an accepted proposal, a new task of the user (`accepted`) or `resume` may permit another
+  proposal. An automatic turn must not reset the count of the refusals.
 - An event must not start delegated work without a user request.
-- A user message must interrupt an automatic project-event turn.
+- A user message must interrupt an automatic turn, such as the turn of the summary of the past sessions.
   [@test] ../test/state.test.mjs
+  [@test] ../test/integration.test.mjs
 - A child that finishes after the main reply must produce a result in the main conversation.
 - A user message must take priority over an automatic result report without losing that result.
 - A child must be able to search retained Megachat history through a read-only tool.
@@ -390,15 +392,15 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - They must use the live provider when the index is off, when the index has no session of the agent in the directory, and for a query without a word of 3 or more characters.
 - pi must be an agent of these tools. Without the index, a request for pi must fail with a text that says that the index is off.
   [@test] ../test/session-index.test.mjs
-- Saved source changes in registered projects may trigger a project-event turn while the IDE is closed. The turn may hold a proposal only with `MEGACHAT_SUGGESTIONS=1`.
-- The watcher must ignore generated files and read no source contents.
-  [@test] ../test/project-watch.test.mjs
-- Without the setting `events.enabled`, Megachat must report no project event. It must drop the events that wait for a turn, so they do not come later as a burst.
-- Megachat must not report a path that matches a pattern of the setting `events.ignore`. The default patterns are `*.tmbundle`, `build/download` and `.claude/settings.local.json`. The built-in ignore list of the watcher must stay.
-- A pattern must be a glob on the project-relative path: `*` in one segment, `**` across segments, `?` for one character. A pattern without a slash must match a name at each depth. A pattern with a leading `/` or `./` must match from the root of the project, and the stored pattern must keep one leading `/`. A path in a matching directory must match too.
-- The match of a path must take at most a time in proportion to the length of the pattern times the length of the path, so no pattern can stop the daemon. A path of more than 1024 characters must not match.
-- An event of which each path matches must not be recorded. A change of these settings must apply to the next file event, in the watcher and for an event from a client.
-  [@test] ../test/event-filter.test.mjs
+- Megachat must not watch the files of a project, and a change of a file in a project must start no turn. The only file watch of the daemon is the watch of the provider roots of the session index. The daemon must have no route `/project-event`.
+  [@test] ../test/integration.test.mjs
+- Megachat up to v0.3.0 watched the files of each project and reported a change in an event turn, with the settings `events.enabled` and `events.ignore`. A stored value of these two settings must cause no error, and `agents_settings` must not give them. The next write of `settings.json` must drop them. Another key that this build does not know must stay in the file.
+  [@test] ../test/settings.test.mjs
+- A state that holds the changes that waited for their event turn (`initiative.pending`) must open, and these changes must start no turn.
+  [@test] ../test/state.test.mjs
+- An old history entry of such an event turn (`air.megachat.event` with the type `project`) must stay readable in the replay, the history tools and the search index.
+  [@test] ../test/search-index.test.mjs
+  [@test] ../test/upgrade.test.mjs
 
 ## Data & Backend
 
@@ -463,8 +465,6 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - A stored record without its admission time must count as older than each record with one.
 - Child output must stop growing at the configured retention limit. The daemon must keep the end of a longer output.
 - The state must keep only the text that a child agent wrote. An open of the state must drop the stored updates of an earlier build.
-- Project events must coalesce into bounded batches and trigger at most one project-event turn per project per minute.
-- Changes during delegated work must not trigger another project-event turn.
 - Permission waits must suspend the child execution deadline.
 - The deadline must start again only when no permission request of the child waits.
   [@test] ../test/integration.test.mjs

@@ -116,7 +116,6 @@ test('the registry gives the environment, then the stored setting, then the defa
     'cache.ttl': '5m', 'compaction.tokens': 100000, 'reply.suggestions': false, 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
-    'events.enabled': true, 'events.ignore': ['*.tmbundle', 'build/download', '.claude/settings.local.json'],
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
@@ -157,8 +156,6 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
-    'events.enabled': [['off', false], [true, true]],
-    'events.ignore': [],
     'projects.newRoot': [['~', '~'], [' ~/work/ ', '~/work'], ['/srv/projects', '/srv/projects']],
     'budget.dailyUsd': [[0, 0], ['2.5', 2.5], [100000, 100000]],
     'sessions.index': [['on', 'on'], [false, 'off'], [' OFF ', 'off']],
@@ -181,17 +178,12 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
-    'events.enabled': ['sometimes'],
-    'events.ignore': [7, ['../outside'], 'a\\b', [1], Array(51).fill('x'), ['a//b']],
     'projects.newRoot': ['src', '', '~user/src', 5],
     'budget.dailyUsd': [-1, 'much', 100001, true],
     'sessions.index': ['later', 2],
     'sessions.days': [-1, 3651, 1.5, 'long'],
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
-  // A list is no single value, so its cases compare the whole list.
-  assert.deepEqual((await settings.set('events.ignore', ' ./gen/ , *.log\n\n**/tmp/*.kt,*.log')).value, ['/gen', '*.log', '**/tmp/*.kt'])
-  assert.deepEqual((await settings.set('events.ignore', [])).value, [])
   for (const [key, cases] of Object.entries(accepted)) {
     for (const [value, normalized] of cases) assert.equal((await settings.set(key, value)).value, normalized, `${key} ${value}`)
     for (const value of refused[key]) await assert.rejects(settings.set(key, value), { code: 'settingValue' }, `${key} ${value}`)
@@ -421,17 +413,22 @@ test('a compaction of the conversation does not lose a setting', { timeout: 3000
   assert.equal((await stored(directory)).values['reply.language'], 'Deutsch')
 })
 
-test('a project event cannot change a setting', { timeout: 20000 }, async t => {
+test('a turn of a child result cannot change a setting', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
   await seed(directory, { 'coordinator.model': FAST })
-  const { service, requests, daemon } = await open(t, directory, { replies: [
+  const { service, requests } = await open(t, directory, { replies: [
     fauxAssistantMessage(fauxToolCall('agents_settings', { action: 'set', key: 'reply.length', value: 'detailed' }), { stopReason: 'toolUse' }),
     'Noted.',
   ] })
-  assert.equal((await daemon.json('/project-event', { cwd: directory, revision: 'change-1', paths: ['src/main.kt'] })).notify, true)
-  await waitForState(service.state, state => state.current === null && requests.length >= 2 ? true : undefined)
+  // A finished run that no report named yet starts the turn of its result.
+  await service.state.change(state => {
+    state.runs.finished = { id: 'finished', childSessionId: 'child', agent: 'claude', requestId: 'spawn', prompt: 'Work', cwd: directory,
+      status: 'completed', output: 'Done.', truncated: false, reported: false, createdAt: Date.now(), finishedAt: Date.now() }
+  })
+  await waitForState(service.state, state => state.current === null && state.runs.finished.reported && requests.length >= 2 ? true : undefined)
+  assert.match(requests[0].request, /Child tasks ended after your previous reply\./)
   assert.equal((await stored(directory)).values['reply.length'], undefined)
-  assert.match(requests[1].request, /A project event or a child result cannot change a setting\./)
+  assert.match(requests[1].request, /A turn of a child result or of the summary of the past sessions cannot change a setting\./)
 })
 
 test('a file that the daemon cannot read stays under another name, and the defaults apply', { timeout: 20000 }, async t => {
@@ -466,16 +463,33 @@ test('a stored value that this build does not accept gives the default, and the 
   assert.deepEqual((await stored(directory)).values, { 'coordinator.model': FAST, 'cache.ttl': '1d', 'future.key': 1, 'reply.length': 'normal' })
 })
 
+test('a stored setting of the project events of v0.3.0 causes no error, and the next write drops it', { timeout: 20000 }, async t => {
+  const directory = await temporary(t)
+  await seed(directory, { 'coordinator.model': FAST, 'events.enabled': false, 'events.ignore': ['gen/**'], 'future.key': 1 })
+  const { tool, say, requests } = await open(t, directory)
+  const described = await tool({ action: 'get' })
+  assert.ok(described.settings.every(entry => !entry.key.startsWith('events.')))
+  for (const key of ['events.enabled', 'events.ignore']) {
+    await assert.rejects(tool({ action: 'set', key, value: true }), { code: 'settingKey' })
+    await assert.rejects(tool({ action: 'reset', key }), { code: 'settingKey' })
+  }
+  await say('hello', 'Hello.')
+  assert.equal(requests.at(-1).kind, 'turn')
+  assert.deepEqual((await stored(directory)).values, { 'coordinator.model': FAST, 'events.enabled': false, 'events.ignore': ['gen/**'], 'future.key': 1 })
+  await tool({ action: 'set', key: 'reply.length', value: 'normal' })
+  assert.deepEqual((await stored(directory)).values, { 'coordinator.model': FAST, 'future.key': 1, 'reply.length': 'normal' })
+})
+
 test('the setup rules name each setting of this build and no other setting', async () => {
   const rules = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
   const named = new Set(rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g))
   assert.deepEqual([...named].sort(), SETTINGS.map(setting => setting.key).sort())
 })
 
-test('each setting of the children, the events, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {
+test('each setting of the children, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
   const values = { 'children.agent': 'codex', 'children.piModel': DEEP, 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
-    'events.enabled': false, 'events.ignore': ['gen/**'], 'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
+    'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
   const first = await open(t, directory)
   for (const [key, value] of Object.entries(values)) await first.tool({ action: 'set', key, value })
   await first.close()

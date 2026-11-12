@@ -10,7 +10,6 @@ import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
 import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
-import { eventMatcher } from './ProjectEventFilter.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
@@ -167,7 +166,6 @@ export class PiMegachatService {
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
-    state.projectFilter = () => service.projectFilter()
     Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck,
       spend: await DailySpend.open(spendPath, clock),
       // The live table of the session logs exists only with the consent of the user, as the index does.
@@ -273,14 +271,6 @@ export class PiMegachatService {
     return next
   }
 
-  /** The settings of the project events for the next file event. The matcher is made again only after a change. */
-  projectFilter() {
-    const patterns = this.settings.entry('events.ignore').value
-    const key = JSON.stringify(patterns)
-    if (this.ignoredKey !== key) Object.assign(this, { ignoredKey: key, ignored: eventMatcher(patterns) })
-    return { enabled: this.settings.entry('events.enabled').value, ignored: this.ignored }
-  }
-
   /**
    * Counts the cost of one model request of the main agent. When the spend of the day passes the limit, the warning
    * goes into the rules of the next turn. A failure here must not fail the request, so it goes to the log only.
@@ -313,7 +303,7 @@ export class PiMegachatService {
     return childRulesText(this.settings.values())
   }
 
-  /** The tool `agents_settings`. A project event or a child result cannot change a setting. */
+  /** The tool `agents_settings`. A turn of a child result or of the sessions summary cannot change a setting. */
   async settingsTool(args) {
     requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
     if (args.action === 'get') {
@@ -548,12 +538,11 @@ export class PiMegachatService {
         }, Math.min(...waiting) - now)
         this.reportTimer.unref()
       }
-      const projectPending = !snapshot.initiative.silenced && Object.keys(snapshot.initiative.pending).length > 0
       const sessionsPending = Boolean(snapshot.sessionIndex?.summary)
-      if (!resultsPending && !projectPending && !sessionsPending) return
+      if (!resultsPending && !sessionsPending) return
       this.eventPump = this.eventPump.then(async () => {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
-        const receipt = await this.state.nextChildResults() ?? await this.state.nextProjectEvent() ?? await this.state.nextSessionsEvent()
+        const receipt = await this.state.nextChildResults() ?? await this.state.nextSessionsEvent()
         if (receipt) this.follow(receipt)
       }).catch(error => {
         if (this.lifetime.signal.aborted) return

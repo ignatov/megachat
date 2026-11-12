@@ -90,12 +90,15 @@ test('the daemon adds the rules of the user to each child prompt at its dispatch
   assert.doesNotMatch(JSON.stringify(Object.values(state.runs)), /The user of Megachat set these rules/)
 })
 
-test('a project event cannot change a setting of the children', { timeout: 20000 }, async t => {
+test('a turn of a child result or of the sessions summary cannot change a setting of the children', { timeout: 20000 }, async t => {
   const { service, settingsPath } = await fixture(t, {})
   const tool = service.extension().tools.find(item => item.name === 'agents_settings')
-  await service.state.change(state => { state.current = { id: 'event', requestId: 'event', cancelling: false, kind: 'event' } })
-  for (const [key, value] of [['children.agent', 'codex'], ['children.push', 'allow'], ['children.daemonRestart', 'allow']])
-    await assert.rejects(tool.execute({ action: 'set', key, value }), { code: 'settingEvent' })
-  await service.state.change(state => { state.current = null })
+  // The kind `report` is the turn of a child result, and the kind `event` is the turn of the summary of the past sessions.
+  for (const kind of ['report', 'event']) {
+    await service.state.change(state => { state.current = { id: kind, requestId: kind, cancelling: false, kind } })
+    for (const [key, value] of [['children.agent', 'codex'], ['children.push', 'allow'], ['children.daemonRestart', 'allow']])
+      await assert.rejects(tool.execute({ action: 'set', key, value }), { code: 'settingEvent' })
+    await service.state.change(state => { state.current = null })
+  }
   assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')).values, {})
 })

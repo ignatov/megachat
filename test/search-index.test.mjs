@@ -142,7 +142,7 @@ test('pages past the ranked window into older matches', async t => {
   assert.ok((await index.search('juniper', { limit: 10 })).ids.every(id => id > 5), 'The first page ranks the newest window')
 })
 
-test('indexes child results and project events without IDs', async t => {
+test('indexes child results and the project events of an old history without IDs', async t => {
   const children = { kind: 'air.megachat.event', id: 1, conversationId: 1, model: [{ role: 'user', content: 'event JSON', timestamp: 5000 }],
     data: { type: 'children', results: [
       { runId: 'run-7f3a9c', cwd: '/src/app/plugins/editor', prompt: 'Profile json-profiler', status: 'completed',

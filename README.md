@@ -196,8 +196,6 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
-| `events.enabled` | `true` | | Megachat reports a change of the files of a project to the main agent. |
-| `events.ignore` | `*.tmbundle`, `build/download`, `.claude/settings.local.json` | | The path patterns that Megachat does not report. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
@@ -224,13 +222,6 @@ At the end of the setup, the main agent checks the accounts with its tool `agent
 Code and Codex as a task starts them and opens a session without a prompt, so it spends no tokens. It shows for each
 agent `started`, or the problem and what to fix, for example a missing login. A session that opens does not prove that
 the provider accepts the login: the first task shows that. Ask the agent to check the accounts again at any time.
-
-A pattern of `events.ignore` is a glob on the path from the root of the project: `*` matches in one path segment, `**`
-across segments, and `?` one character. A pattern without a slash, such as `*.tmbundle`, matches a name at each
-depth. A pattern with a slash, such as `build/download`, matches from the root. Use `**/build/download` for each depth. A
-path in a matching directory matches too. The watcher also never reports the generated directories, such as `out` and
-`node_modules`. Without `events.enabled`, Megachat drops the events that wait for a turn. A change applies to the next
-file event.
 
 Each environment variable still works, and it wins over the stored value. The agent tells you when a variable hides
 a stored value. A daemon reads the variables at its start.
@@ -363,11 +354,9 @@ The session text is data for the agent, not instructions.
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. |
-| `src/ProjectWatchService.mjs` | The watch of the project paths, which gives the project events. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
-| `src/ProjectEventFilter.mjs` | The path patterns of `events.ignore`: their syntax and their match. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The variable `MEGACHAT_SUGGESTIONS`, which lets the main agent offer a next step by itself. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |

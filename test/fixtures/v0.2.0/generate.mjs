@@ -133,7 +133,8 @@ async function run(source, state, mode) {
   }
 
   await say('user-1', `Hello. Remember the word ${EARLY_WORD} for later.`, fauxAssistantMessage(`Hello. I keep the word ${EARLY_WORD}.`))
-  // A change of the project starts an event turn.
+  // A change of the project starts an event turn. Megachat has no project events now, and the upgrade test proves
+  // that this event turn stays readable.
   replies.push(fauxAssistantMessage('The notes changed. Nothing to do.'))
   await service.state.projectChanged({ cwd: WORKSPACE, revision: 'revision-1', paths: ['notes.md'] })
   await until(value => !value.current

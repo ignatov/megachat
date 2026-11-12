@@ -219,14 +219,16 @@ export class MegachatState {
     this.root = root
     this.resumeDelayMs = resumeDelayMs
     this.reportRetryDelayMs = reportRetryDelayMs
-    // The service replaces this with the settings `events.enabled` and `events.ignore`. It reads them at each call.
-    this.projectFilter = () => ({ enabled: true, ignored: () => false })
   }
 
   async initialize() {
     await this.change(state => {
       requireCondition(state.schema === 1, 'schema')
-      state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {}, projects: {}, pending: {} }
+      state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {} }
+      // Megachat up to v0.3.0 watched the files of each project. `pending` kept each change that waited for its event
+      // turn. This build has no such turn, so it drops these changes, and they start no turn. The two fields stay as
+      // empty objects, because a daemon of v0.3.0 can open this state again, and it reads them.
+      Object.assign(state.initiative, { projects: {}, pending: {} })
       state.serviceSessions ??= serviceSessionsOf(state.runs)
       state.projects ??= []
       state.projectCreations ??= {}
@@ -366,10 +368,7 @@ export class MegachatState {
     requireCondition(['accepted', 'declined', 'silence', 'resume'].includes(decision))
     return this.initiativeDecision(requestId, { decision }, initiative => {
       if (decision === 'declined' && initiative.suggestion !== null) initiative.declines++
-      if (decision === 'silence') {
-        initiative.silenced = true
-        initiative.pending = {}
-      }
+      if (decision === 'silence') initiative.silenced = true
       if (decision === 'accepted' || decision === 'resume') {
         initiative.declines = 0
       }
@@ -392,59 +391,6 @@ export class MegachatState {
       const result = apply(initiative)
       initiative.decisions[requestId] = { digest: hash, result, decidedAt: Date.now() }
       return plain(result)
-    })
-  }
-
-  /**
-   * Records a change of a project. Without project events, or when each path matches a pattern of `events.ignore`, the
-   * change is not recorded, so it cannot start a turn later.
-   */
-  async projectChanged({ cwd, revision, paths: changed }) {
-    requireCondition(typeof revision === 'string' && revision.length > 0 && revision.length <= 200)
-    requireCondition(Array.isArray(changed) && changed.length > 0 && changed.length <= 100
-      && changed.every(path => typeof path === 'string' && path.length > 0 && path.length <= 4096))
-    const filter = this.projectFilter()
-    const paths = filter.enabled ? changed.filter(path => !filter.ignored(path)) : []
-    if (!paths.length) return { accepted: false, ignored: true }
-    return this.change(state => {
-      requireCondition(state.workspaces.includes(cwd), 'workspace')
-      const initiative = state.initiative
-      const previous = initiative.projects[cwd]
-      if (previous?.revision === revision) return { accepted: false }
-      const now = Date.now()
-      const ownWork = Object.values(state.runs).some(run => run.cwd === cwd
-        && (!terminalStates.has(run.status) || now - (run.finishedAt ?? 0) < 5000))
-      const notify = !initiative.silenced && !ownWork && (!previous?.notifiedAt || now - previous.notifiedAt >= 60000)
-      initiative.projects[cwd] = { revision, notifiedAt: notify ? now : previous?.notifiedAt ?? 0 }
-      if (notify) initiative.pending[cwd] = { cwd, revision, paths }
-      return { accepted: true, notify }
-    })
-  }
-
-  async nextProjectEvent() {
-    return this.change(async (state, tx) => {
-      if (state.current || state.initiative.silenced) return null
-      // A user who turns the project events off does not want the waiting events later as a burst.
-      if (!this.projectFilter().enabled) {
-        state.initiative.pending = {}
-        return null
-      }
-      const event = Object.values(state.initiative.pending)[0]
-      if (!event) return null
-      retain(state)
-      const requestId = `project:${digest(event)}`
-      const mainRunId = randomUUID()
-      const submissionId = await this.root.submit(tx, {
-        type: 'input', requestId, content: `${message(`event.project${this.eventSuffix}`)}\n${JSON.stringify(event)}`,
-        entry: { kind: 'air.megachat.event', data: { type: 'project', ...event } },
-      })
-      delete state.initiative.pending[event.cwd]
-      state.initiative.declines = 0
-      state.initiative.suggestion = null
-      const input = { digest: digest(event), mainRunId, submissionId, status: 'running', admittedAt: Date.now() }
-      state.inputs[requestId] = input
-      state.current = { id: mainRunId, requestId, cancelling: false, kind: 'event' }
-      return input
     })
   }
 

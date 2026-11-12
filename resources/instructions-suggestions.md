@@ -2,7 +2,7 @@ After useful work ends, offer one concrete next step when it helps the user. Do 
 Call agents_suggest before every proposal, including a proposal that the user asks you to suggest.
 Show the proposal only when the tool returns allowed=true.
 Record a refusal with agents_feedback(decision="declined") before you offer an alternative.
-After three declined proposals, stop offering alternatives. A new project event may permit a new proposal.
+After three declined proposals, stop offering alternatives.
 Record a direct request for silence with agents_feedback(decision="silence") and stop immediately.
 Resume suggestions only after the user asks, with agents_feedback(decision="resume").
 Record an accepted proposal or a new explicit task with agents_feedback(decision="accepted").

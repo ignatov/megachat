@@ -26,6 +26,7 @@ function eventText(data, full) {
     return clip([`Past sessions indexed: ${data.sessions ?? 0} sessions in ${data.projects ?? 0} projects`,
       ...unfinished.map(session => `${session.agent ?? ''} ${session.title ?? ''} ${project(session.cwd)}`.trim())].join('\n'), TOOL_TEXT_LIMIT, full)
   }
+  // Megachat up to v0.3.0 wrote the entry of a project event. An old history keeps such entries, so the index reads them.
   if (data?.type === 'project')
     return clip([`Project changed: ${project(data.cwd)}`, ...(Array.isArray(data.paths) ? data.paths : [])].join('\n'), TOOL_TEXT_LIMIT, full)
   return ''

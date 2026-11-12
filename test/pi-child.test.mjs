@@ -672,7 +672,7 @@ test('a pending message of a pi run arrives after a daemon restart', { timeout: 
   assert.equal((await reports(second.service)).length, 1)
 })
 
-test('a turn of a project event or of a child result cannot steer a pi child, and a pi continuation names no git status', { timeout: 30000 }, async t => {
+test('a turn of a child result or of the sessions summary cannot steer a pi child, and a pi continuation names no git status', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd } = project
   const { service } = await open(t, project, { startPi: false })
