@@ -2,6 +2,23 @@
 
 Megachat is an ACP agent in plain Node.js ESM. `README.md` tells what it does and how to run it.
 
+## Changes go through OpenSpec
+
+`openspec/specs/` gives the present behavior of Megachat, one capability in each folder (`openspec list --specs`).
+`openspec/config.yaml` holds the constraints of the project and the rules for each artifact. A record of a manual
+check is in `docs/manual-checks.md`.
+
+1. A behavior change starts as a proposal, before the code: `/opsx:propose <idea>` in Claude Code,
+   `$openspec-propose` in Codex. Use `/opsx:explore` first when the idea is not settled.
+2. The author approves the proposal. Then `/opsx:apply` makes its tasks.
+3. `/opsx:archive` merges the deltas of the change into `openspec/specs/`.
+
+A change of a present behavior is a MODIFIED delta of its requirement in `openspec/specs/<capability>/spec.md`, not a
+new requirement next to it. A fix that brings back a specified behavior needs no proposal. When the code is correct and
+the spec is not, correct the spec in the same commit.
+
+A requirement names its tests in a `Tests:` line. `openspec validate --all --strict` must pass.
+
 ## The state of the user
 
 - Never start `src/main.mjs` without a state directory of the task. Pass the directory argument, or set `MEGACHAT_HOME`
@@ -20,7 +37,6 @@ Megachat is an ACP agent in plain Node.js ESM. `README.md` tells what it does an
 ## Code and documents
 
 - Put each user-visible string in `resources/Megachat.properties`.
-- A behavior change updates `docs/spec.md` and its `[@test]` lines in the same commit.
 - A change of an ACP extension updates `docs/air-contract.md`, and it needs the same change in Air.
 - Write each text in [ASD-STE100 Simplified Technical English](https://www.asd-ste100.org/), as the IntelliJ monorepo
   does. This covers a comment, a document and a commit message. Use short sentences, the active voice and the

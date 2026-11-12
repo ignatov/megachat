@@ -41,7 +41,8 @@ The machine needs:
 - Node.js 22.19 or later for the install line. The IDE runs Megachat with its own Node.js.
 - The Central command at `~/.local/bin/central`, with a login: `central login`.
 - Claude Code at `~/.local/bin/claude`, set up through Central: `central add claude-code`.
-- The Codex command, `codex`, on the `PATH`.
+- The Codex command, `codex`, on the `PATH`. Codex history requires the local Codex CLI with the app-server history
+  API.
 - macOS. Nobody tested Megachat on another platform.
 
 **The start in the IDE.** These numbers come from the npm 11.19.1 of the IDE on one Mac, with an empty npm cache of a
@@ -98,8 +99,8 @@ name, so it skips the scripts of `esbuild`, `protobufjs` and `@google/genai`. Th
 installs `@esbuild/darwin-arm64` as an optional dependency.
 
 In a checkout, `install` adds the entry `Megachat` that starts `bin/megachat.mjs acp` of the checkout directly with
-Node.js, not the entry with `npx`. Keep the name `Megachat`: Air derives the agent ID `acp.megachat` from it. The
-checkout needs the same IDE build as a colleague.
+Node.js, not the entry with `npx`. The entry has absolute paths. Keep the name `Megachat`: Air derives the agent ID
+`acp.megachat` from it. The checkout needs the same IDE build as a colleague.
 
 A checkout has the build `dev`, so a pull does not replace a running daemon. Run `node src/main.mjs stop` to start the
 new code at the next attach.
@@ -613,7 +614,8 @@ npm run test:package
 
 `npm test` runs each `test/*.test.mjs` file. `test/state-guard.mjs` gives each test process a temporary
 `MEGACHAT_HOME` and a temporary `MEGACHAT_ACP_CONFIG`. So a test cannot reach your conversation or your `acp.json`.
-`npm run test:bundle` builds the bundle into `out/bundle/` and runs `test/bundle.test.mjs` on it.
+`npm run build` writes the bundle into `out/bundle/` with `THIRD_PARTY_NOTICES.txt` for the bundled packages. Git
+ignores `out/`. `npm run test:bundle` builds the bundle into `out/bundle/` and runs `test/bundle.test.mjs` on it.
 
 `npm run test:package` runs `npm pack`, installs the package into a temporary prefix with a temporary npm cache, and
 tests that copy: its daemon, its Claude and Codex agents, and its `install`. Then it runs the `npx` entry on a
@@ -652,7 +654,8 @@ suggestion at a change of the mode, and the answer of the main agent about a tas
 `node test/bench/session-index.bench.mjs [entries]` measures the import, the longest block of the event loop and the
 search latency of the index of past sessions on a synthetic corpus. `npm test` does not run it.
 
-The requirements are in `docs/spec.md`. The ACP extensions that Megachat and Air exchange are in
+The requirements are in `openspec/specs/`, one capability in each folder. `openspec list --specs` lists them. The
+records of the manual checks are in `docs/manual-checks.md`. The ACP extensions that Megachat and Air exchange are in
 `docs/air-contract.md`. The later work is in `docs/roadmap.md`.
 
 ## Releases

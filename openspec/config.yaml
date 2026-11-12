@@ -1,0 +1,75 @@
+schema: spec-driven
+
+# Project context: the constraints that an agent cannot find in the code. The behavior is in openspec/specs/, the use
+# is in README.md.
+context: |
+  Product: Megachat, an ACP agent for JetBrains Air in plain Node.js ESM. Megachat is one conversation shared by the
+  projects on a machine. A separate daemon runs Pi Durable, Claude Code, and Codex through Central. The main agent
+  delegates tasks to Claude Code, Codex and pi, and searches the Claude Code and Codex histories.
+
+  Constraints:
+  - The state of the user: `~/.jetbrains/air/megachat` holds the real conversation of the user. Never start
+    `src/main.mjs` without a state directory of the task: pass the directory argument, or set `MEGACHAT_HOME` to a
+    temporary directory.
+  - Never print, copy or commit the token of a `connection.json`.
+  - `~/.jetbrains/acp.json` holds the entry that the IDE of the user starts. Never run `install` without
+    `MEGACHAT_ACP_CONFIG` set to a temporary file. `test/state-guard.mjs` sets the variable for each test.
+  - Each user-visible string is in `resources/Megachat.properties`.
+  - A change of an ACP extension updates `docs/air-contract.md`, and it needs the same change in Air.
+  - Each text is in ASD-STE100 Simplified Technical English: a comment, a document, an artifact and a commit message.
+    Use short sentences, the active voice and the articles. Use one term for one concept.
+
+  Non-goals:
+  - Megachat does not install a login service.
+  - It does not resume a tool call through a daemon crash. The continuation prompt asks the agent to check its work.
+  - It does not run two children in one checkout at the same time, and it does not run two pi children at the same time.
+  - A pi child does not run a command, change a file, or apply the skills and the settings of Claude Code.
+  - Air does not show the transcript of a pi child.
+  - It does not expose IDE tools to children.
+
+rules:
+  proposal:
+    - State the behavior that the user sees, and where it shows: the chat, the task list of Air, a command, or the log.
+    - Name each capability of `openspec/specs/` that the change adds or modifies.
+    - Say whether the change modifies an ACP extension. If it does, say what Air must change.
+    - List what is out of scope. Say when the change touches a non-goal.
+  specs:
+    - Describe the observable behavior. Name a function or a constant of `src/` only when the requirement is that one
+      place holds a rule or a value.
+    - State each threshold, default and name that changes a result, such as a time limit, a setting key, a variable or
+      a file name.
+    - Each requirement contains `MUST` or `MUST NOT` in capitals.
+    - Give each requirement a `Tests:` line after its text, with the test files that have a case for it, as paths from
+      the repository root, such as `test/state.test.mjs`. A requirement without a test gets no `Tests:` line.
+    - Take each scenario from a real test case, with its real values. A scenario does not state a behavior that neither
+      the requirement nor a test has.
+    - Refer to another capability by its name, such as "(see the capability `keep-alive`)". Do not repeat its
+      requirements.
+    - A requirement text has at most 500 characters, with its `Tests:` line, because the strict validation refuses a
+      longer one. Divide a long rule at the border of a sentence.
+    - A new record of a manual check or of a real run goes to `docs/manual-checks.md`. The requirement that it
+      explains gets only the result that changes the behavior.
+  design:
+    - Say how the daemon keeps the admitted work through a disconnect of the ACP client and through a restart.
+    - Name each field of `conversation.sqlite`, `settings.json` or another state file that the change adds or reads,
+      and say how an older state directory gets it.
+    - Name each ACP message and each `_meta` key that the change adds or reads.
+  tasks:
+    - Include the tests that cover each new or modified requirement, and the `Tests:` lines that name them.
+    - Include `npm test` after each change. Include `npm run test:bundle` after a change of `build.mjs` or of a
+      dependency. Include `npm run test:package` after a change of `package.json`, of the launcher, of `install`, or of
+      a path into `node_modules`.
+    - Include each new user-visible string in `resources/Megachat.properties`.
+    - Include the update of `README.md` when a command, a setting, a file of the state directory or another
+      user-visible behavior changes.
+    - When an ACP extension changes, include the update of `docs/air-contract.md` and an IJAI ticket for the Air side.
+
+operations:
+  apply:
+    guidance:
+      - Run `npm test` before a task is marked done.
+      - Never start Megachat on the real state directory `~/.jetbrains/air/megachat`. Use a temporary `MEGACHAT_HOME`
+        or the directory argument.
+  archive:
+    guidance:
+      - Run `openspec validate --all --strict` after the specs are merged.

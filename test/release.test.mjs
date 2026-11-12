@@ -90,5 +90,5 @@ test('the release builds the bundle before the tests, and makes the tag only aft
 test('the release command of this repository names the install line of the documents', async () => {
   const read = path => readFile(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
   const line = 'npx -y "github:ignatov/megachat#semver:x" install'
-  for (const path of ['../README.md', '../docs/spec.md', '../release.mjs']) assert.ok((await read(path)).includes(line), path)
+  for (const path of ['../README.md', '../openspec/specs/install/spec.md', '../release.mjs']) assert.ok((await read(path)).includes(line), path)
 })
