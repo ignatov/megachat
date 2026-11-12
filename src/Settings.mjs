@@ -122,6 +122,21 @@ const claudeModel = value => {
   if (text === 'inherit') return 'inherit'
   return text.startsWith('anthropic/') && CLAUDE_MODEL_ID.test(modelRef(text).modelId) ? text : undefined
 }
+/**
+ * A model ID of Codex, such as `gpt-5.5`. It has no reasoning level in brackets: the adapter selects the model by its
+ * base ID, and the model keeps its reasoning level.
+ */
+const CODEX_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
+/**
+ * `inherit`, or a model of Codex as `openai/<model ID>`, as the model registry names an OpenAI model. The registry need
+ * not know the model: the Codex adapter lists its own models. The adapter refuses a model that is not in its list, and
+ * the run then fails before its prompt.
+ */
+const codexModel = value => {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (text === 'inherit') return 'inherit'
+  return text.startsWith('openai/') && CODEX_MODEL_ID.test(modelRef(text).modelId) ? text : undefined
+}
 const modelValues = ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
   contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') })
 const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(model) : [...MODEL_THINKING_LEVELS]
@@ -206,6 +221,8 @@ export const SETTINGS = [
     allowed: () => ({ other: message('settings.piModel.other') }) },
   { key: 'children.claudeModel', default: 'inherit', applies: 'nextChild', project: true, validate: claudeModel,
     allowed: () => ({ values: ['inherit'], other: message('settings.claudeModel.other') }) },
+  { key: 'children.codexModel', default: 'inherit', applies: 'nextChild', project: true, validate: codexModel,
+    allowed: () => ({ values: ['inherit'], other: message('settings.codexModel.other') }) },
   { key: 'children.permissionMode', default: 'inherit', applies: 'nextChild', project: true, validate: choice(Object.keys(CLAUDE_PERMISSION_MODES)),
     allowed: () => ({ values: Object.keys(CLAUDE_PERMISSION_MODES) }) },
   { key: 'children.commit', default: 'allow', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },

@@ -100,6 +100,7 @@ test('the daemon adds the rules of the user to each child prompt at its dispatch
   assert.deepEqual(Object.values(state.runs).map(run => run.prompt), ['first task', 'follow-up'])
   const changedSection = (await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render()
   assert.ok(changedSection.includes(message('instructions.claude', 'ask', 'anthropic/fable')))
+  assert.ok(changedSection.includes(message('instructions.codex', 'inherit')))
   // A report of a result quotes the stored task, without the rules.
   assert.doesNotMatch(JSON.stringify(Object.values(state.runs)), /The user of Megachat set these rules/)
 })
@@ -320,5 +321,49 @@ test('a model that the registry does not know reaches the agent, and a model tha
   assert.deepEqual(await configs(), ['model=claude-unknown-9 before the prompt'])
   // The model comes before the mode, so the refused model sends no mode.
   assert.deepEqual(await modes(), [])
+  await assert.rejects(prompts(), { code: 'ENOENT' })
+})
+
+test('with children.codexModel inherit a Codex child gets no model request, and a model of the setting goes before the prompt, also in a follow-up', { timeout: 30000 }, async t => {
+  // A settings.json of an earlier build has no key children.codexModel. It opens with the default inherit.
+  const { service, cwd, turn, configs, modes } = await fixture(t, { 'children.agent': 'codex', 'children.permissionMode': 'ask' })
+  assert.deepEqual([service.settings.entry('children.codexModel').value, service.settings.entry('children.codexModel').source],
+    ['inherit', 'default'])
+  const section = async () => (await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render()
+  assert.ok((await section()).includes(message('instructions.codex', 'inherit')))
+  let state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  // With inherit, the session of the Codex child gets no request that Megachat did not send before this setting.
+  assert.deepEqual([await configs(), await modes()], [[], []])
+  const [first] = Object.values(state.runs)
+  // A change applies to the next child, also in the turn that made it. A follow-up loads its session and gets the model.
+  state = await turn('second', call('agents_settings', { action: 'set', key: 'children.codexModel', value: 'openai/gpt-5.5' }),
+    call('agents_send', { childSessionId: first.childSessionId, cwd, prompt: 'follow-up' }), fauxAssistantMessage('Sent.'))
+  assert.deepEqual(Object.values(state.runs).map(run => run.status), ['completed', 'completed'])
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')).operation, 'load')
+  assert.ok((await section()).includes(message('instructions.codex', 'openai/gpt-5.5')))
+  await turn('third', call('agents_spawn', { cwd, prompt: 'third task' }), fauxAssistantMessage('Started.'))
+  // The setting does not change a Claude child. The Claude child gets only its mode.
+  await turn('claude', call('agents_spawn', { cwd, agent: 'claude', prompt: 'claude task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(await configs(), ['model=gpt-5.5 before the prompt', 'model=gpt-5.5 before the prompt'])
+  assert.deepEqual(await modes(), ['default before the prompt'])
+})
+
+test('a Codex model that the agent refuses fails the run before the prompt, with no continuation, and an invalid value is refused', { timeout: 20000 }, async t => {
+  const env = { ...process.env, FAKE_ACP_MODELS: 'gpt-5.5' }
+  const { cwd, turn, prompts, configs, service, settingsPath } = await fixture(t, { 'children.agent': 'codex', 'children.codexModel': 'openai/gpt-unknown-9' },
+    { childLaunch: async () => ({ env }) })
+  const tool = service.extension().tools.find(item => item.name === 'agents_settings')
+  for (const value of ['gpt-5.5', 'openai/gpt-5.5[high]', 'anthropic/claude-sonnet-5-5', 'openai/gpt 5'])
+    await assert.rejects(tool.execute({ action: 'set', key: 'children.codexModel', value }), { code: 'settingValue' }, value)
+  assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).values['children.codexModel'], 'openai/gpt-unknown-9')
+  t.mock.method(process.stderr, 'write', () => true)
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  const runs = Object.values(state.runs)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'interrupted')
+  assert.equal(runs[0].error, message('error.childCodexModel', 'openai/gpt-unknown-9'))
+  assert.equal(runs[0].autoResume, false)
+  assert.deepEqual(await configs(), ['model=gpt-unknown-9 before the prompt'])
   await assert.rejects(prompts(), { code: 'ENOENT' })
 })

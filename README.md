@@ -217,6 +217,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `children.parallel` | `3` | | The count of the tasks that run at the same time, 1 to 8. Tasks in one checkout run one after the other. See below. |
 | `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
 | `children.claudeModel` | `inherit` | | The model of a Claude child: `inherit` (the model of your settings of Claude Code, else `anthropic/claude-sonnet-5-5`), or a model of Claude Code as `anthropic/<model ID>`. See below. |
+| `children.codexModel` | `inherit` | | The model of a Codex child: `inherit` (the model of your configuration of Codex, else the default model of Codex), or a model of Codex as `openai/<model ID>`. See below. |
 | `children.permissionMode` | `inherit` | | The permission mode of a Claude child: `inherit` (the settings of Claude Code decide), `ask`, `allowEdits` or `auto`. It does not change a Codex child or a pi child. See below. |
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
@@ -234,8 +235,8 @@ says that you approved it. Else it says in its result that the step is necessary
 next child, also in the turn that made it.
 
 A setting of one child run can have a value for one project: `children.agent`, `children.piModel`,
-`children.claudeModel`, `children.permissionMode`, `children.commit`, `children.push` and `children.daemonRestart`. Say
-for example "in this project, children do not push". The main agent then stores the value for the directory of the
+`children.claudeModel`, `children.codexModel`, `children.permissionMode`, `children.commit`, `children.push` and
+`children.daemonRestart`. Say for example "in this project, children do not push". The main agent then stores the value for the directory of the
 project, and the global value stays. A child gets the value of the nearest project directory that is its directory or
 holds it, else the global value. A symbolic link to a project is that project. The daemon reads the value at each
 dispatch, also for a follow-up and for a continuation. Ask the agent for the settings to see the project values, or to
@@ -289,6 +290,15 @@ The adapter also switches a Claude child to the `model` of your settings of Clau
 alias that the model registry does not know, such as `anthropic/fable`. Megachat sends it after the start of each Claude
 child, so it wins over your settings. When Claude Code does not offer that model, or your settings do not allow it, for
 example with `availableModels`, the task fails before it starts.
+
+With `children.codexModel` `inherit`, Megachat sends no model to a Codex child: the `model` of your configuration of
+Codex decides, and without one the child uses the default model of the model list of Codex. Central sets no model.
+Another value names a model of Codex as `openai/<model ID>`, such as `openai/gpt-5.5`, also a model that the model
+registry does not know. The form is the form of the other model settings: the provider, then the model ID that the
+agent knows. Megachat sends the model ID after the start of each Codex child, also of a follow-up and of a
+continuation, so it wins over your configuration. The child keeps its reasoning level when the model supports it. When
+the model list of Codex does not hold the model, the task fails before it starts. Megachat 0.3.0 opens a
+`settings.json` with the key, ignores it and keeps it.
 
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.

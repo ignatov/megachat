@@ -117,7 +117,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
-    'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
+    'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
@@ -170,6 +170,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     // A model ID of Claude Code needs no model of the registry: the fake registry has no anthropic model.
     'children.claudeModel': [['inherit', 'inherit'], [' inherit ', 'inherit'], ['anthropic/claude-sonnet-5-5', 'anthropic/claude-sonnet-5-5'],
       [' anthropic/fable ', 'anthropic/fable'], ['anthropic/claude-opus-5-5[1m]', 'anthropic/claude-opus-5-5[1m]']],
+    // A model ID of Codex needs no model of the registry either.
+    'children.codexModel': [['inherit', 'inherit'], [' inherit ', 'inherit'], ['openai/gpt-5.5', 'openai/gpt-5.5'],
+      [' openai/gpt-5.3-codex ', 'openai/gpt-5.3-codex'], ['openai/o4_mini', 'openai/o4_mini']],
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
@@ -206,6 +209,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     // Claude Code cannot use a model of another provider. A model ID has no space, no slash and no other text.
     'children.claudeModel': [FAST, DEEP, 'claude-sonnet-5-5', 'Inherit', '', 7, 'anthropic/', 'anthropic/claude sonnet', 'anthropic/a/b',
       'anthropic/-opus', 'anthropic/opus[1m', `anthropic/${'a'.repeat(101)}`, 'Anthropic/opus'],
+    // Codex selects a model by its base ID, so a reasoning level in brackets is not part of the value.
+    'children.codexModel': [FAST, 'gpt-5.5', 'Inherit', '', 7, 'openai/', 'openai/gpt 5', 'openai/a/b', 'openai/-gpt',
+      'openai/gpt-5.5[high]', `openai/${'a'.repeat(101)}`, 'OpenAI/gpt-5.5', 'anthropic/claude-sonnet-5-5'],
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
@@ -261,6 +267,13 @@ test('the levels of a model limit the reasoning level, and get lists the models 
   assert.equal((await opus.set('children.claudeModel', 'anthropic/claude-unknown-9')).value, 'anthropic/claude-unknown-9')
   for (const value of ['claude-opus-5-5', 'anthropic/', 'openai/gpt-5'])
     await assert.rejects(opus.set('children.claudeModel', value), { code: 'settingValue' }, value)
+  // The model of a Codex child is a model ID of Codex with the provider openai. The registry of this test has no openai
+  // model, and the value is valid all the same.
+  assert.equal(opus.entry('children.codexModel').value, 'inherit')
+  assert.equal((await opus.set('children.codexModel', ' openai/gpt-unknown-9 ')).value, 'openai/gpt-unknown-9')
+  for (const value of ['gpt-5.5', 'openai/', 'anthropic/claude-haiku-5-5'])
+    await assert.rejects(opus.set('children.codexModel', value), { code: 'settingValue' }, value)
+  assert.deepEqual(opus.describe().settings.find(entry => entry.key === 'children.codexModel').values, ['inherit'])
 })
 
 test('no file means a pending onboarding, and each answer goes at once to a private file that a new start reads', { timeout: 20000 }, async t => {

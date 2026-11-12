@@ -27,24 +27,21 @@ The later work on Megachat, in the order of the work. Each item gives its reason
    each release, and nobody tested Linux. The installed copy does not use `package-lock.json`, so its indirect
    dependencies can differ from the tested ones. npm also ignores an `npm-shrinkwrap.json` in a package from git: a
    test installed 18 packages of 223 in a later version. So the lock needs another form of the release.
-4. **A choice of the model for a Codex child.** The setting `children.claudeModel` can select the model of a Claude
-   child, and `children.piModel` selects the model of a pi child. Today Megachat does not select the model of a Codex
-   child.
-5. **IDE tools for the children.** Today a child cannot use the tools of the IDE, so it cannot use the code insight
+4. **IDE tools for the children.** Today a child cannot use the tools of the IDE, so it cannot use the code insight
    of the project.
-6. **Types: TypeScript, or `tsc --checkJs`.** Today no type check runs, so a wrong field name shows only in a test or
+5. **Types: TypeScript, or `tsc --checkJs`.** Today no type check runs, so a wrong field name shows only in a test or
    at run time.
-7. **A login service, so the daemon starts with the system.** Today no daemon runs after a restart of the computer
+6. **A login service, so the daemon starts with the system.** Today no daemon runs after a restart of the computer
    until an IDE opens Megachat. So the timer of the morning report does not run, and no report comes until then.
-8. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
+7. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
    Air does not know. Today each attach sends one `_session/service/record` for each address, up to 5,000.
-10. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
-    hook that makes a permission request in the state, as an ACP child asks for a permission. These tools need a
-    sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.
-    Also decide whether the pi children move out of the daemon process, to a worker thread or to a second process.
-    Today a child shares the event loop and the memory of the daemon. Nobody checked whether two processes may open
-    one storage of Pi Durable: its README says that one process owns a storage at a time. A cache lifetime of its own
-    for a child request needs a rewrite of the provider request, because Pi Durable reads the stream options of the
-    harness without the conversation.
-11. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
-    `conversation.sqlite` keeps each pi child after the prune drops its runs.
+8. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
+   hook that makes a permission request in the state, as an ACP child asks for a permission. These tools need a
+   sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.
+   Also decide whether the pi children move out of the daemon process, to a worker thread or to a second process.
+   Today a child shares the event loop and the memory of the daemon. Nobody checked whether two processes may open
+   one storage of Pi Durable: its README says that one process owns a storage at a time. A cache lifetime of its own
+   for a child request needs a rewrite of the provider request, because Pi Durable reads the stream options of the
+   harness without the conversation.
+9. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
+   `conversation.sqlite` keeps each pi child after the prune drops its runs.

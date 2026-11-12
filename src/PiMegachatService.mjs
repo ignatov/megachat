@@ -101,6 +101,7 @@ function settingsRules(values, onboarding, rules, notice, projects = []) {
     { off: message('instructions.noSuggestions'), reply: rules.suggestions.trimEnd(), ghost: rules.ghost.trimEnd() }[values['reply.suggestions']],
     message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
     message('instructions.claude', values['children.permissionMode'], values['children.claudeModel']),
+    message('instructions.codex', values['children.codexModel']),
     message('instructions.projects', PROJECT_SETTINGS.join(', ')),
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),

@@ -1,5 +1,6 @@
 // The project values of the settings of a child run: the store, the lookup, the tool, the rules of the main agent and a
-// child run in a project. The last test opens a file with project values with the sources of v0.3.0.
+// child run in a project. Two tests open a file of this build with the sources of v0.3.0: a file with project values,
+// and a file with the key children.codexModel.
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
@@ -84,8 +85,8 @@ const rulesOf = values => [message('child.rules'), message(`child.rule.commit.${
   message(`child.rule.daemonRestart.${values.daemonRestart}`)].join('\n')
 
 test('only the settings of a child run can have a project value', () => {
-  assert.deepEqual(PROJECT_SETTINGS, ['children.agent', 'children.piModel', 'children.claudeModel', 'children.permissionMode',
-    'children.commit', 'children.push', 'children.daemonRestart'])
+  assert.deepEqual(PROJECT_SETTINGS, ['children.agent', 'children.piModel', 'children.claudeModel', 'children.codexModel',
+    'children.permissionMode', 'children.commit', 'children.push', 'children.daemonRestart'])
   assert.ok(SETTINGS.filter(setting => !PROJECT_SETTINGS.includes(setting.key)).every(setting => !setting.key.startsWith('children.')
     || setting.key === 'children.parallel'))
 })
@@ -192,12 +193,14 @@ test('agents_list names the agent of a new task in each directory, and the globa
   assert.deepEqual(answer.workspaces.map(item => [item.cwd, item.defaultAgent]), [[paths.app, 'claude'], [paths.server, 'claude'], [paths.lib, 'codex']])
 })
 
-test('a child in a project gets the agent, the rules, the mode, the model and the pi model of the project', { timeout: 30000 }, async t => {
+test('a child in a project gets the agent, the rules, the mode, the models and the pi model of the project', { timeout: 30000 }, async t => {
   const paths = await directories(t)
   const { service, turn, launched, lines, tool } = await open(t, paths)
   await turn('first',
     call('agents_settings', { action: 'set', key: 'children.agent', value: 'codex', project: paths.app }),
     call('agents_settings', { action: 'set', key: 'children.push', value: 'deny', project: paths.app }),
+    call('agents_settings', { action: 'set', key: 'children.codexModel', value: 'openai/gpt-5.5' }),
+    call('agents_settings', { action: 'set', key: 'children.codexModel', value: 'openai/gpt-5.3-codex', project: paths.app }),
     call('agents_settings', { action: 'set', key: 'children.permissionMode', value: 'ask', project: paths.server }),
     call('agents_settings', { action: 'set', key: 'children.claudeModel', value: 'anthropic/fable', project: paths.server }),
     call('agents_settings', { action: 'set', key: 'children.piModel', value: DEEP, project: paths.lib }),
@@ -217,6 +220,8 @@ test('a child in a project gets the agent, the rules, the mode, the model and th
   assert.deepEqual(await lines(paths.server, 'modes'), ['default before the prompt'])
   assert.deepEqual(await lines(paths.server, 'configs'), ['model=fable before the prompt'])
   assert.deepEqual([await lines(paths.lib, 'modes'), await lines(paths.lib, 'configs')], [[], []])
+  // The project value of the Codex model wins over the global value, and the Claude child in server gets no Codex model.
+  assert.deepEqual([await lines(paths.app, 'modes'), await lines(paths.app, 'configs')], [[], ['model=gpt-5.3-codex before the prompt']])
   // A pi child takes its model at its dispatch from the directory of the run.
   assert.deepEqual((await service.childAgent(paths.lib)).model, { provider: 'faux', modelId: 'deep' })
   assert.deepEqual((await service.childAgent(paths.app)).model, { provider: 'faux', modelId: 'fast' })
@@ -225,6 +230,11 @@ test('a child in a project gets the agent, the rules, the mode, the model and th
   const [app] = runs
   await turn('third', call('agents_send', { childSessionId: app.childSessionId, cwd: paths.app, prompt: 'follow-up' }), fauxAssistantMessage('Sent.'))
   assert.equal(JSON.parse((await lines(paths.app, 'prompts'))[1])[0], rulesOf({ commit: 'ask', push: 'allow', daemonRestart: 'ask' }))
+  // The follow-up loads the Codex session and gets the model again. Without the project value, the global value applies.
+  await tool({ action: 'reset', key: 'children.codexModel', project: paths.app })
+  await turn('fourth', call('agents_send', { childSessionId: app.childSessionId, cwd: paths.app, prompt: 'second follow-up' }), fauxAssistantMessage('Sent.'))
+  assert.deepEqual(await lines(paths.app, 'configs'), ['model=gpt-5.3-codex before the prompt', 'model=gpt-5.3-codex before the prompt',
+    'model=gpt-5.5 before the prompt'])
 })
 
 test('an automatic turn cannot change a project value', { timeout: 20000 }, async t => {
@@ -239,15 +249,24 @@ test('an automatic turn cannot change a project value', { timeout: 20000 }, asyn
   await assert.rejects(readFile(paths.settingsPath, 'utf8'), { code: 'ENOENT' })
 })
 
-test('a daemon of v0.3.0 opens a settings.json with project values, ignores them, and keeps them when it writes the file', { timeout: 30000 }, async t => {
-  // The sources of the tag run with the dependencies of this checkout, because package.json did not change since v0.3.0.
+/**
+ * The sources of v0.3.0 in the temporary directory of [paths], or `undefined` when the checkout has no tag. The sources
+ * run with the dependencies of this checkout, because package.json did not change since v0.3.0.
+ */
+async function oldSources(t, paths) {
   const tag = await run('git', ['rev-parse', '--verify', '--quiet', 'v0.3.0^{commit}'], { cwd: REPOSITORY }).catch(() => undefined)
-  if (!tag) { t.skip('The checkout has no tag v0.3.0.'); return }
-  const paths = await directories(t)
+  if (!tag) { t.skip('The checkout has no tag v0.3.0.'); return undefined }
   const old = join(paths.root, 'v0.3.0')
   await mkdir(old)
   await run('sh', ['-c', 'git archive v0.3.0 | tar -x -C "$1"', 'sh', old], { cwd: REPOSITORY })
   await symlink(join(REPOSITORY, 'node_modules'), join(old, 'node_modules'))
+  return old
+}
+
+test('a daemon of v0.3.0 opens a settings.json with project values, ignores them, and keeps them when it writes the file', { timeout: 30000 }, async t => {
+  const paths = await directories(t)
+  const old = await oldSources(t, paths)
+  if (!old) return
   // This build writes a project value.
   const { models } = fakeModels()
   const settings = new MegachatSettings(await SettingsStore.open(paths.settingsPath), { models, environment: {} })
@@ -280,4 +299,36 @@ test('a settings.json of v0.3.0 without project values opens with no project val
   const { service, tool } = await open(t, paths, { settings: { values: { 'children.push': 'deny', 'events.enabled': false } } })
   assert.deepEqual((await tool({ action: 'get' })).projects, [])
   assert.equal(service.settings.values(paths.app)['children.push'], 'deny')
+})
+
+test('a daemon of v0.3.0 opens a settings.json with children.codexModel, ignores the key, and keeps it when it writes the file', { timeout: 30000 }, async t => {
+  const paths = await directories(t)
+  const old = await oldSources(t, paths)
+  if (!old) return
+  const { models } = fakeModels()
+  const settings = new MegachatSettings(await SettingsStore.open(paths.settingsPath), { models, environment: {} })
+  await settings.setOnboarding('done')
+  await settings.set('children.codexModel', 'openai/gpt-5.5')
+  await settings.set('children.codexModel', 'openai/gpt-5.3-codex', paths.app)
+  const written = await stored(paths.settingsPath)
+  const { PiMegachatService: OldService } = await import(pathToFileURL(join(old, 'src', 'PiMegachatService.mjs')).href)
+  const lines = []
+  t.mock.method(process.stderr, 'write', chunk => { lines.push(String(chunk)); return true })
+  const service = await OldService.open(new MemoryStorage(), models, { provider: 'faux', modelId: 'fast' }, {},
+    { settingsPath: paths.settingsPath, keepAlive: { enabled: false }, environment: {} })
+  try {
+    assert.equal(service.settings.onboarding, 'done')
+    assert.equal(service.settings.values()['children.codexModel'], undefined)
+    const tool = service.extension().tools.find(item => item.name === 'agents_settings')
+    const described = JSON.parse((await tool.execute({ action: 'get' })).output[0].text)
+    assert.ok(!described.settings.some(entry => entry.key === 'children.codexModel'))
+    await tool.execute({ action: 'set', key: 'children.commit', value: 'deny' })
+  }
+  finally { await service.close() }
+  assert.ok(!lines.some(line => /cannot read settings\.json/.test(line)), lines.join(''))
+  assert.deepEqual(await stored(paths.settingsPath), { ...written, values: { ...written.values, 'children.commit': 'deny' } })
+  // This build reads the file of v0.3.0 again with each value.
+  const again = new MegachatSettings(await SettingsStore.open(paths.settingsPath), { models, environment: {} })
+  assert.deepEqual([again.values()['children.codexModel'], again.values(paths.app)['children.codexModel'], again.values()['children.commit']],
+    ['openai/gpt-5.5', 'openai/gpt-5.3-codex', 'deny'])
 })

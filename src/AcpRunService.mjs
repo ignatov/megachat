@@ -196,7 +196,9 @@ export class AcpRunService {
       const values = this.settings(run.cwd)
       const choice = values['children.permissionMode'] ?? 'inherit'
       const mode = agent === 'claude' ? CLAUDE_PERMISSION_MODES[choice] : undefined
-      const model = agent === 'claude' && (values['children.claudeModel'] ?? 'inherit') !== 'inherit' ? values['children.claudeModel'] : undefined
+      // The model setting of the agent. `inherit` gives no model, so the configuration of the agent decides.
+      const modelKey = agent === 'claude' ? 'children.claudeModel' : agent === 'codex' ? 'children.codexModel' : undefined
+      const model = modelKey && (values[modelKey] ?? 'inherit') !== 'inherit' ? values[modelKey] : undefined
       const configured = await this.configuration.childLaunch(agent)
       const launch = { ...configured, ...Object.fromEntries(Object.entries(this.launch).filter(([, value]) => value !== undefined)) }
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
@@ -279,9 +281,10 @@ export class AcpRunService {
         // The adapter switches a session to `model` of the settings of Claude Code, also of `~/.claude/settings.json`,
         // after the start with the model of the options, and a load continues with the model of the transcript. With
         // `inherit`, that stays so. An explicit model of the setting goes in its own request. It comes before the mode,
-        // because a change of the model can change the mode `auto`.
+        // because a change of the model can change the mode `auto`. The Codex adapter takes the same request. It refuses
+        // a model that is not in the model list of Codex, and the next turn uses the model that it took.
         await ctx.request(methods.agent.session.setConfigOption, { sessionId, configId: 'model', value: modelRef(model).modelId })
-          .catch(refused('childModel', model))
+          .catch(refused(agent === 'codex' ? 'childCodexModel' : 'childModel', model))
       }
       // The adapter takes the start mode from `permissions.defaultMode` of each settings file of Claude Code, also of the
       // files of the user, whatever `settingSources` says, and a load continues in the mode of the transcript. It ignores
