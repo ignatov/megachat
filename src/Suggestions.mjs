@@ -6,19 +6,15 @@ import { environmentSetting } from './Settings.mjs'
  * - `reply`: the agent gets the suggestion rules and the tools `agents_suggest` and `agents_feedback`, and it writes the
  *   proposal into the reply text.
  * - `ghost`: the agent gets the rules of `resources/instructions-suggestions-ghost.md` and the same tools. The proposal
- *   is not in the reply text. The bridge sends it as a prompt suggestion to a client with the capability
- *   `promptSuggestion`, and the client shows it as grey text in its empty prompt input.
+ *   is not in the reply text. The bridge sends it as a prompt suggestion to each client. Air shows it as grey text in
+ *   its empty prompt input, and a client that does not know the key ignores it.
  * The stored suggestion state stays in each mode.
  */
 export { SUGGESTION_MODES, SUGGESTIONS_VARIABLE } from './Settings.mjs'
 
-/** The Air capability that lets the client show a prompt suggestion. */
-export const PROMPT_SUGGESTION_CAPABILITY = 'promptSuggestion'
-/** The version of the payload `_meta.jetbrains.air.promptSuggestion`. */
-export const PROMPT_SUGGESTION_VERSION = 1
 /**
  * The lifetime of a prompt suggestion: one hour, the lifetime of the default prompt cache. After that time the
- * suggestion is old, and Megachat withdraws it.
+ * suggestion is old, and Megachat withdraws it. Only the daemon reads the time. The wire does not carry it.
  */
 export const PROMPT_SUGGESTION_LIFETIME_MS = 3600000
 
@@ -38,11 +34,11 @@ export function livePromptSuggestion(state, now = Date.now()) {
 }
 
 /**
- * The ACP update that carries a prompt suggestion: a hidden `session_info_update` with the payload in
- * `_meta.jetbrains.air.promptSuggestion`. A client without the extension ignores it. [withdrawn] gives `text: null` with
- * the same ID, so the client removes the suggestion. This is the only place that knows the carrier.
+ * The ACP update that carries a prompt suggestion: a `session_info_update` without a title, with the key that Air reads
+ * at the top level of its `_meta`, `promptSuggestions`. Air shows the first text that is not blank. A client that does
+ * not know the key ignores it by the rules of ACP. [withdrawn] gives an empty list, and Air then removes the text. The
+ * ID, the turn and the expiry of the suggestion stay in the daemon. This is the only place that knows the carrier.
  */
-export function promptSuggestionUpdate({ id, turnId, text, expiresAt }, withdrawn = false) {
-  return { sessionUpdate: 'session_info_update', _meta: { jetbrains: { air: { promptSuggestion: {
-    version: PROMPT_SUGGESTION_VERSION, id, turnId, text: withdrawn ? null : text, expiresAt } } } } }
+export function promptSuggestionUpdate({ text }, withdrawn = false) {
+  return { sessionUpdate: 'session_info_update', _meta: { promptSuggestions: { suggestions: withdrawn ? [] : [{ text }] } } }
 }

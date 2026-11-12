@@ -351,15 +351,12 @@ export class MegachatState {
   }
 
   /**
-   * Admits a prompt of the user. A live prompt suggestion ends with the start of the turn. [acceptedPromptSuggestionId]
-   * names the suggestion that the user accepted in the client: the same ID records `accepted` without a model call.
-   * Each other prompt records `ignored`, which changes no counter.
+   * Admits a prompt of the user. A live prompt suggestion ends with the start of the turn, and the prompt records
+   * `ignored`, which changes no counter. The client does not tell whether the user took the text of the suggestion.
    */
-  async submit(requestId, text, acceptedPromptSuggestionId) {
+  async submit(requestId, text) {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
     requireCondition(typeof text === 'string' && text.length > 0 && text.length <= 100000)
-    requireCondition(acceptedPromptSuggestionId === undefined
-      || typeof acceptedPromptSuggestionId === 'string' && acceptedPromptSuggestionId.length <= 200)
     const hash = digest(text)
     return this.change(async (state, tx) => {
       const old = Object.hasOwn(state.inputs, requestId) ? state.inputs[requestId] : null
@@ -369,7 +366,7 @@ export class MegachatState {
       }
       requireCondition(state.current === null, 'busy')
       retain(state)
-      this.endPromptSuggestion(state, requestId, acceptedPromptSuggestionId)
+      this.endPromptSuggestion(state, requestId)
       const mainRunId = randomUUID()
       // The root keeps each request ID forever. A dropped input must start a new turn, so each admission has its own ID.
       const submissionId = await this.root.submit(tx, { type: 'input', content: text, requestId: `input:${mainRunId}` })
@@ -384,15 +381,13 @@ export class MegachatState {
    * Records the decision on a prompt suggestion at the start of the turn of a user prompt, in the transaction of the
    * admission. A suggestion after its `expiresAt` goes without a record.
    */
-  endPromptSuggestion(state, requestId, acceptedId) {
+  endPromptSuggestion(state, requestId) {
     const initiative = state.initiative
     const live = initiative.promptSuggestion
     if (!live) return
     if (Date.parse(live.expiresAt) > Date.now()) {
-      const decision = acceptedId === live.id ? 'accepted' : 'ignored'
-      if (decision === 'accepted') initiative.declines = 0
-      initiative.decisions[`input:${requestId}`] = { digest: digest({ decision, suggestionId: live.id }),
-        result: { decision, suggestionId: live.id, declines: initiative.declines, silenced: initiative.silenced }, decidedAt: Date.now() }
+      const result = { decision: 'ignored', suggestionId: live.id, declines: initiative.declines, silenced: initiative.silenced }
+      initiative.decisions[`input:${requestId}`] = { digest: digest({ decision: result.decision, suggestionId: live.id }), result, decidedAt: Date.now() }
     }
     clearPromptSuggestion(initiative)
   }

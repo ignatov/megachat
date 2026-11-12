@@ -23,7 +23,7 @@ export const DEFAULT_KEEPALIVE_HOURS = 6
 export const SUGGESTIONS_VARIABLE = 'MEGACHAT_SUGGESTIONS'
 /**
  * The modes of the next-step suggestions. `reply` puts the proposal into the reply text. `ghost` sends it to the
- * prompt input of a client that has the capability `promptSuggestion`.
+ * prompt input of Air.
  */
 export const SUGGESTION_MODES = ['off', 'reply', 'ghost']
 export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'

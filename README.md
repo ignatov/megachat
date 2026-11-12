@@ -202,7 +202,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `workday.days` | `mon`-`fri` | | The working days, as a list or as a text such as `mon-fri` or `mon,wed,fri`. |
 | `workday.timezone` | `auto` | | The timezone of the working hours. `auto` is the timezone of the system, else an IANA name such as `Europe/Berlin`. |
 | `workday.idleMinutes` | `30` | | The idle time outside the working hours before the conversation goes to sleep, 0 to 1440 minutes. |
-| `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and you send it with one key; a client without the support shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
+| `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and Tab puts it into the input; a client that does not know the key shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |

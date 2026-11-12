@@ -588,7 +588,7 @@ export class PiMegachatService {
     return this.state.withdrawPromptSuggestion(id)
   }
 
-  async submit(requestId, text, acceptedPromptSuggestionId) {
+  async submit(requestId, text) {
     this.pendingUserInputs++
     try {
       const interrupted = await this.state.interruptAutomaticTurn()
@@ -597,7 +597,7 @@ export class PiMegachatService {
         await waitForState(this.state, state => !state.current ? true : undefined,
           { signal: this.lifetime.signal, timeoutMs: 60000 })
       }
-      const receipt = await this.state.submit(requestId, text, acceptedPromptSuggestionId)
+      const receipt = await this.state.submit(requestId, text)
       if (receipt.status === 'running') this.follow(receipt)
       return receipt
     }

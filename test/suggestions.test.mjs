@@ -120,18 +120,20 @@ async function ghostFixture(t, { mode = 'ghost', lifetimeMs } = {}) {
 }
 
 const suggest = proposal => fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal }), { stopReason: 'toolUse' })
-const ghostPayload = event => event.update._meta?.jetbrains?.air?.promptSuggestion
-const ghostUpdates = updates => updates.filter(event => ghostPayload(event)).map(event => ghostPayload(event))
+const ghostPayload = event => event.update._meta?.promptSuggestions
+/** The text of each prompt suggestion update, as Air reads it: the first text that is not blank, or null for a clear. */
+const ghostUpdates = updates => updates.filter(event => ghostPayload(event))
+  .map(event => ghostPayload(event).suggestions.find(item => item.text?.trim())?.text ?? null)
 
-/** A view of Air. [capable] sends the capability `promptSuggestion`. */
-async function view(t, daemon, cwd, { capable = true, sessionId } = {}) {
+/** A view of Air. [air] gives the capabilities of Air that the client sends. */
+async function view(t, daemon, cwd, { air, sessionId } = {}) {
   const updates = []
   const connection = client({ name: 'test-air' })
     .onNotification('*', ({ params }) => { updates.push(params) })
     .connect(new AcpBridge(daemon).app())
   t.after(() => connection.close())
-  const initialized = await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: capable
-    ? { _meta: { jetbrains: { air: { version: 1, capabilities: ['promptSuggestion'] } } } } : {} })
+  const initialized = await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: air
+    ? { _meta: { jetbrains: { air: { version: 1, capabilities: air } } } } : {} })
   const opened = await connection.agent.request(sessionId ? methods.agent.session.load : methods.agent.session.new,
     { cwd, mcpServers: [], ...(sessionId ? { sessionId } : {}) })
   const id = sessionId ?? opened.sessionId
@@ -152,52 +154,50 @@ const toolResult = (request, name) => {
 test('in the mode ghost, a finished turn sends one prompt suggestion after the last reply chunk and before the end of the turn', { timeout: 20000 }, async t => {
   const { cwd, daemon, service, requests, turn } = await ghostFixture(t)
   const viewer = await view(t, daemon, cwd)
-  assert.ok(viewer.initialized._meta.jetbrains.air.capabilities.includes('promptSuggestion'))
   turn(suggest('Run the tests\nand fix the failures'), fauxAssistantMessage('The parser reads each line now.'))
   const before = Date.now()
   const answer = await viewer.prompt('Fix the parser', { clientMessageId: 'turn-1' })
-  // The update is there when the prompt ends.
-  const [payload, ...rest] = viewer.suggestions()
-  assert.deepEqual(rest, [])
+  // The update is there when the prompt ends. It holds only the key that Air reads, with one text.
+  assert.deepEqual(viewer.suggestions(), ['Run the tests and fix the failures'])
   assert.equal(answer.stopReason, 'end_turn')
-  assert.equal(payload.version, 1)
-  assert.match(payload.id, /^suggestion-[0-9a-f-]{36}$/)
-  assert.equal(payload.turnId, 'turn-1')
-  assert.equal(payload.text, 'Run the tests and fix the failures')
-  const lifetime = Date.parse(payload.expiresAt) - before
-  assert.ok(lifetime > 3500000 && lifetime <= 3600000 + 1000, String(lifetime))
   const index = viewer.updates.findIndex(event => ghostPayload(event))
-  assert.equal(viewer.updates[index].update.sessionUpdate, 'session_info_update')
-  assert.equal(viewer.updates[index].update.title, undefined)
+  assert.deepEqual(viewer.updates[index].update, { sessionUpdate: 'session_info_update',
+    _meta: { promptSuggestions: { suggestions: [{ text: 'Run the tests and fix the failures' }] } } })
+  // The daemon keeps the ID, the turn and the expiry of the suggestion for the withdrawal and the timer.
+  const stored = (await service.state.snapshot()).initiative.promptSuggestion
+  assert.match(stored.id, /^suggestion-[0-9a-f-]{36}$/)
+  assert.deepEqual([stored.turnId, stored.text], ['turn-1', 'Run the tests and fix the failures'])
+  const lifetime = Date.parse(stored.expiresAt) - before
+  assert.ok(lifetime > 3500000 && lifetime <= 3600000 + 1000, String(lifetime))
   assert.ok(viewer.updates.findLastIndex(event => event.update.sessionUpdate === 'agent_message_chunk') < index)
   // The reply text has no proposal: the rules ask for none, and the tool result tells the agent that the input shows it.
   assert.ok(!viewer.updates.some(event => event.update.content?.text?.includes('Run the tests')))
   assert.match(requests[0], /Do not propose a next step in the reply text\./)
   assert.match(requests[0], /Write the suggestion as a prompt of the user/)
   assert.doesNotMatch(requests[0], /Show the proposal only when the tool returns allowed=true/)
-  assert.deepEqual(toolResult(requests[1], 'agents_suggest'), { allowed: true, suggestion: payload.text, declines: 0, silenced: false,
+  assert.deepEqual(toolResult(requests[1], 'agents_suggest'), { allowed: true, suggestion: stored.text, declines: 0, silenced: false,
     note: message('suggest.ghost.note') })
-  assert.deepEqual((await service.state.snapshot()).initiative.promptSuggestion, { id: payload.id, turnId: 'turn-1', text: payload.text,
-    expiresAt: payload.expiresAt })
 })
 
-test('in the mode ghost, a client without the capability gets no suggestion update and no proposal text', { timeout: 20000 }, async t => {
+test('in the mode ghost, each client gets the update without a capability, and no client gets the proposal in the reply', { timeout: 20000 }, async t => {
   const { cwd, daemon, turn } = await ghostFixture(t)
-  const viewer = await view(t, daemon, cwd, { capable: false })
-  assert.ok(!viewer.initialized._meta.jetbrains.air.capabilities.includes('promptSuggestion'))
+  // A client with other Air capabilities and a plain ACP client. Megachat announces no capability for the suggestion.
+  const air = await view(t, daemon, cwd, { air: ['asyncTasks'] })
+  const plain = await view(t, daemon, cwd)
+  for (const viewer of [air, plain]) assert.deepEqual(viewer.initialized._meta.jetbrains.air.capabilities.filter(name => /suggest/i.test(name)), [])
   turn(suggest('Run the tests'), fauxAssistantMessage('Done.'))
-  await viewer.prompt('Fix the parser')
-  assert.deepEqual(viewer.suggestions(), [])
-  assert.ok(!viewer.updates.some(event => JSON.stringify(event).includes('Run the tests')))
-  // The client sees the same updates as before the mode: the replay, the title and the reply.
-  assert.ok(viewer.updates.every(event => event.update.sessionUpdate !== 'session_info_update' || event.update.title === message('title')))
+  await plain.prompt('Fix the parser')
+  await until(() => air.suggestions().length === 1, 'no suggestion in the other view')
+  for (const viewer of [air, plain]) {
+    assert.deepEqual(viewer.suggestions(), ['Run the tests'])
+    assert.ok(!viewer.updates.some(event => event.update.sessionUpdate === 'agent_message_chunk' && event.update.content.text.includes('Run the tests')))
+  }
 })
 
-test('the modes off and reply send no suggestion update to a client with the capability', { timeout: 20000 }, async t => {
+test('the modes off and reply send no suggestion update', { timeout: 20000 }, async t => {
   for (const mode of ['off', 'reply']) {
     const { cwd, daemon, service, turn } = await ghostFixture(t, { mode })
     const viewer = await view(t, daemon, cwd)
-    assert.ok(viewer.initialized._meta.jetbrains.air.capabilities.includes('promptSuggestion'))
     if (mode === 'reply') turn(suggest('Run the tests?'), fauxAssistantMessage('Done. Run the tests?'))
     else turn(fauxAssistantMessage('Done.'))
     await viewer.prompt('Fix the parser')
@@ -221,13 +221,13 @@ test('a second agents_suggest in one turn is refused, and a turn without the too
   turn(suggest('Run the tests'), suggest('Commit the change'), fauxAssistantMessage('Done.'))
   await viewer.prompt('Fix the parser')
   assert.equal(toolResult(requests[2], 'agents_suggest').allowed, false)
-  assert.deepEqual(viewer.suggestions().map(payload => payload.text), ['Run the tests'])
+  assert.deepEqual(viewer.suggestions(), ['Run the tests'])
   turn(fauxAssistantMessage('Hello.'))
   await viewer.prompt('Hello')
-  // The new turn withdraws the suggestion, and it gives no new one.
-  const [first, withdrawal, ...rest] = viewer.suggestions()
-  assert.deepEqual(rest, [])
-  assert.deepEqual(withdrawal, { ...first, text: null })
+  // The new turn withdraws the suggestion with an empty list, and it gives no new one.
+  assert.deepEqual(viewer.suggestions(), ['Run the tests', null])
+  assert.deepEqual(viewer.updates.findLast(event => ghostPayload(event)).update,
+    { sessionUpdate: 'session_info_update', _meta: { promptSuggestions: { suggestions: [] } } })
 })
 
 test('a delegation acknowledgment and a plain event turn send no suggestion, and an event turn with a clear next action can', { timeout: 20000 }, async t => {
@@ -258,35 +258,31 @@ test('a delegation acknowledgment and a plain event turn send no suggestion, and
   turn(suggest('Resume the parser session'), fauxAssistantMessage('Megachat indexed 3 sessions. One is unfinished.'))
   await sessionsEvent('pass-2')
   await until(() => viewer.suggestions().length === 1, 'no suggestion of the event turn')
-  assert.equal(viewer.suggestions()[0].text, 'Resume the parser session')
-  assert.match(viewer.suggestions()[0].turnId, /^sessions:/)
+  assert.deepEqual(viewer.suggestions(), ['Resume the parser session'])
+  assert.match((await service.state.snapshot()).initiative.promptSuggestion.turnId, /^sessions:/)
 })
 
-test('an accepted suggestion records accepted without a model call, another prompt records ignored, and silence stops the updates', { timeout: 20000 }, async t => {
+test('each prompt while a suggestion is live records ignored without a change of a counter, and silence stops the updates', { timeout: 20000 }, async t => {
   const { cwd, daemon, service, requests, turn } = await ghostFixture(t)
   const viewer = await view(t, daemon, cwd)
   const decision = async requestId => (await service.state.snapshot()).initiative.decisions[`input:${requestId}`]?.result
   turn(suggest('Run the tests'), fauxAssistantMessage('Done.'))
   await viewer.prompt('Fix the parser', { clientMessageId: 'turn-1' })
-  const first = viewer.suggestions()[0]
-  // Two declines of the reply mode stay. An ignored suggestion does not raise them.
+  const first = (await service.state.snapshot()).initiative.promptSuggestion
+  // Two declines of the reply mode stay. An ignored suggestion does not raise them, and does not reset them.
   await service.state.change(state => { state.initiative.declines = 2 })
   turn(fauxAssistantMessage('Hello.'))
   await viewer.prompt('Hello', { clientMessageId: 'turn-2' })
   assert.deepEqual(await decision('turn-2'), { decision: 'ignored', suggestionId: first.id, declines: 2, silenced: false })
   assert.equal((await service.state.snapshot()).initiative.declines, 2)
+  // A prompt with the text of the suggestion is a prompt as each other one. The client reports no accept.
   turn(suggest('Commit the change'), fauxAssistantMessage('Done.'))
   await viewer.prompt('Fix the lexer', { clientMessageId: 'turn-3' })
-  const second = viewer.suggestions().at(-1)
-  assert.equal(second.text, 'Commit the change')
-  const calls = requests.length
+  const second = (await service.state.snapshot()).initiative.promptSuggestion
   turn(fauxAssistantMessage('Committed.'))
-  await viewer.prompt(second.text, { clientMessageId: 'turn-4', acceptedPromptSuggestionId: second.id })
-  assert.deepEqual(await decision('turn-4'), { decision: 'accepted', suggestionId: second.id, declines: 0, silenced: false })
-  // The turn made one model request: the reply. No request asked the model for the decision.
-  assert.equal(requests.length, calls + 1)
-  assert.doesNotMatch(requests.at(-1), /agents_feedback\(\{/)
-  assert.deepEqual(viewer.suggestions().at(-1), { ...second, text: null })
+  await viewer.prompt(second.text, { clientMessageId: 'turn-4' })
+  assert.deepEqual(await decision('turn-4'), { decision: 'ignored', suggestionId: second.id, declines: 2, silenced: false })
+  assert.deepEqual(viewer.suggestions(), ['Run the tests', null, 'Commit the change', null])
   // Silence stops each later suggestion.
   turn(fauxAssistantMessage(fauxToolCall('agents_feedback', { decision: 'silence' }), { stopReason: 'toolUse' }), suggest('Push the change'),
     fauxAssistantMessage('I will stop.'))
@@ -294,7 +290,7 @@ test('an accepted suggestion records accepted without a model call, another prom
   assert.equal(toolResult(requests.at(-1), 'agents_suggest').allowed, false)
   turn(suggest('Push the change'), fauxAssistantMessage('Done.'))
   await viewer.prompt('Fix the docs')
-  assert.equal(viewer.suggestions().filter(payload => payload.text !== null).length, 2)
+  assert.equal(viewer.suggestions().filter(text => text !== null).length, 2)
 })
 
 test('a cancel and the expiry withdraw a suggestion, and session/load sends a live suggestion again and an old one not', { timeout: 20000 }, async t => {
@@ -302,25 +298,23 @@ test('a cancel and the expiry withdraw a suggestion, and session/load sends a li
   const viewer = await view(t, daemon, cwd)
   turn(suggest('Run the tests'), fauxAssistantMessage('Done.'))
   await viewer.prompt('Fix the parser')
-  const first = viewer.suggestions()[0]
   // A new view gets the live suggestion after its replay.
   const loaded = await view(t, daemon, cwd, { sessionId: viewer.sessionId })
   await until(() => loaded.suggestions().length === 1, 'no suggestion after the load')
-  assert.deepEqual(loaded.suggestions(), [first])
+  assert.deepEqual(loaded.suggestions(), ['Run the tests'])
   assert.ok(loaded.updates.findIndex(event => event.update.title === message('title')) < loaded.updates.findIndex(event => ghostPayload(event)))
   assert.ok(loaded.updates.filter(event => ghostPayload(event)).every(event => event._meta?.loadSessionReplayIndex === undefined))
   // A cancel while no turn runs withdraws the suggestion in each view.
   await viewer.connection.agent.notify(methods.agent.session.cancel, { sessionId: viewer.sessionId })
   await until(() => viewer.suggestions().length === 2 && loaded.suggestions().length === 2, 'no withdrawal after the cancel')
-  assert.deepEqual(viewer.suggestions()[1], { ...first, text: null })
+  assert.deepEqual(viewer.suggestions(), ['Run the tests', null])
   assert.equal((await service.state.snapshot()).initiative.promptSuggestion, null)
   // The expiry withdraws the next suggestion, and a load after it sends nothing.
   turn(suggest('Commit the change'), fauxAssistantMessage('Done.'))
   await viewer.prompt('Fix the lexer')
-  const second = viewer.suggestions()[2]
-  assert.equal(second.text, 'Commit the change')
+  assert.equal(viewer.suggestions()[2], 'Commit the change')
   await until(() => viewer.suggestions().length === 4, 'no withdrawal at the expiry')
-  assert.deepEqual(viewer.suggestions()[3], { ...second, text: null })
+  assert.equal(viewer.suggestions()[3], null)
   assert.equal((await service.state.snapshot()).initiative.promptSuggestion, null)
   const late = await view(t, daemon, cwd, { sessionId: viewer.sessionId })
   await sleep(100)

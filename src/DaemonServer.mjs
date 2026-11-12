@@ -117,7 +117,7 @@ export class DaemonServer {
         send({ cwd })
         return
       }
-      case '/input': send(await this.service.submit(body.requestId, body.text, body.acceptedPromptSuggestionId)); return
+      case '/input': send(await this.service.submit(body.requestId, body.text)); return
       case '/prompt-suggestion/withdraw': {
         requireCondition(typeof body.id === 'string' && body.id.length <= 200)
         send({ withdrawn: await this.service.withdrawPromptSuggestion(body.id) })
