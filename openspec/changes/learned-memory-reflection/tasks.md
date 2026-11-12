@@ -1,6 +1,7 @@
 # Tasks
 
-This change depends on the change `learned-memory`. Start it after `learned-memory` is archived.
+This change builds on the capability `learned-memory`. Its first slice is the archived change
+`archive/2026-11-12-learned-memory`.
 
 ## 1. The reflection pass
 

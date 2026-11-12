@@ -2,12 +2,13 @@
 
 ## Why
 
-This is slice 2 of issue #31. The change `learned-memory` (slice 1) gives a memory that the main agent writes only when
+This is slice 2 of issue #31. The capability `learned-memory` (slice 1, the archived change
+`2026-11-12-learned-memory`) gives a memory that the main agent writes only when
 the user states a rule or corrects the agent in a turn. A preference that the user shows over many turns, without a
 rule, does not get into the memory. A background pass that reads the conversation can find it.
 
-This change depends on the change `learned-memory`. Archive `learned-memory` first: the deltas of this change add
-requirements to its capability and change the requirement of the settings that it changes.
+The deltas of this change add requirements to the capability `learned-memory` in `openspec/specs/`, and they change
+the requirement of the settings that slice 1 changed.
 
 ## What Changes
 
@@ -27,7 +28,7 @@ None.
 
 ### Modified Capabilities
 
-- `learned-memory` (from the change `learned-memory`): the requirements "Reflection", "Time of a reflection pass",
+- `learned-memory`: the requirements "Reflection", "Time of a reflection pass",
   "Notice of the reflection in the next reply" and "Reflection and the daily spend" are new.
 - `settings`: the requirement "List of the settings of the reply" names `memory.reflection` next to
   `memory.characters`.

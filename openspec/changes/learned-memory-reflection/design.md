@@ -2,9 +2,9 @@
 
 ## Context
 
-See `proposal.md` for the reason. This change depends on the change `learned-memory`: the file `memory.md`, the write
-of the tool `agents_memory` with its checks and its cap, and the section `memory` of the system prompt. The design of
-`learned-memory` gives the facts about the sections of Pi Durable, the summary request and the tools that change a
+See `proposal.md` for the reason. This change builds on the capability `learned-memory`: the file `memory.md`, the
+write of the tool `agents_memory` with its checks and its cap, and the section `memory` of the system prompt. The design
+of the archived change `2026-11-12-learned-memory` gives the facts about the sections of Pi Durable, the summary request and the tools that change a
 file. The facts below come from the code at 5034f0e.
 
 ### Background model requests
@@ -53,7 +53,7 @@ file. The facts below come from the code at 5034f0e.
   `resources/reflection.md`, and one user message: the transcript of the entries after the cursor in the format of
   `transcript()` (the newest 60,000 characters, without the entries of `air.megachat.event` and the notes), the current
   entries as the section `memory` shows them, the topics without a blocked topic, as the summary request gets them
-  (see the change `learned-memory`), and the rest of `resources/reflection.md` with the grounding rule. `cacheRetention: 'none'`,
+  (see the capability `learned-memory`), and the rest of `resources/reflection.md` with the grounding rule. `cacheRetention: 'none'`,
   `maxTokens` 1,000, a time limit of 120 seconds. The answer is lines: `add user: <text>`, `add notes: <text>`,
   `propose: <text>`. Megachat ignores each other line, takes at most 5 adds and 3 proposals, and writes each add through
   the write of the tool.
@@ -93,7 +93,7 @@ file. The facts below come from the code at 5034f0e.
 
 ## Migration Plan
 
-No migration of data. A rollback to the build of `learned-memory` ignores the field `memoryReflection`, and
+No migration of data. A rollback to the build of slice 1 ignores the field `memoryReflection`, and
 `settings.json` keeps the key `memory.reflection`, which that build ignores as a stored value that it does not know.
 
 ## Open Questions

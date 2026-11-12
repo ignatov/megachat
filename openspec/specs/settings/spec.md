@@ -151,7 +151,7 @@ The settings of the reply MUST be these, with the variable of a setting in brack
 - `reply.length`
 - `reply.quoteRequest`
 
-The capabilities `child-settings` (`children.*`), `project-settings`, `spend-limit` (`budget.dailyUsd`) and `projects` (`projects.newRoot`) and the requirement "Settings of the index of past sessions" give the other settings.
+The capabilities `child-settings` (`children.*`), `project-settings`, `spend-limit` (`budget.dailyUsd`), `projects` (`projects.newRoot`) and `learned-memory` (`memory.characters`) and the requirement "Settings of the index of past sessions" give the other settings.
 
 Tests: `test/settings.test.mjs`
 
@@ -162,6 +162,10 @@ Tests: `test/settings.test.mjs`
 #### Scenario: The variable of the suggestions
 - **WHEN** `MEGACHAT_SUGGESTIONS` is `ghost`
 - **THEN** `reply.suggestions` is `ghost`
+
+#### Scenario: The defaults of the memory
+- **WHEN** no value is stored
+- **THEN** `memory.characters` is `4000`, and a value of `999` for `memory.characters` is refused with the code `settingValue`
 
 ### Requirement: Settings of the index of past sessions
 The settings of the index of past sessions are `sessions.index`, `sessions.days` and `sessions.notes`. They MUST apply at once, also in the middle of a turn, because they change no model request.
