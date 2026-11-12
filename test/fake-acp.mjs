@@ -91,6 +91,9 @@ agent({ name: 'fake-claude' })
 
 async function answerPrompt(ctx) {
   const text = ctx.params.prompt.at(-1).text
+  // The prompt `steer` takes a steering request from its arrival. A test sends the request when it reads `dispatches`,
+  // so a request can arrive before the writes below end, and the turn must then keep the message.
+  const steering = text === 'steer' && !cancelled ? new Promise(resolve => { steered = resolve; cancel = () => resolve(null) }) : undefined
   await appendFile(join(process.cwd(), 'dispatches'), `${text}\n`)
   // Each prompt with all of its blocks, so a test can read the blocks that the daemon adds before the task.
   await appendFile(join(process.cwd(), 'prompts'), `${JSON.stringify(ctx.params.prompt.map(block => block.text))}\n`)
@@ -100,7 +103,7 @@ async function answerPrompt(ctx) {
     return { stopReason: 'cancelled' }
   }
   if (text === 'steer') {
-    const message = cancelled ? null : await new Promise(resolve => { steered = resolve; cancel = () => resolve(null) })
+    const message = steering ? await steering : null
     steered = undefined
     if (!message) return { stopReason: cancelled ? 'cancelled' : 'end_turn' }
     if (message.trail) await ctx.client.notify(methods.client.session.update, {

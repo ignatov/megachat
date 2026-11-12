@@ -62,7 +62,9 @@ test('the count of a day stays in a private file across a restart, starts again 
   const unlimited = await DailySpend.open(undefined, clock)
   assert.equal(unlimited.add(1000, 0), false)
   assert.equal(unlimited.notice(0), undefined)
-  // A file that the daemon cannot read gives a new count.
+  // A file that the daemon cannot read gives a new count. The write of the last count must end first, else it can
+  // replace the damaged file.
+  await third.queue
   await writeFile(path, '{ "schema": 1,')
   assert.equal((await DailySpend.open(path, clock)).report(1).usd, 0)
 })
