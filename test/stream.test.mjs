@@ -15,13 +15,13 @@ import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { ReplyStream, streamEnabled } from '../src/ReplyStream.mjs'
+import { ReplyStream, STREAM_INTERVAL_MS, streamEnabled } from '../src/ReplyStream.mjs'
 import { fakeClock } from './fake-clock.mjs'
 
 const LONG = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ')
 
 /** A daemon with a fake model that writes about 4 characters each 10 ms. */
-async function fixture(t, responses, { stream } = {}) {
+async function fixture(t, responses, { stream, onStreamSent } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-stream-'))
   const fake = fauxProvider({ tokensPerSecond: 100, tokenSize: { min: 1, max: 1 } })
   fake.setResponses(responses)
@@ -30,7 +30,7 @@ async function fixture(t, responses, { stream } = {}) {
   const model = fake.getModel()
   const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, {},
     { keepAlive: { enabled: false } })
-  const server = new DaemonServer(service, undefined, stream === undefined ? {} : { stream })
+  const server = new DaemonServer(service, undefined, { ...(stream === undefined ? {} : { stream }), onStreamSent })
   const daemon = new DaemonClient(await server.listen())
   await service.resume()
   t.after(async () => { await server.close(); await service.close(); await rm(cwd, { force: true, recursive: true }) })
@@ -229,21 +229,28 @@ test('MEGACHAT_STREAM=0 sends a reply only as its entry', { timeout: 20000 }, as
 })
 
 test('the daemon sends at most 20 stream events in a second, and no conversation for a partial reply', { timeout: 20000 }, async t => {
-  const { daemon, service } = await fixture(t, [fauxAssistantMessage(`${LONG} ${LONG} ${LONG}`)])
+  // The time when the daemon sends each event. The time when the client gets an event can be later, so the gap to the
+  // next event can be shorter there.
+  const sent = []
+  const { daemon, service } = await fixture(t, [fauxAssistantMessage(`${LONG} ${LONG} ${LONG}`)], { onStreamSent: (event, at) => sent.push(at) })
   const events = []
   const abort = new AbortController()
-  const watching = daemon.watch(event => { events.push({ ...event, at: performance.now() }) }, abort.signal).catch(() => {})
+  const watching = daemon.watch(event => { events.push(event) }, abort.signal).catch(() => {})
   await until(() => events.length >= 2, 'no first events')
   const receipt = await service.submit('request-1', 'Hello')
   await daemon.json(`/wait?submission=${receipt.submissionId}`)
   await sleep(100)
+  await until(() => events.filter(event => event.type === 'stream').length >= sent.length, 'the client did not get each event')
   abort.abort()
   await watching
   const stream = events.filter(event => event.type === 'stream')
-  assert.ok(stream.length >= 5)
-  const seconds = (stream.at(-1).at - stream[0].at) / 1000
-  assert.ok((stream.length - 1) / seconds <= 21, `${stream.length} events in ${seconds} s`)
-  for (let index = 1; index < stream.length; index++) assert.ok(stream[index].at - stream[index - 1].at >= 35)
+  assert.equal(stream.length, sent.length)
+  assert.ok(sent.length >= 5)
+  const seconds = (sent.at(-1) - sent[0]) / 1000
+  assert.ok((sent.length - 1) / seconds <= 21, `${sent.length} events in ${seconds} s`)
+  // Node.js cuts the delay of a timer to whole milliseconds, and its timers count whole milliseconds. So a timer can
+  // come due up to 2 ms before its delay on performance.now().
+  for (let index = 1; index < sent.length; index++) assert.ok(sent[index] - sent[index - 1] >= STREAM_INTERVAL_MS - 2, `a gap of ${sent[index] - sent[index - 1]} ms`)
   // The events join into the text without a gap.
   let text = ''
   for (const { value } of stream) { assert.equal(value.offset, text.length); text += value.text }

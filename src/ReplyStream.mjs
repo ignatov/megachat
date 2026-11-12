@@ -35,10 +35,12 @@ export function partialReply(view) {
  * the reply ends the stream: the client takes the remaining text from the entry.
  */
 export class ReplyStream {
-  constructor(publish, { intervalMs = STREAM_INTERVAL_MS, onFirstText, clock = systemClock } = {}) {
+  /** [onSent] gets each event and the time when the stream sends it, on [clock]. */
+  constructor(publish, { intervalMs = STREAM_INTERVAL_MS, onFirstText, onSent, clock = systemClock } = {}) {
     this.publish = publish
     this.intervalMs = intervalMs
     this.onFirstText = onFirstText
+    this.onSent = onSent
     this.clock = clock
     this.lastAt = -Infinity
   }
@@ -75,6 +77,7 @@ export class ReplyStream {
     if (reply.sent === 0 && reply.startedAt !== undefined) this.onFirstText?.(event, this.clock.now() - reply.startedAt)
     reply.sent = end
     this.lastAt = this.clock.now()
+    this.onSent?.(event, this.lastAt)
     await this.publish('stream', event)
   }
 

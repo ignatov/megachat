@@ -8,12 +8,14 @@ import { MegachatHistoryServer } from './MegachatHistoryServer.mjs'
 import { ReplyStream, streamEnabled } from './ReplyStream.mjs'
 
 export class DaemonServer {
-  constructor(service, shutdown = () => {}, { build, stream = streamEnabled(), streamIntervalMs } = {}) {
+  /** [onStreamSent] gets each stream event and the time when the daemon sends it. A test uses it. */
+  constructor(service, shutdown = () => {}, { build, stream = streamEnabled(), streamIntervalMs, onStreamSent } = {}) {
     this.service = service
     this.shutdown = shutdown
     this.build = build
     this.stream = stream
     this.streamIntervalMs = streamIntervalMs
+    this.onStreamSent = onStreamSent
     this.token = randomBytes(32).toString('hex')
     this.historyToken = randomBytes(32).toString('hex')
     this.history = new MegachatHistoryServer(service)
@@ -181,7 +183,8 @@ export class DaemonServer {
       const tasks = await this.service.state.watch()
       views.push(tasks)
       await publish('tasks', tasks.value)
-      const stream = this.stream ? new ReplyStream(publish, { intervalMs: this.streamIntervalMs, onFirstText: (reply, ms) => this.firstText(reply, ms) }) : undefined
+      const stream = this.stream ? new ReplyStream(publish, { intervalMs: this.streamIntervalMs, onFirstText: (reply, ms) => this.firstText(reply, ms),
+        onSent: this.onStreamSent }) : undefined
       response.once('close', () => stream?.stop())
       // The partial reply changes the view many times in a second. Only a view with other entries is a new conversation.
       const mark = view => `${view.before ?? 0}:${view.entries.at(-1)?.id ?? 0}`
