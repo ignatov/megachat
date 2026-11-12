@@ -102,9 +102,9 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - While a permission request of the run waits for the user, the fallback must wait until the user answered each
   request of the run. A steer must not change a permission request. The chat must keep the task of the run with its ID
   and its phase.
-- A follow-up or a continuation for a message must start at once, must not count as an automatic attempt, and must
-  start also after the last attempt. The main agent must get one report for the task: the report of the last run,
-  with the output of the earlier run before its own output.
+- A follow-up or a continuation for a message must start at once, also before an older queued task, must not count
+  as an automatic attempt, and must start also after the last attempt. The main agent must get one report for the
+  task: the report of the last run, with the output of the earlier run before its own output.
 - After a daemon restart, the continuation of an interrupted run must hold each message of the run that the provider
   session may not have. A message that can have reached the agent must say that it can be a repeat. So the delivery is
   "at least one time".
@@ -113,6 +113,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/state.test.mjs
   [@test] ../test/integration.test.mjs
   [@test] ../test/recovery.test.mjs
+  [@test] ../test/pi-child.test.mjs
 
 ## User Experience
 
@@ -446,7 +447,7 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   [@test] ../test/discovery.test.mjs
 - A project directory that the daemon cannot read must not stop the attach of a view or the registration of the other directories.
   This also applies to the working directory of `session/new` and `session/load`.
-- The daemon must run at most one child at a time, ACP or pi. The queue order must hold across the two kinds: a pi run must wait for an ACP run, and an ACP run must wait for a pi run.
+- The daemon must run at most one child at a time, ACP or pi. The queue order must hold across the two kinds: a pi run must wait for an ACP run, and an ACP run must wait for a pi run. A continuation for a message of the user must come before the older queued runs of both kinds.
 - It may retain at most eight unfinished child tasks, including queued tasks.
 - Claude background tasks must be disabled. A child run ends with its ACP prompt.
 - A main task may create at most eight child runs.

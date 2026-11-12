@@ -458,6 +458,29 @@ test('a steer with mode interrupt aborts the turn of a pi child, and a continuat
   assert.equal((await reports(service)).length, 1)
 })
 
+test('the continuation for a message to a pi child starts before an older queued task', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), call('agents_spawn', { cwd, prompt: 'Second task.', agent: 'pi' }),
+      fauxAssistantMessage('Started.')],
+    child: [hang, fauxAssistantMessage('Redirected.'), fauxAssistantMessage('Second.')],
+  })
+  await service.submit('spawn', 'Work')
+  await until(async () => !(await service.state.snapshot()).current && requests.some(request => request.child))
+  const [run, queued] = Object.values((await service.state.snapshot()).runs)
+  assert.deepEqual([run.status, queued.status], ['dispatched', 'admitted'])
+  await setCurrent(service, 'user')
+  assert.equal((await service.steer('tool:steer-6:steer', { childSessionId: run.childSessionId, prompt: STEER, mode: 'interrupt' })).outcome, 'restarted')
+  await setCurrent(service, null)
+  const state = await finished(service)
+  const continued = state.runs[state.runs[run.id].resumedBy]
+  assert.deepEqual([continued.urgent, continued.output, state.runs[queued.id].output], [true, 'Redirected.', 'Second.'])
+  const [, second, third] = requests.filter(request => request.child)
+  assert.ok(second.messages.includes(message('child.steer.restarted.pi')) && !second.messages.includes('Second task.'))
+  assert.ok(third.messages.includes('Second task.'))
+})
+
 test('a pending message of a pi run arrives after a daemon restart', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd, directory } = project

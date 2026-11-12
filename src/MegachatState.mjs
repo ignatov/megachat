@@ -149,6 +149,8 @@ function addContinuation(state, run, { prompt, task, steered, sent, resumeAttemp
     resumeOf: run.id, resumeAttempt, notBefore,
     ...(task === undefined ? {} : { task }),
     ...(run.title === undefined ? {} : { title: run.title }),
+    // The run service starts it before the older queued runs, because the user waits for the message.
+    ...(steered ? { urgent: true } : {}),
   }
   const steers = carrySteers(run, next.id, sent, steered ?? 'restarted')
   if (steers.length) next.steers = steers

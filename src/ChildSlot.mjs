@@ -4,8 +4,9 @@ const activeStates = new Set(['launching', 'ready', 'dispatched', 'running', 'ap
 /**
  * The one place for a child run in the daemon. The ACP run service and the pi run service share it, so the daemon runs
  * at most one child at a time, ACP or pi. The queue order holds across both services: a service takes only the first
- * queued run that may start now. The state shows a run as active only after its commit, so the holder in memory closes
- * the gap between the choice of a run and that commit.
+ * queued run that may start now. A continuation for a message of the user (`urgent`) comes before the older queued
+ * runs, because the user waits for the message. The state shows a run as active only after its commit, so the holder
+ * in memory closes the gap between the choice of a run and that commit.
  */
 export class ChildSlot {
   constructor() {
@@ -13,12 +14,16 @@ export class ChildSlot {
     this.listeners = new Set()
   }
 
-  /** Takes the slot for the queued [run] when no child runs and [run] is the first queued run that may start now. */
+  /**
+   * Takes the slot for the queued [run] when no child runs and [run] is the first queued run that may start now: the
+   * first urgent one, else the first one.
+   */
   take(snapshot, run, now = Date.now()) {
     if (this.holder !== null) return false
     const runs = Object.values(snapshot.runs)
     if (runs.some(item => item.id !== run.id && activeStates.has(item.status))) return false
-    if (runs.find(item => item.status === 'admitted' && (item.notBefore ?? 0) <= now)?.id !== run.id) return false
+    const ready = runs.filter(item => item.status === 'admitted' && (item.notBefore ?? 0) <= now)
+    if ((ready.find(item => item.urgent === true) ?? ready[0])?.id !== run.id) return false
     this.holder = run.id
     return true
   }

@@ -801,6 +801,7 @@ test('a stop for a steer message continues the session at once, without an attem
   assert.equal(next.prompt, message('child.steer.restarted'))
   assert.equal(next.task, 'Implement it')
   assert.equal(next.resumeAttempt, 2)
+  assert.equal(next.urgent, true)
   assert.ok(next.notBefore <= before + 1000)
   assert.equal(next.output, 'Partial work. ')
   assert.deepEqual(next.steers.map(item => item.text), ['Use the other branch'])

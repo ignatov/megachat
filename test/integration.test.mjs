@@ -1057,6 +1057,27 @@ for (const [mode, env, sent] of [['an agent without steering', 'off', 0], ['a fa
   })
 }
 
+test('the continuation for a message starts before an older queued task', { timeout: 15000 }, async t => {
+  const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'claude', { env: { FAKE_ACP_STEERING: 'off' } })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'second' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  const [run, queued] = Object.values((await service.state.snapshot()).runs)
+  assert.equal(queued.status, 'admitted')
+  assert.equal((await steerTurn(service, daemon, fake, 'redirect', { childSessionId: run.childSessionId, prompt: 'Use the other branch' })).outcome, 'restarted')
+  const state = await waitForState(service.state, state => Object.values(state.runs).every(value => terminalStates.has(value.status)) ? state : undefined)
+  const next = state.runs[state.runs[run.id].resumedBy]
+  assert.equal(next.status, 'completed')
+  assert.equal(state.runs[queued.id].status, 'completed')
+  const prompts = (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(prompts.map(prompt => prompt.at(-1)), ['steer',
+    `${message('child.steer.added')}\n\n${message('child.steer.message', 1)}\nUse the other branch`, 'second'])
+})
+
 test('a message that the agent takes but does not answer before the end of its turn gets a follow-up', { timeout: 15000 }, async t => {
   const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'claude', { env: { FAKE_ACP_STEERING: 'drop' } })
   fake.setResponses([
