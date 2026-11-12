@@ -38,8 +38,9 @@ const systemClock = {
  * [workday] holds the working-day settings of `workdaySettings`, or it is `undefined`. With these settings, the idle
  * daemon sends no keep-alive request outside the working hours. Outside the working hours, it acts only when the
  * conversation is idle for `idleMinutes`. Then the conversation goes to sleep: above [compactTokens] it gets the summary,
- * and no request goes out until the next turn. The summary needs a warm cache, as above. In the working hours, the
- * idle daemon acts as without [workday].
+ * and no request goes out until the next turn. This summary comes also on a cold cache: the summary request sends the
+ * conversation as a transcript with its own system prompt and no cache retention, so it reads no prompt cache, and a
+ * cold cache does not change its cost. In the working hours, the idle daemon acts as without [workday].
  *
  * [tokens] returns the size of the model context. [ping] gets an abort signal and returns the usage of its request.
  */
@@ -56,10 +57,15 @@ export class PromptCacheKeepAlive {
     this.cancel()
   }
 
-  /** The conversation is idle since [at], the time of its last model request. */
-  turnEnded(at = this.clock.now()) {
+  /**
+   * The conversation is idle since [at], the time of its last model request. A turn that the user did not cause, such as
+   * the morning report ([automatic]), keeps the idle time of the earlier turn, so it starts no `keepAlive.hours` window.
+   * Without an earlier turn, the idle time has no start, and no window is open.
+   */
+  turnEnded(at = this.clock.now(), { automatic = false } = {}) {
     this.busy = false
-    this.idleSince = at
+    if (!automatic) this.idleSince = at
+    else this.idleSince ??= -Infinity
     this.schedule(at)
   }
 
@@ -82,13 +88,14 @@ export class PromptCacheKeepAlive {
   async tick() {
     if (this.busy || this.closed) return
     const now = this.clock.now()
-    // A timer of a computer that slept comes late. The cache is then cold, and a request would write it, not read it.
-    if (now - this.lastRequestAt >= this.ttlMs) return
     const resting = this.workday !== undefined && !isWorkingTime(this.workday, now)
+    // A timer of a computer that slept comes late. The cache is then cold, and a keep-alive request would write it, not
+    // read it. In the working hours the user is then likely back, and a summary now would make the next turn wait, so
+    // the idle daemon does nothing. Outside the working hours, no keep-alive request goes out at all.
+    if (!resting && now - this.lastRequestAt >= this.ttlMs) return
     if (resting) {
       // The user can still work after the end of the working hours. So the conversation goes to sleep only after the
-      // idle time, and until then no request goes out. When the idle time ends after the cache lifetime, the check
-      // above stops the summary.
+      // idle time, and until then no request goes out.
       const sleepAt = this.idleSince + this.workday.idleMinutes * MINUTE_MS
       if (now < sleepAt) { this.wake(sleepAt); return }
     }
@@ -96,7 +103,8 @@ export class PromptCacheKeepAlive {
     if (this.busy || this.closed) return
     if (size > this.compactTokens) {
       const outcome = await this.compact()
-      logEvent('log.keepalive.compact', size, outcome.compacted ? 'done' : outcome.reason)
+      const cold = now - this.lastRequestAt >= this.ttlMs
+      logEvent(cold ? 'log.workday.compactCold' : 'log.keepalive.compact', size, outcome.compacted ? 'done' : outcome.reason)
       if (resting) logEvent('log.workday.sleep', size)
       return
     }

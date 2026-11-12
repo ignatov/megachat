@@ -169,7 +169,7 @@ The setting `workday.enabled` ties the keep-alive requests to your working hours
 behavior above stays. When it is on, the daemon sends no keep-alive request outside the hours from `workday.start` to
 `workday.end` on the days of `workday.days`, in the timezone of `workday.timezone`. When you still work after the end,
 the summary waits until the conversation is idle for `workday.idleMinutes`. Then the conversation goes to sleep: above
-the limit of a summary it gets the summary while the cache is warm, and no request goes out until your next message.
+the limit of a summary it gets the summary, also after the cache expired, and no request goes out until your next message.
 A message at night works as usual, and the same idle rule applies after it. A child task does not stop, and its result
 starts a turn at once. Your first message of the morning starts from the summary, so its cache write is small. The
 working day acts through the keep-alive, so `keepAlive.enabled` off also stops it.
@@ -280,7 +280,9 @@ Megachat, so their cost is only in the first part.
 The report is an automatic turn, as the report of a child result. When Air is open, the report comes as a reply. When
 Air is closed, the reply waits in the conversation, and Air shows it at the next attach. A message of yours interrupts
 the report, and the report then comes again one time. The report starts no work: it lists what the agent would do
-next, and you approve it. A period without a turn of yours, a child task and a spend of Megachat gives no report.
+next, and you approve it. A period without a turn of yours and without a child task gives no report. The report itself
+costs money, but this spend does not make the next period active. The report also starts no window of keep-alive
+requests.
 
 The state keeps the date of the last report, so a restart sends no second report. When the computer slept or the
 daemon was down at `workday.start`, the report comes at the first chance on that working day. When you turn the report

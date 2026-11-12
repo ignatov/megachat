@@ -116,8 +116,9 @@ async function sessionsOf(store, directories, from, to) {
 }
 
 /**
- * The data of the morning report of [date], or `null` for a period without activity: no turn of the user, no child run
- * and no spend of Megachat. The daemon collects it, and the main agent only writes the text. The money of Megachat
+ * The data of the morning report of [date], or `null` for a period without activity: no turn of the user and no child
+ * run. The spend does not count: the turn of a report, a keep-alive request and a summary also cost money, and a report
+ * must not make the next period active. The daemon collects the data, and the main agent only writes the text. The money of Megachat
  * and the money of the other sessions stay apart: the key of Megachat paid the first, and the accounts of the agents
  * paid the second, so tokprof gives only its API-equivalent cost. [signal] stops the commands at the stop of the daemon.
  */
@@ -132,8 +133,8 @@ export async function collectReportData({ state, date, workday, spend, sessionSt
     .filter(([requestId, input]) => !AUTOMATIC_REQUEST.test(requestId) && inPeriod(input.admittedAt)).length
   const runs = Object.values(state.runs)
   const periodRuns = runs.filter(run => inPeriod(run.createdAt) || inPeriod(run.finishedAt))
+  if (!userTurns && !periodRuns.length) return null
   const days = spend.daily(period.dates)
-  if (!userTurns && !periodRuns.length && !days.some(day => day.usd > 0)) return null
   const finished = runs.filter(run => terminalStates.has(run.status) && inPeriod(run.finishedAt))
   const directories = directoriesOf(state)
   const commits = []

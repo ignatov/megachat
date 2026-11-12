@@ -37,12 +37,14 @@ The later work on Megachat, in the order of the work. Each item gives its reason
    of the project.
 8. **Types: TypeScript, or `tsc --checkJs`.** Today no type check runs, so a wrong field name shows only in a test or
    at run time.
-9. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
-   Air does not know. Today each attach sends one `_session/service/record` for each address, up to 5,000.
-10. **A refusal text of its own for each limit of work in progress.** Today `error.limit` names a time or output
+9. **A login service, so the daemon starts with the system.** Today no daemon runs after a restart of the computer
+   until an IDE opens Megachat. So the timer of the morning report does not run, and no report comes until then.
+10. **One record request for many delegated sessions.** Send the addresses in one batch, or only the addresses that
+    Air does not know. Today each attach sends one `_session/service/record` for each address, up to 5,000.
+11. **A refusal text of its own for each limit of work in progress.** Today `error.limit` names a time or output
     limit also for eight child runs of one main task, eight unfinished tasks, and 32 permissions of one run. So the
     model does not see the real reason.
-11. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
+12. **Pi children that change code.** Give a pi child `bash`, `edit` and `write` of Pi Durable, with a `beforeTool`
     hook that makes a permission request in the state, as an ACP child asks for a permission. These tools need a
     sandbox, because they run with the rights of the daemon. Today a pi child only reads, so it needs no sandbox.
     Also decide whether the pi children move out of the daemon process, to a worker thread or to a second process.
@@ -50,5 +52,5 @@ The later work on Megachat, in the order of the work. Each item gives its reason
     one storage of Pi Durable: its README says that one process owns a storage at a time. A cache lifetime of its own
     for a child request needs a rewrite of the provider request, because Pi Durable reads the stream options of the
     harness without the conversation.
-12. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
+13. **The deletion of an old pi conversation.** Pi Durable 1.5.0 cannot delete or archive a conversation, so
     `conversation.sqlite` keeps each pi child after the prune drops its runs.

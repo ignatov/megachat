@@ -575,13 +575,16 @@ export class PiMegachatService {
       if (last !== undefined) this.keepAlive?.turnEnded(last)
     }
     let running = Boolean(snapshot.current)
+    let kind = snapshot.current?.kind
     this.eventWatch = await this.state.watch()
     const observe = snapshot => {
       if (running !== Boolean(snapshot.current)) {
         running = Boolean(snapshot.current)
         if (running) this.keepAlive?.turnStarted()
-        else this.keepAlive?.turnEnded()
+        // The morning report comes while the user can be away, so it starts no window of keep-alive requests.
+        else this.keepAlive?.turnEnded(undefined, { automatic: kind === 'morning' })
       }
+      kind = snapshot.current?.kind ?? kind
       if (snapshot.current) { this.watchPromptSuggestion(snapshot); return }
       const now = Date.now()
       const unreported = Object.values(snapshot.runs).filter(run => terminalStates.has(run.status) && !run.reported)

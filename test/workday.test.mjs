@@ -36,13 +36,13 @@ async function logLines(t, body) {
  * A keep-alive with a 1-hour cache and a context of [size] tokens, on a fake clock that starts at the UTC time [start].
  * Each ping and summary goes into `events` with its UTC time.
  */
-function fixture({ start, size = 50000, ...options } = {}) {
+function fixture({ start, size = 50000, ttlMs = HOUR, ...options } = {}) {
   const workday = Object.hasOwn(options, 'workday') ? options.workday : WORKDAY
   const clock = fakeClock(start)
   const events = []
   const usage = { input: 10, cacheRead: size, cacheWrite: 0, output: 1, cost: { total: 0.01 } }
   const keepAlive = new PromptCacheKeepAlive({
-    ttlMs: HOUR, windowMs: 6 * HOUR, compactTokens: 100000, workday, clock, tokens: async () => size,
+    ttlMs, windowMs: 6 * HOUR, compactTokens: 100000, workday, clock, tokens: async () => size,
     ping: async () => { events.push(`ping ${clockText(clock.now())}`); return usage },
     compact: async () => { events.push(`compact ${clockText(clock.now())}`); return { compacted: true } },
   })
@@ -140,7 +140,7 @@ test('the keep-alive requests stop at the end of the working hours, and the conv
   await keepAlive.close()
 })
 
-test('the summary of a large conversation waits for the idle time after the end, runs one time, and needs a warm cache', async t => {
+test('the summary of a large conversation waits for the idle time after the end, runs one time, and comes also on a cold cache', async t => {
   // The user still works at 19:10. With 55 minutes of idle time, the summary comes at 20:05, before the cache expires at 20:10.
   const late = await eventsAfterTurn(t, { start: '2026-11-11T19:10:00Z', size: 150000, workday: { ...WORKDAY, idleMinutes: 55 } })
   assert.deepEqual(late.events, ['compact 11-11 20:05'])
@@ -149,10 +149,21 @@ test('the summary of a large conversation waits for the idle time after the end,
   // With the default idle time, the idle daemon acts at 5/6 of the cache lifetime, as in the working hours.
   const usual = await eventsAfterTurn(t, { start: '2026-11-11T19:10:00Z', size: 150000 })
   assert.deepEqual(usual.events, ['compact 11-11 20:00'])
-  // The idle time ends after the cache lifetime. No keep-alive request keeps the cache warm outside the working hours,
-  // so no summary comes.
+  // The idle time ends after the cache lifetime. The summary request reads no prompt cache, so the summary comes all the
+  // same, one time, at the end of the idle time.
   const cold = await eventsAfterTurn(t, { start: '2026-11-11T19:10:00Z', size: 150000, workday: { ...WORKDAY, idleMinutes: 120 } })
-  assert.deepEqual(cold.events, [])
+  assert.deepEqual(cold.events, ['compact 11-11 21:10'])
+  assert.ok(cold.lines.some(line => /got a summary after the prompt cache expired: done\./.test(line)))
+  // With the 5-minute cache, the summary comes at the end of the default idle time of 30 minutes.
+  const short = await eventsAfterTurn(t, { start: '2026-11-11T19:10:00Z', size: 150000, ttlMs: 5 * MINUTE })
+  assert.deepEqual(short.events, ['compact 11-11 19:40'])
+  // In the working hours, a late timer of a computer that slept still does nothing on a cold cache.
+  const asleep = fixture({ start: '2026-11-11T12:00:00Z', size: 150000 })
+  asleep.keepAlive.turnEnded()
+  asleep.clock.sleep(2 * HOUR)
+  await asleep.advance(HOUR)
+  assert.deepEqual(asleep.events, [])
+  await asleep.keepAlive.close()
   // In the working hours, a large conversation gets its summary as without the working day.
   const day = await eventsAfterTurn(t, { start: '2026-11-11T12:00:00Z', size: 150000 })
   assert.deepEqual(day.events, ['compact 11-11 12:50'])

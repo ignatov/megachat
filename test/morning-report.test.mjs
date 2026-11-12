@@ -16,6 +16,7 @@ import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import { collectReportData, MorningReport, REPORT_RECHECK_MS } from '../src/MorningReport.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
+import { PromptCacheKeepAlive } from '../src/PromptCacheKeepAlive.mjs'
 import { SessionIndex } from '../src/SessionIndex.mjs'
 import { parseTokprof, readTokprof } from '../src/Tokprof.mjs'
 import { waitForState } from '../src/waitForState.mjs'
@@ -262,7 +263,7 @@ test('the commits of the period come from git log of each known project with a t
   git(['commit', '-q', '--allow-empty', '-m', 'A change of today'], '2026-11-16T08:00:00Z')
   const spend = new DailySpend(undefined, { now: () => at('2026-11-16T09:00:00Z') },
     { schema: 1, day: '2026-11-16', usd: 0, warning: 'none', days: { '2026-11-14': { usd: 0.2, piUsd: 0 } } })
-  const state = { workspaces: [repository], projects: [], inputs: {}, runs: {}, permissions: {} }
+  const state = { workspaces: [repository], projects: [], inputs: { 'user-1': { admittedAt: at('2026-11-14T09:00:00Z') } }, runs: {}, permissions: {} }
   const data = await collectReportData({ state, date: '2026-11-16', workday: UTC, spend, home: directory,
     environment: { ...process.env, PATH: ['/usr/bin', '/bin', '/usr/local/bin', '/opt/homebrew/bin'].join(':') } })
   assert.equal(data.commits.projects.length, 1)
@@ -290,9 +291,11 @@ const text = content => typeof content === 'string' ? content : content.filter(b
 
 /**
  * A daemon with a fake model, a fake tokprof, and a fake clock that starts at the UTC time [start] for the timer and the
- * spend. `settings.json` holds [values], and `spend.json` the count of [spendToday] and the counts of [spendDays].
+ * spend. `settings.json` holds [values], and `spend.json` the count of [spendToday] and the counts of [spendDays]. The
+ * state gets one earlier turn of the user at each UTC time of [userTurns]. The model has prices, so each turn costs money.
  */
-async function daemonFixture(t, { start, values = {}, spendDays = {}, spendToday = { day: '2026-11-01', usd: 0 }, replies = [], storage, directory, tokprof = 'ok', settings = true }) {
+async function daemonFixture(t, { start, values = {}, spendDays = {}, spendToday = { day: '2026-11-01', usd: 0 }, userTurns = [], replies = [], storage,
+  directory, tokprof = 'ok', settings = true, keepAlive = { enabled: false }, accountCheck }) {
   directory ??= await temporary(t)
   const stateDirectory = join(directory, 'state')
   const home = join(directory, 'home')
@@ -310,11 +313,11 @@ async function daemonFixture(t, { start, values = {}, spendDays = {}, spendToday
   const environment = { PATH: [...(tokprof === 'none' ? [] : [bin]), '/usr/bin', '/bin'].join(':'), FAKE_TOKPROF_MODE: tokprof,
     FAKE_TOKPROF_OUTPUT: folded(stateDirectory), FAKE_TOKPROF_ARGS: argsFile }
   const clock = fakeClock(start)
-  const fake = fauxProvider()
+  const fake = fauxProvider({ models: [{ id: 'priced', cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }] })
   const requests = []
-  fake.setResponses(Array(50).fill(async (context, options) => {
+  fake.setResponses(Array(100).fill(async (context, options) => {
     const prompt = context.messages.findLast(item => item.role === 'user')
-    requests.push({ prompt: prompt ? text(prompt.content) : '', at: iso(clock.now()) })
+    requests.push({ prompt: prompt ? text(prompt.content) : '', at: iso(clock.now()), kind: options.maxTokens === 1 ? 'ping' : 'turn' })
     const reply = replies.shift()
     return typeof reply === 'function' ? reply(context, options) : fauxAssistantMessage(reply ?? 'Morning report text.')
   }))
@@ -323,15 +326,19 @@ async function daemonFixture(t, { start, values = {}, spendDays = {}, spendToday
   const model = fake.getModel()
   const service = await PiMegachatService.open(storage ?? new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, undefined, {
     settingsPath: join(stateDirectory, 'settings.json'), spendPath: join(stateDirectory, 'spend.json'), stateDirectory, home,
-    workspacePath: join(stateDirectory, 'workspace'), environment, clock, keepAlive: { enabled: false }, morningReport: { clock },
+    workspacePath: join(stateDirectory, 'workspace'), environment, clock, keepAlive: { clock, minTokens: 1000, ...keepAlive }, morningReport: { clock },
+    accountCheck,
   })
   await service.state.addWorkspace(project)
+  await service.state.change(state => {
+    for (const time of userTurns) state.inputs[`user-${time}`] = { digest: time, mainRunId: time, submissionId: 0, status: 'completed', admittedAt: at(time) }
+  })
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
   let closed
   const close = () => closed ??= (async () => { await server.close(); await service.close() })()
   t.after(close)
-  const advance = ms => clock.advance(ms, () => service.morningReport.running)
+  const advance = ms => clock.advance(ms, () => Promise.all([service.morningReport.running, service.keepAlive?.running]))
   const reports = async () => Object.entries((await service.state.snapshot()).inputs).filter(([id]) => id.startsWith('morning:')).map(([, input]) => input)
   const settled = () => waitForState(service.state, state => !state.current && !state.morningReport.pending ? state : undefined)
   return { service, daemon, requests, clock, advance, reports, settled, close, directory, stateDirectory, project, argsFile, fake }
@@ -339,9 +346,11 @@ async function daemonFixture(t, { start, values = {}, spendDays = {}, spendToday
 
 const reportData = request => JSON.parse(request.prompt.slice(request.prompt.indexOf('\n') + 1))
 const ACTIVE = { '2026-11-13': { usd: 1.25, piUsd: 0.25 } }
+const FRIDAY = '2026-11-13T10:00:00Z'
+const MONDAY = '2026-11-16T08:30:00Z'
 
 test('the report is one automatic turn at the start of the day, with the data in its prompt and the two kinds of money apart', { timeout: 20000 }, async t => {
-  const { service, requests, advance, reports, settled, stateDirectory } = await daemonFixture(t, { start: '2026-11-16T08:50:00Z', spendDays: ACTIVE })
+  const { service, requests, advance, reports, settled, stateDirectory } = await daemonFixture(t, { start: '2026-11-16T08:50:00Z', spendDays: ACTIVE, userTurns: [FRIDAY] })
   const lines = await logLines(t, async () => {
     await service.resume()
     await advance(9 * MINUTE)
@@ -366,8 +375,9 @@ test('the report is one automatic turn at the start of the day, with the data in
   assert.ok(lines.some(line => line.includes('The morning report of 2026-11-16 waits for its turn.')))
 })
 
-test('a period without activity gives no turn, and the state keeps the date', { timeout: 20000 }, async t => {
-  const { service, requests, reports, argsFile } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z' })
+test('a period with spend but without a turn of the user and a child run gives no turn, and the state keeps the date', { timeout: 20000 }, async t => {
+  // The spend alone makes no period active: automatic turns, keep-alive requests and summaries also cost money.
+  const { service, requests, reports, argsFile } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE })
   const lines = await logLines(t, async () => {
     await service.resume()
     await service.morningReport.running
@@ -381,7 +391,7 @@ test('a period without activity gives no turn, and the state keeps the date', { 
 })
 
 test('without tokprof, the data says that the money of the other sessions is missing', { timeout: 20000 }, async t => {
-  const { service, requests, settled } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, tokprof: 'none' })
+  const { service, requests, settled } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, userTurns: [FRIDAY], tokprof: 'none' })
   await logLines(t, async () => {
     await service.resume()
     await service.morningReport.running
@@ -395,7 +405,7 @@ test('without tokprof, the data says that the money of the other sessions is mis
 
 test('with report.morning off, and with an old settings.json, no report and no tokprof run happen', { timeout: 20000 }, async t => {
   for (const options of [{ values: { 'report.morning': false } }, { settings: false }]) {
-    const { service, requests, advance, argsFile, reports } = await daemonFixture(t, { start: '2026-11-16T08:00:00Z', spendDays: ACTIVE, ...options })
+    const { service, requests, advance, argsFile, reports } = await daemonFixture(t, { start: '2026-11-16T08:00:00Z', spendDays: ACTIVE, userTurns: [FRIDAY], ...options })
     await service.resume()
     await advance(3 * DAY)
     assert.equal(service.morningReport.timer, undefined)
@@ -409,8 +419,7 @@ test('with report.morning off, and with an old settings.json, no report and no t
 test('a restart on the same day sends no second report, and an old state without the report opens', { timeout: 30000 }, async t => {
   const directory = await temporary(t)
   const database = join(directory, 'conversation.sqlite')
-  const spendToday = { day: '2026-11-16', usd: 0.5 }
-  const first = await daemonFixture(t, { directory, start: '2026-11-16T09:10:00Z', spendDays: ACTIVE, spendToday, storage: await openNodeSqliteStorage(database) })
+  const first = await daemonFixture(t, { directory, start: '2026-11-16T09:10:00Z', spendDays: ACTIVE, userTurns: [FRIDAY, MONDAY], storage: await openNodeSqliteStorage(database) })
   await logLines(t, async () => {
     await first.service.resume()
     await first.service.morningReport.running
@@ -418,7 +427,7 @@ test('a restart on the same day sends no second report, and an old state without
   })
   assert.equal((await first.reports()).length, 1)
   await first.close()
-  const second = await daemonFixture(t, { directory, start: '2026-11-16T11:00:00Z', spendDays: ACTIVE, spendToday, storage: await openNodeSqliteStorage(database) })
+  const second = await daemonFixture(t, { directory, start: '2026-11-16T11:00:00Z', spendDays: ACTIVE, userTurns: [FRIDAY, MONDAY], storage: await openNodeSqliteStorage(database) })
   await logLines(t, async () => {
     await second.service.resume()
     await second.service.morningReport.running
@@ -465,7 +474,7 @@ test('the report turn refuses each tool that starts or changes something', { tim
   let project
   const replies = [...Array(10).keys()].map(index => () => fauxAssistantMessage(fauxToolCall(...calls(project)[index]), { stopReason: 'toolUse' }))
   replies.push(context => { results = toolResults(context.messages); return fauxAssistantMessage('Report.') })
-  const fixture = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, replies })
+  const fixture = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, userTurns: [FRIDAY], replies })
   project = fixture.project
   const before = await readFile(join(fixture.stateDirectory, 'settings.json'), 'utf8')
   await logLines(t, async () => {
@@ -491,7 +500,7 @@ test('a user message interrupts the report, and the report runs again one time',
     await new Promise(resolve => options.signal.addEventListener('abort', resolve, { once: true }))
     return fauxAssistantMessage('Cut.', { stopReason: 'aborted' })
   }
-  const { service, daemon, reports, requests, settled } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE,
+  const { service, daemon, reports, requests, settled } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, userTurns: [FRIDAY],
     replies: [hang(0), 'First answer.', hang(1), 'Second answer.'] })
   await logLines(t, async () => {
     await service.resume()
@@ -522,7 +531,7 @@ async function attach(t, daemon, cwd) {
 const shows = (updates, value) => updates.some(event => event.update?.sessionUpdate === 'agent_message_chunk' && event.update.content?.text?.includes(value))
 
 test('a connected client gets the report as it comes, and a client that connects later finds it in the conversation', { timeout: 20000 }, async t => {
-  const connected = await daemonFixture(t, { start: '2026-11-16T08:55:00Z', spendDays: ACTIVE })
+  const connected = await daemonFixture(t, { start: '2026-11-16T08:55:00Z', spendDays: ACTIVE, userTurns: [FRIDAY] })
   await connected.service.resume()
   const updates = await attach(t, connected.daemon, connected.project)
   await logLines(t, async () => {
@@ -532,7 +541,7 @@ test('a connected client gets the report as it comes, and a client that connects
   for (let attempt = 0; attempt < 200 && !shows(updates, 'Morning report text.'); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
   assert.ok(shows(updates, 'Morning report text.'))
   // Without a client, the reply stays in the conversation, and the replay of the next attach shows it without the prompt.
-  const alone = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE })
+  const alone = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, userTurns: [FRIDAY] })
   await logLines(t, async () => {
     await alone.service.resume()
     await alone.service.morningReport.running
@@ -545,8 +554,8 @@ test('a connected client gets the report as it comes, and a client that connects
 })
 
 test('turning the report on after the start of a working day keeps the first report for the next working day', { timeout: 20000 }, async t => {
-  const { service, reports, advance, settled } = await daemonFixture(t, { start: '2026-11-16T10:00:00Z', spendDays: ACTIVE,
-    spendToday: { day: '2026-11-16', usd: 0.4 }, values: { 'report.morning': false } })
+  const { service, reports, advance, settled } = await daemonFixture(t, { start: '2026-11-16T10:00:00Z', spendDays: ACTIVE, userTurns: [MONDAY],
+    values: { 'report.morning': false } })
   await service.resume()
   const tool = service.extension().tools.find(item => item.name === 'agents_settings')
   await logLines(t, async () => {
@@ -584,4 +593,72 @@ test('spend.json keeps the spend of the last 31 earlier days with the part of th
   const early = await DailySpend.open(undefined, { now: () => new Date(2026, 9, 2, 12).getTime() })
   early.data = { schema: 1, day: '2026-10-01', usd: 0.75, piUsd: 0.25, warning: 'none' }
   assert.deepEqual(early.daily(['2026-10-01']), [{ day: '2026-10-01', usd: 0.75, piUsd: 0.25 }])
+})
+
+test('a report does not keep itself alive: the next working day without a user gives no report', { timeout: 20000 }, async t => {
+  const { service, reports, advance, settled } = await daemonFixture(t, { start: '2026-11-16T08:50:00Z', userTurns: [FRIDAY] })
+  const lines = await logLines(t, async () => {
+    await service.resume()
+    await advance(10 * MINUTE)
+    await settled()
+    // The turn of the report cost money on Monday.
+    assert.ok(service.spend.daily(['2026-11-16'])[0].usd > 0)
+    await advance(DAY)
+    await service.morningReport.running
+  })
+  assert.equal((await reports()).length, 1)
+  assert.equal((await service.state.snapshot()).morningReport.lastDate, '2026-11-17')
+  assert.ok(lines.some(line => line.includes('The period of the morning report of 2026-11-17 had no activity')))
+})
+
+test('the turn of the morning report starts no window of keep-alive requests', { timeout: 20000 }, async t => {
+  const { service, requests, advance, settled } = await daemonFixture(t, { start: '2026-11-16T08:50:00Z', userTurns: [FRIDAY], keepAlive: {},
+    replies: ['Report. '.repeat(3000)] })
+  await logLines(t, async () => {
+    await service.resume()
+    await advance(10 * MINUTE)
+    await settled()
+    await advance(6 * HOUR)
+  })
+  assert.deepEqual(requests.map(request => request.kind), ['turn'])
+  // A turn of the user after it starts the window.
+  const keepAlive = new PromptCacheKeepAlive({ ttlMs: HOUR, windowMs: 6 * HOUR, compactTokens: 100000, minTokens: 1000, clock: fakeClock('2026-11-13T17:00:00Z'),
+    tokens: async () => 50000, ping: async () => { pings.push(iso(keepAlive.clock.now())); return { input: 1, cacheRead: 1, cacheWrite: 0, output: 1 } },
+    compact: async () => ({ compacted: true }) })
+  const pings = []
+  await logLines(t, async () => {
+    keepAlive.turnEnded()
+    await keepAlive.clock.advance(3 * DAY, () => keepAlive.running)
+    const before = pings.length
+    keepAlive.turnStarted()
+    keepAlive.turnEnded(undefined, { automatic: true })
+    await keepAlive.clock.advance(6 * HOUR, () => keepAlive.running)
+    assert.equal(pings.length, before)
+    keepAlive.turnStarted()
+    keepAlive.turnEnded()
+    await keepAlive.clock.advance(HOUR, () => keepAlive.running)
+    assert.equal(pings.length, before + 1)
+  })
+  await keepAlive.close()
+})
+
+test('a turn of a child result and a turn of the sessions summary still refuse a steer and a setting, and a child result can check the accounts', { timeout: 20000 }, async t => {
+  let checks = 0
+  const { service } = await daemonFixture(t, { start: '2026-11-16T12:00:00Z', settings: false, accountCheck: async () => { checks++; return { agents: [] } } })
+  const tool = name => service.extension().tools.find(item => item.name === `agents_${name}`)
+  const call = async (name, args) => {
+    try { await tool(name).execute(args, { taskId: `task-${name}` }); return 'allowed' }
+    catch (error) { return error.code }
+  }
+  const outcomes = {}
+  // The kind `report` is the turn of a child result, and the kind `event` is the turn of the summary of the past sessions.
+  for (const kind of ['report', 'event', 'morning']) {
+    await service.state.change(state => { state.current = { id: kind, requestId: kind, cancelling: false, kind } })
+    outcomes[kind] = [await call('steer', { childSessionId: 'child', prompt: 'More.' }), await call('settings', { action: 'set', key: 'reply.length', value: 'normal' }),
+      await call('accounts', {})]
+    await service.state.change(state => { state.current = null })
+  }
+  assert.deepEqual(outcomes, { report: ['steerEvent', 'settingEvent', 'allowed'], event: ['steerEvent', 'settingEvent', 'allowed'],
+    morning: ['steerEvent', 'settingEvent', 'morningReport'] })
+  assert.equal(checks, 2)
 })
