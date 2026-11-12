@@ -608,7 +608,8 @@ export class MegachatState {
   async steer(requestId, args) {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
     requireCondition(typeof args.childSessionId === 'string' && args.childSessionId.length > 0 && args.childSessionId.length <= 200)
-    requireCondition(typeof args.prompt === 'string' && args.prompt.trim().length > 0 && args.prompt.length <= 64000)
+    requireCondition(typeof args.prompt === 'string' && args.prompt.trim().length > 0)
+    requireCondition(args.prompt.length <= 64000, 'steerLength')
     requireCondition(['queue', 'interrupt'].includes(args.mode))
     const hash = digest(args)
     return this.change(state => {

@@ -78,7 +78,8 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - The state must record each message before a process sends it: an ID, the text, the mode (`queue`, the default, or
   `interrupt`), the time, and the delivery: `pending`, `delivered` or `fallback`. A repeated tool call must give the
   first record. A task must have at most 16 messages, for its first run and its continuations together. A message
-  must have at most 64,000 characters. The prune of a run must remove its messages.
+  must have at most 64,000 characters, and the error for a longer message must name the limit. The prune of a run
+  must remove its messages.
 - A message for a run that did not send its prompt must go in that prompt, as a block after the task. The outcome must
   be `queued`, and no agent must get a request.
 - For a run that sent its prompt, the run service that owns the connection to the agent must send the message. The

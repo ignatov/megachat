@@ -695,8 +695,10 @@ test('a steer message is recorded before the send, once for a repeated call, and
   assert.equal((await state.steer('tool:1:steer', args)).id, steer.id)
   await assert.rejects(state.steer('tool:1:steer', { ...args, prompt: 'Another link' }), { code: 'conflict' })
   assert.equal((await state.snapshot()).runs[run.id].steers.length, 1)
-  for (const invalid of [{ ...args, mode: 'later' }, { ...args, prompt: ' ' }, { ...args, prompt: 'x'.repeat(64001) }])
+  for (const invalid of [{ ...args, mode: 'later' }, { ...args, prompt: ' ' }])
     await assert.rejects(state.steer('invalid', invalid), { code: 'invalid' })
+  // The error names the limit, so the main agent can split the message.
+  await assert.rejects(state.steer('long', { ...args, prompt: 'x'.repeat(64001) }), { code: 'steerLength', message: /64,000 characters/ })
   await assert.rejects(state.steer('unknown', { ...args, childSessionId: 'unknown' }), { code: 'missing' })
   // A continuation counts the messages of the run that it continues.
   await state.transition(run.id, ['dispatched'], { status: 'interrupted', error: message('error.interrupted') })
