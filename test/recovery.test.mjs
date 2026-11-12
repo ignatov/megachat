@@ -78,7 +78,11 @@ for (const [stop, code] of [['signal', 0], ['storage', 1]]) {
   })
 }
 
-test('bridge exit preserves work and SIGKILL continues the child session without repeating a dispatch', { timeout: 30000 }, async t => {
+// The test starts seven Node.js processes, one after the other: the fake daemon, the bridge, the supervisor and the
+// fake agent, and then a second fake daemon, supervisor and agent. Each process must wait for the one before it. A
+// normal run takes 2 to 6 seconds. Under heavy load, each start takes 1.5 to 4 seconds, and a run took up to about
+// 27 seconds. The runs had no wait other than these starts. So the limit is 60 seconds, not 30 seconds.
+test('bridge exit preserves work and SIGKILL continues the child session without repeating a dispatch', { timeout: 60000 }, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-recovery-'))
   t.after(() => rm(directory, { force: true, recursive: true }))
   let process
