@@ -165,6 +165,15 @@ The keep-alive requests stop 6 hours after the last turn. The settings `cache.tt
 `keepAlive.enabled` change these values, and the variables below win over them. The log of the daemon has one line with the token counts
 of each keep-alive request and of each summary request.
 
+The setting `workday.enabled` ties the keep-alive requests to your working hours. When it is off, the default, the
+behavior above stays. When it is on, the daemon sends no keep-alive request outside the hours from `workday.start` to
+`workday.end` on the days of `workday.days`, in the timezone of `workday.timezone`. When you still work after the end,
+the summary waits until the conversation is idle for `workday.idleMinutes`. Then the conversation goes to sleep: above
+the limit of a summary it gets the summary while the cache is warm, and no request goes out until your next message.
+A message at night works as usual, and the same idle rule applies after it. A child task does not stop, and its result
+starts a turn at once. Your first message of the morning starts from the summary, so its cache write is small. The
+working day acts through the keep-alive, so `keepAlive.enabled` off also stops it.
+
 | Variable of the daemon | Effect |
 |------------------------|--------|
 | `MEGACHAT_CACHE_TTL` | `1h` is the default. `5m` asks for the 5-minute cache, and the idle daemon then acts after 4 minutes 10 seconds. |
@@ -187,6 +196,12 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `keepAlive.hours` | `6` | `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out, 0 to 168 hours. |
 | `cache.ttl` | `1h` | `MEGACHAT_CACHE_TTL` | The lifetime of the prompt cache: `1h` or `5m`. |
 | `compaction.tokens` | `100000` | `MEGACHAT_COMPACT_TOKENS` | The size of the model context above which the conversation gets a summary. |
+| `workday.enabled` | `false` | | The working day: no keep-alive request outside the working hours, and a summary and a sleep after the idle time. |
+| `workday.start` | `09:00` | | The local time when the working hours start, as `HH:MM`. |
+| `workday.end` | `19:00` | | The local time when the working hours end, as `HH:MM`. A time before the start gives hours that go past midnight. |
+| `workday.days` | `mon`-`fri` | | The working days, as a list or as a text such as `mon-fri` or `mon,wed,fri`. |
+| `workday.timezone` | `auto` | | The timezone of the working hours. `auto` is the timezone of the system, else an IANA name such as `Europe/Berlin`. |
+| `workday.idleMinutes` | `30` | | The idle time outside the working hours before the conversation goes to sleep, 0 to 1440 minutes. |
 | `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and you send it with one key; a client without the support shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
@@ -350,7 +365,8 @@ The session text is data for the agent, not instructions.
 | `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
-| `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires. |
+| `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
+| `src/Workday.mjs` | The working day: the pure function that tells whether a time is in the working hours, with the timezone through `Intl`. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits. |
 | `src/ChildSlot.mjs` | The one place for a child run, which the ACP and the pi run services share, so one child runs at a time. |

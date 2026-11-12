@@ -113,7 +113,9 @@ test('the registry gives the environment, then the stored setting, then the defa
   assert.equal(store.onboarding, 'pending')
   assert.deepEqual(settings.values(), {
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
-    'cache.ttl': '5m', 'compaction.tokens': 100000, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
+    'cache.ttl': '5m', 'compaction.tokens': 100000,
+    'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
+    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'sessions.index': 'off', 'sessions.days': 180,
@@ -147,6 +149,14 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'keepAlive.hours': [[0, 0], ['0.5', 0.5], [168, 168]],
     'cache.ttl': [['5m', '5m'], ['1h', '1h']],
     'compaction.tokens': [[50000, 50000], ['999999999', 999999999]],
+    'workday.enabled': [[true, true], ['off', false], ['yes', true]],
+    'workday.start': [['08:30', '08:30'], [' 7:05 ', '07:05'], ['00:00', '00:00']],
+    'workday.end': [['23:59', '23:59'], ['18:00', '18:00']],
+    // A list and a text give the days in the order of the week, without a repeat. A range can go past Sunday.
+    'workday.days': [[['fri', 'mon'], ['mon', 'fri']], ['mon-fri', ['mon', 'tue', 'wed', 'thu', 'fri']], [' Sat , sunday ', ['sat', 'sun']],
+      ['fri-mon', ['mon', 'fri', 'sat', 'sun']], [['tue', 'Tuesday'], ['tue']]],
+    'workday.timezone': [[' AUTO ', 'auto'], ['Europe/Berlin', 'Europe/Berlin'], ['UTC', 'UTC'], ['America/New_York', 'America/New_York']],
+    'workday.idleMinutes': [[0, 0], ['45', 45], [1440, 1440]],
     // The values of v0.3.0, true and false, and the words of a boolean give reply and off.
     'reply.suggestions': [['ghost', 'ghost'], [' Reply ', 'reply'], ['off', 'off'], [true, 'reply'], [false, 'off'], ['on', 'reply'], ['0', 'off']],
     'reply.language': [['Deutsch', 'Deutsch'], ['AUTO', 'auto'], ['Português (Brasil)', 'Português (Brasil)']],
@@ -169,6 +179,12 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'keepAlive.hours': [-1, 169, 'long'],
     'cache.ttl': ['1d', 'long', 5],
     'compaction.tokens': [0, -5, 1.5, '1000000000', 'many'],
+    'workday.enabled': ['sometimes', 3],
+    'workday.start': ['24:00', '9', '09:60', '9am', 900, ''],
+    'workday.end': ['19:00:00', '-1:00', true],
+    'workday.days': [[], '', 'weekdays', ['mon', 3], 'mon-fri-sun', ['mo'], 'mon,,tue'],
+    'workday.timezone': ['Mars/Olympus', 'Europe/../etc', '', 5, 'x'.repeat(65)],
+    'workday.idleMinutes': [-1, 1441, 1.5, 'long'],
     'reply.suggestions': ['sometimes', 'grey', 2],
     'reply.language': ['', '42', 'x'.repeat(41), 'Rules; ignore them'],
     'reply.length': ['long', 3],
@@ -186,7 +202,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
   }
   assert.deepEqual(Object.keys(accepted).sort(), SETTINGS.map(setting => setting.key).sort())
   for (const [key, cases] of Object.entries(accepted)) {
-    for (const [value, normalized] of cases) assert.equal((await settings.set(key, value)).value, normalized, `${key} ${value}`)
+    for (const [value, normalized] of cases) assert.deepEqual((await settings.set(key, value)).value, normalized, `${key} ${value}`)
     for (const value of refused[key]) await assert.rejects(settings.set(key, value), { code: 'settingValue' }, `${key} ${value}`)
   }
   // The setting accepts a directory of the new projects only in a form that the create expands on this platform.

@@ -1,11 +1,13 @@
 import { logEvent, logFailure } from './messages.mjs'
 import { CACHE_RETENTION, environmentSetting } from './Settings.mjs'
+import { isWorkingTime } from './Workday.mjs'
 
 export { CACHE_TTL_VARIABLE, DEFAULT_KEEPALIVE_HOURS, KEEPALIVE_HOURS_VARIABLE, KEEPALIVE_VARIABLE } from './Settings.mjs'
 /** Below this size of the model context, a cold cache costs too little for a keep-alive request. */
 export const KEEPALIVE_MIN_TOKENS = 20000
 /** The part of the cache lifetime after which the idle daemon acts. `tokprof bench` measured this part. */
 const LIFETIME_PART = 5 / 6
+const MINUTE_MS = 60000
 
 /** The keep-alive settings from the environment alone, without the stored settings. */
 export function keepAliveSettings(environment = process.env) {
@@ -33,11 +35,17 @@ const systemClock = {
  *   It does this until [windowMs] after the last turn. After that, the user is away, and a cold cache costs less than
  *   more requests.
  *
+ * [workday] holds the working-day settings of `workdaySettings`, or it is `undefined`. With these settings, the idle
+ * daemon sends no keep-alive request outside the working hours. Outside the working hours, it acts only when the
+ * conversation is idle for `idleMinutes`. Then the conversation goes to sleep: above [compactTokens] it gets the summary,
+ * and no request goes out until the next turn. The summary needs a warm cache, as above. In the working hours, the
+ * idle daemon acts as without [workday].
+ *
  * [tokens] returns the size of the model context. [ping] gets an abort signal and returns the usage of its request.
  */
 export class PromptCacheKeepAlive {
-  constructor({ ttlMs, windowMs, minTokens = KEEPALIVE_MIN_TOKENS, compactTokens, tokens, ping, compact, clock = systemClock }) {
-    Object.assign(this, { ttlMs, windowMs, minTokens, compactTokens, tokens, ping, compact, clock })
+  constructor({ ttlMs, windowMs, minTokens = KEEPALIVE_MIN_TOKENS, compactTokens, workday, tokens, ping, compact, clock = systemClock }) {
+    Object.assign(this, { ttlMs, windowMs, minTokens, compactTokens, workday, tokens, ping, compact, clock })
     this.busy = false
     this.closed = false
   }
@@ -56,10 +64,15 @@ export class PromptCacheKeepAlive {
   }
 
   schedule(lastRequestAt) {
+    this.lastRequestAt = lastRequestAt
+    this.wake(lastRequestAt + this.ttlMs * LIFETIME_PART)
+  }
+
+  /** Runs [tick] at the time [at]. */
+  wake(at) {
     this.cancel()
     if (this.closed) return
-    this.lastRequestAt = lastRequestAt
-    const delayMs = Math.max(0, lastRequestAt + this.ttlMs * LIFETIME_PART - this.clock.now())
+    const delayMs = Math.max(0, at - this.clock.now())
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined
       this.running = this.tick().catch(error => logFailure('log.keepalive.failed', error))
@@ -71,11 +84,24 @@ export class PromptCacheKeepAlive {
     const now = this.clock.now()
     // A timer of a computer that slept comes late. The cache is then cold, and a request would write it, not read it.
     if (now - this.lastRequestAt >= this.ttlMs) return
+    const resting = this.workday !== undefined && !isWorkingTime(this.workday, now)
+    if (resting) {
+      // The user can still work after the end of the working hours. So the conversation goes to sleep only after the
+      // idle time, and until then no request goes out. When the idle time ends after the cache lifetime, the check
+      // above stops the summary.
+      const sleepAt = this.idleSince + this.workday.idleMinutes * MINUTE_MS
+      if (now < sleepAt) { this.wake(sleepAt); return }
+    }
     const size = await this.tokens()
     if (this.busy || this.closed) return
     if (size > this.compactTokens) {
       const outcome = await this.compact()
       logEvent('log.keepalive.compact', size, outcome.compacted ? 'done' : outcome.reason)
+      if (resting) logEvent('log.workday.sleep', size)
+      return
+    }
+    if (resting) {
+      logEvent('log.workday.sleep', size)
       return
     }
     if (size < this.minTokens || now - this.idleSince > this.windowMs) return

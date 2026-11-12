@@ -15,6 +15,7 @@ import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, SettingsStore, suggestionMode } from './Settings.mjs'
 import { waitForState } from './waitForState.mjs'
+import { workdaySettings } from './Workday.mjs'
 import { SessionHistoryService } from './SessionHistoryService.mjs'
 import { SessionIndexService } from './SessionIndexService.mjs'
 import { entryText, MegachatSearchIndex, queryTerms, snippet } from './MegachatSearchIndex.mjs'
@@ -214,7 +215,7 @@ export class PiMegachatService {
   /**
    * Takes the effective [values] for each part of the service that reads a setting outside the stored choices of the
    * root conversation: the harness settings, the rules of the section `settings`, the model of a summary and of a
-   * keep-alive request, the suggestion tools, and the keep-alive.
+   * keep-alive request, the suggestion tools, and the keep-alive with the working day.
    * Returns true when the keep-alive is new.
    */
   adopt(values) {
@@ -234,7 +235,7 @@ export class PiMegachatService {
     const ttlSeconds = this.models.getModel(this.model.provider, this.model.modelId)?.promptCache?.[this.cacheRetention]
       ?? CACHE_LIFETIME_SECONDS[this.cacheRetention]
     const keepAlive = values['keepAlive.enabled'] ? { ttlMs: ttlSeconds * 1000, windowMs: values['keepAlive.hours'] * 3600000,
-      compactTokens: values['compaction.tokens'] } : null
+      compactTokens: values['compaction.tokens'], workday: workdaySettings(values) } : null
     if (JSON.stringify(keepAlive) === this.keepAliveKey) return false
     this.keepAliveKey = JSON.stringify(keepAlive)
     if (this.keepAlive) this.retired.push(this.keepAlive.close().catch(() => {}))

@@ -146,6 +146,21 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - `MEGACHAT_KEEPALIVE=0` must stop the keep-alive requests and the summary of an idle conversation. It must not change the cache lifetime.
 - The log of the daemon must get one line with the token counts and the cost of each keep-alive request and of each summary request. The line must hold no content of the conversation.
   [@test] ../test/keepalive.test.mjs
+- The setting `workday.enabled` must be off by default. Off must keep each rule above about the idle daemon.
+- The working hours are from `workday.start` to `workday.end` (defaults `09:00` and `19:00`) on the days of `workday.days` (default Monday to Friday), in the timezone of `workday.timezone`. The value `auto`, the default, is the timezone of the system. The local time must come from `Intl`, so a change of the daylight saving time moves the working hours with the local clock.
+- A `workday.start` after `workday.end` must give working hours that go past midnight, from a working day into the next day. Equal times must give the whole day of each working day.
+- One pure function of the working-day settings and a time must decide whether the time is in the working hours.
+- With `workday.enabled` on, the daemon must send no keep-alive request outside the working hours. In the working hours, the idle daemon must act as without the working day.
+- Outside the working hours, the idle daemon must act only when the conversation is idle for `workday.idleMinutes` (default 30). Then the conversation must go to sleep: a context above the limit of a summary must get the summary one time through the summary of the idle daemon, and no request must go out until the next turn. A smaller context must get no summary. The log must get one line for the sleep.
+- The summary must come only while the prompt cache is warm. When the idle time ends after the cache lifetime, no summary must come.
+- A turn outside the working hours must work as usual. After it, the idle rule must apply, and `keepAlive.hours` must not apply. A daemon restart outside the working hours must send no keep-alive request.
+- The first turn after the sleep must start from the context that the summary left.
+- The sleep must not stop a child task. A child result must start its turn at once, and the idle rule must apply after that turn.
+- With `keepAlive.enabled` off, the working day must have no effect.
+- A time must be `HH:MM` or `H:MM` of a 24-hour clock, and the value must become `HH:MM`. The days must be a list or a text such as `mon-fri` or `mon,wed`, with short or full English names, and at least one day. A timezone must be `auto` or a name that `Intl` knows. The idle time must be a whole number of minutes from 0 to 1440.
+- A `settings.json` without the `workday.*` keys must open with the defaults.
+  [@test] ../test/workday.test.mjs
+  [@test] ../test/settings.test.mjs
 - History lookup must return timestamps and mark partial results.
 - Retrieved messages must grant no new permission.
   [@test] ../test/state.test.mjs
@@ -219,13 +234,13 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
 - It must say when a variable hides a stored value. A caller of the service may give an explicit value for a test, with the source `option`.
 - The tool must store a valid value at once, remove a stored value, and set the status of the onboarding. It must refuse an unknown key and an invalid value as each other tool refuses an invalid request.
 - A turn of a child result or of the summary of the past sessions must not change a setting or the status of the onboarding.
-- The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
+- The settings are `coordinator.model`, `coordinator.thinking`, `keepAlive.enabled` (`MEGACHAT_KEEPALIVE`), `keepAlive.hours` (`MEGACHAT_KEEPALIVE_HOURS`), `cache.ttl` (`MEGACHAT_CACHE_TTL`), `compaction.tokens` (`MEGACHAT_COMPACT_TOKENS`), `workday.enabled`, `workday.start`, `workday.end`, `workday.days`, `workday.timezone`, `workday.idleMinutes`, `reply.suggestions` (`MEGACHAT_SUGGESTIONS`), `reply.language`, `reply.length`, and `reply.quoteRequest`.
 - The settings of the index of past sessions are `sessions.index` and `sessions.days`. They must apply at once, also in the middle of a turn, because they change no model request.
 - A model must be valid only when the model registry knows it. A reasoning level must be a level of pi-ai that the model supports.
 - The output of `get` must list each model of the registry with the prices of its model data, and one note with the measurement of Claude Opus 5.5. It must give no measurement of another model.
 - A changed setting must apply at once when no turn runs, else at the end of the current turn, before the next turn starts. A change must not apply in the middle of a turn. A setting with another time in its `applies` text, such as a setting of the children, must apply at that time.
 - The model and the reasoning level must reach the next model request without a restart. A keep-alive request must use the same model and level as the turns.
-- The keep-alive, the cache lifetime and the limit of a summary must take the stored value without a restart.
+- The keep-alive, the cache lifetime, the limit of a summary and the working day must take the stored value without a restart.
 - The setting `reply.suggestions` must change the rules and the suggestion tools of the running main agent.
 - The reply style must give lines of the rules of the main agent: the language, the length, and a quote of the original request in a report of a child result. The defaults must give the rules from before the settings.
 - The rules that the settings give must be a section of their own, so a change sends only that section to the model again.

@@ -11,34 +11,10 @@ import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { CACHE_TTL_VARIABLE, KEEPALIVE_HOURS_VARIABLE, KEEPALIVE_VARIABLE, keepAliveSettings, PromptCacheKeepAlive } from '../src/PromptCacheKeepAlive.mjs'
+import { fakeClock } from './fake-clock.mjs'
 
 const MINUTE = 60000
 const HOUR = 60 * MINUTE
-
-/** A clock that moves only in `advance`. `advance` runs each timer that comes due, and waits for [settled] after it. */
-function fakeClock() {
-  let now = Date.parse('2026-11-11T12:00:00Z')
-  const timers = new Set()
-  return {
-    now: () => now,
-    setTimeout: (callback, delayMs) => { const timer = { at: now + delayMs, callback }; timers.add(timer); return timer },
-    clearTimeout: timer => timers.delete(timer),
-    async advance(ms, settled = () => {}) {
-      const end = now + ms
-      for (;;) {
-        const [next] = [...timers].filter(timer => timer.at <= end).sort((a, b) => a.at - b.at)
-        if (!next) break
-        timers.delete(next)
-        now = Math.max(now, next.at)
-        next.callback()
-        await settled()
-      }
-      now = Math.max(now, end)
-    },
-    /** The time passes, but no timer runs, as on a computer that sleeps. */
-    sleep(ms) { now += ms },
-  }
-}
 
 /** A keep-alive on a fake clock with a 1-hour cache and a context of [size] tokens. It records each ping and summary. */
 function timerFixture({ size = 50000, windowMs = 6 * HOUR, ping } = {}) {

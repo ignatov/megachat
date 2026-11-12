@@ -4,6 +4,7 @@ import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/
 import { MODEL_THINKING_LEVELS } from '@earendil-works/pi-ai/providers/model-schema'
 import { logEvent, message, requireCondition } from './messages.mjs'
 import { expandHome } from './ProjectDirectories.mjs'
+import { DEFAULT_WORKDAY_DAYS, knownTimezone, resolvedTimezone, SYSTEM_TIMEZONE, WEEKDAYS } from './Workday.mjs'
 
 /** The size of the model context, in tokens, above which the conversation gets a summary. This variable replaces it. */
 export const COMPACT_TOKENS_VARIABLE = 'MEGACHAT_COMPACT_TOKENS'
@@ -42,6 +43,30 @@ const toBoolean = value => typeof value === 'boolean' ? value
   : typeof value !== 'string' ? undefined
     : /^(on|true|yes|1)$/i.test(value.trim()) ? true : /^(off|false|no|0)$/i.test(value.trim()) ? false : undefined
 const toNumber = value => typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value.trim()) : NaN
+const DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+/** A local time of the day as `HH:MM`. `9:00` gives `09:00`. */
+const timeOfDay = value => {
+  const match = typeof value === 'string' ? /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(value.trim()) : null
+  return match ? `${match[1].padStart(2, '0')}:${match[2]}` : undefined
+}
+/**
+ * The days of the week in the order of [WEEKDAYS], from a list or from a text with commas. An item is a day, such as
+ * `mon` or `Monday`, or a range, such as `mon-fri`. A range can go past Sunday. An empty list is not valid.
+ */
+const weekdays = value => {
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : []
+  const days = new Set()
+  for (const item of items) {
+    if (typeof item !== 'string') return undefined
+    const ends = item.trim().toLowerCase().split(/\s*-\s*/).map(name => Math.max(WEEKDAYS.indexOf(name), DAY_NAMES.indexOf(name)))
+    if (ends.length > 2 || ends.some(index => index < 0)) return undefined
+    for (let index = ends[0]; ; index = (index + 1) % WEEKDAYS.length) {
+      days.add(WEEKDAYS[index])
+      if (index === ends.at(-1)) break
+    }
+  }
+  return days.size ? WEEKDAYS.filter(day => days.has(day)) : undefined
+}
 const choice = values => value => typeof value === 'string' && values.includes(value.trim()) ? value.trim() : undefined
 /**
  * The mode of the suggestions for a stored or a given value. `settings.json` of v0.3.0 holds `true` or `false`, and the
@@ -106,6 +131,24 @@ export const SETTINGS = [
       return /^[1-9]\d{0,8}$/.test(text) ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 1, maximum: 999999999 }) },
+  { key: 'workday.enabled', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
+  { key: 'workday.start', default: '09:00', applies: 'nextTurn', validate: timeOfDay, allowed: () => ({ other: message('settings.time.other') }) },
+  { key: 'workday.end', default: '19:00', applies: 'nextTurn', validate: timeOfDay, allowed: () => ({ other: message('settings.time.other') }) },
+  { key: 'workday.days', default: DEFAULT_WORKDAY_DAYS, applies: 'nextTurn', validate: weekdays,
+    allowed: () => ({ values: WEEKDAYS, other: message('settings.days.other') }) },
+  { key: 'workday.timezone', default: SYSTEM_TIMEZONE, applies: 'nextTurn',
+    validate: value => {
+      const text = typeof value === 'string' ? value.trim() : ''
+      if (text.toLowerCase() === SYSTEM_TIMEZONE) return SYSTEM_TIMEZONE
+      return /^[A-Za-z][\w+/-]{0,63}$/.test(text) && knownTimezone(text) ? text : undefined
+    },
+    allowed: () => ({ values: [SYSTEM_TIMEZONE], other: message('settings.timezone.other', resolvedTimezone(SYSTEM_TIMEZONE)) }) },
+  { key: 'workday.idleMinutes', default: 30, applies: 'nextTurn',
+    validate: value => {
+      const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+      return /^\d{1,4}$/.test(text) && Number(text) <= 1440 ? Number(text) : undefined
+    },
+    allowed: () => ({ minimum: 0, maximum: 1440 }) },
   { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: 'off', applies: 'nextTurn',
     fromEnvironment: text => text === '1' ? 'reply' : text === '0' ? 'off' : choice(SUGGESTION_MODES)(text.toLowerCase()),
     validate: suggestionMode, allowed: () => ({ values: SUGGESTION_MODES }) },
