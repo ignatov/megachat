@@ -26,7 +26,8 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 // each chunk comes alone. FAKE_ACP_NEW sets the answer to session/new: internal (a plain Error with the message
 // FAKE_ACP_DETAILS, which the SDK of ACP gives as -32603 "Internal error" with the data { details }), auth (the ACP error
 // authRequired), exit (an exit with the code FAKE_ACP_EXIT, 3 by default, and no answer), late (internal, then the line
-// "late reason" on the error output and an exit), or app-server (the code 1001 of codex-acp with a message of two lines).
+// "Error: late reason" on the error output and an exit), or app-server (the code 1001 of codex-acp with a message of two
+// lines).
 const startFailure = process.env.FAKE_ACP_NEW
 agent({ name: 'fake-claude' })
   .onRequest(methods.agent.initialize, async () => {
@@ -63,7 +64,7 @@ agent({ name: 'fake-claude' })
       await writeError('')
       process.exit(Number(process.env.FAKE_ACP_EXIT ?? 3))
     }
-    if (startFailure === 'late') setTimeout(async () => { await writeError('late reason\n'); process.exit(1) }, 50)
+    if (startFailure === 'late') setTimeout(async () => { await writeError('Error: late reason\n'); process.exit(1) }, 50)
     if (startFailure === 'internal' || startFailure === 'late') throw new Error(process.env.FAKE_ACP_DETAILS ?? 'Claude Code process exited with code 1')
     if (startFailure === 'app-server') {
       throw new RequestError(1001, 'The Codex app-server exited with code 1. Restart the agent.\nError: unauthorized: the key is not valid')
@@ -126,6 +127,16 @@ async function answerPrompt(ctx) {
   // The prompt `fatal` writes the reason of a crash to the error output, then ends the agent during the prompt.
   if (text === 'fatal') {
     await writeError('Error: The adapter crashed.\n')
+    process.exit(1)
+  }
+  // The prompt `killed` writes the debug lines of the adapter of Claude Code for a new session. Then it sends the signal
+  // SIGKILL to the agent process of the run, which is the supervisor above this process, as the live smoke run does. The
+  // pause lets the supervisor give the lines to the daemon first. Then this process ends too.
+  if (text === 'killed') {
+    await writeError('[session/create] sessionId=fake-session phase=settings durationMs=4 totalMs=12\n')
+    await writeError('[session/create] sessionId=fake-session phase=register durationMs=1 totalMs=2683\n')
+    await pause(500)
+    process.kill(process.ppid, 'SIGKILL')
     process.exit(1)
   }
   // The prompt `fail` throws a plain Error, which the SDK of ACP gives as -32603 with the data { details }.

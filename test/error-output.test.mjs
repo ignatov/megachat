@@ -106,19 +106,21 @@ test('the error output of the agent goes to the log with a prefix, and its line 
 test('the error output that an agent writes after its answer goes to the log', { timeout: 20000 }, async t => {
   const { cwd, service, log } = await open(t, { env: { FAKE_ACP_NEW: 'late' } })
   const run = await ended(service, (await admit(service, { cwd, prompt: 'hello' })).id)
-  assert.deepEqual(agentLines(log()), ['late reason'])
-  assert.ok(run.error.includes(message('error.child.line', 'late reason')))
+  assert.deepEqual(agentLines(log()), ['Error: late reason'])
+  assert.ok(run.error.includes(message('error.child.line', 'Error: late reason')))
 })
 
 test('the log keeps at most the last 4,000 characters of the error output, and the error of the run at most 300 of a line', { timeout: 20000 }, async t => {
+  const last = `Error: ${'z'.repeat(993)}`
   const { cwd, service, log } = await open(t, { env: { FAKE_ACP_NEW: 'exit',
-    FAKE_ACP_STDERR: JSON.stringify(['first line\n', `${'x'.repeat(5000)}\n`, `${'y'.repeat(4000)}\n`, `${'z'.repeat(1000)}\n`]) } })
+    FAKE_ACP_STDERR: JSON.stringify(['first line\n', `${'x'.repeat(5000)}\n`, `${'y'.repeat(4000)}\n`, `${last}\n`]) } })
   const run = await ended(service, (await admit(service, { cwd, prompt: 'hello' })).id)
   const logged = agentLines(log())
   assert.ok(logged.join('\n').length <= 4000)
   assert.ok(!log().includes('first line'))
-  assert.equal(logged.at(-1), 'z'.repeat(1000))
-  assert.ok(run.error.includes('z'.repeat(300)) && !run.error.includes('z'.repeat(301)))
+  assert.equal(logged.at(-1), last)
+  assert.equal(last.length, 1000)
+  assert.ok(run.error.includes(message('error.child.line', last.slice(0, 300))) && !run.error.includes(last.slice(0, 301)))
 })
 
 test('the log of the error output has no escape sequence, and a line of the agent cannot look like a line of the daemon', { timeout: 20000 }, async t => {
@@ -158,6 +160,16 @@ test('an error answer of the prompt says that the agent got the task, and a cras
   const crashed = await ended(service, (await admit(service, { cwd, prompt: 'fatal' })).id)
   assert.ok(crashed.error.startsWith('The agent process ended with the exit code 1 after it got the task, so the task can have run in part.'))
   assert.ok(crashed.error.includes(message('error.child.line', 'Error: The adapter crashed.')))
+})
+
+test('an agent that the signal SIGKILL ends after its debug lines gives the fixed text and the log, and quotes no debug line', { timeout: 20000 }, async t => {
+  const { cwd, service, log } = await open(t)
+  const run = await ended(service, (await admit(service, { cwd, prompt: 'killed' })).id)
+  assert.equal(run.error, 'The agent process ended with the signal SIGKILL after it got the task, so the task can have run in part. '
+    + 'The log of the daemon, daemon/daemon.log in the state directory, has the details.')
+  // The log keeps the whole end of the error output.
+  assert.deepEqual(agentLines(log()), ['[session/create] sessionId=fake-session phase=settings durationMs=4 totalMs=12',
+    '[session/create] sessionId=fake-session phase=register durationMs=1 totalMs=2683'])
 })
 
 test('an agent without a login gives the text of the login, and its run gets no automatic continuation', { timeout: 20000 }, async t => {
@@ -233,11 +245,58 @@ test('a cancel, a deadline, the limit of 1 MB and a stop of the daemon put no er
   assert.deepEqual(agentLines(log()), [])
 })
 
-test('the line of the reason is the last line that names an error, else the last line, and never a line that the answer holds', () => {
+test('the line of the reason is the last line that names a failure, no line when none does, and never a line that the answer holds', () => {
   assert.equal(reasonLine('Error: first\nat x\nNode.js v22.12.0\n'), 'Error: first')
-  assert.equal(reasonLine('one\ntwo\n\n'), 'two')
+  assert.equal(reasonLine('one\ntwo\n\n'), '')
   assert.equal(reasonLine('Permission denied\nERROR_CODE 7\n'), 'ERROR_CODE 7')
-  assert.equal(reasonLine('Error: shown\nother\n', 'Internal error: Error: shown'), 'other')
+  assert.equal(reasonLine('Error: other\nError: shown\nlast\n', 'Internal error: Error: shown'), 'Error: other')
   assert.equal(reasonLine(''), '')
-  assert.equal(reasonLine('w'.repeat(1000)).length, 300)
+  assert.equal(reasonLine(`Error: ${'w'.repeat(1000)}`).length, 300)
+})
+
+test('a line with a word for a failure other than error is the reason', () => {
+  const causes = [
+    'FATAL: the configuration cannot be read',
+    'fatal: not a git repository',
+    'panic: runtime: out of memory',
+    "thread 'main' panicked at src/main.rs:5:3",
+    'Abort trap: 6',
+    'The request was aborted.',
+    'Segmentation fault: 11',
+    'Killed: 9',
+    'The worker terminated with the signal SIGTERM',
+    'The language server died',
+    'sh: claude: command not found',
+    'open /tmp/agent.sock: no such file or directory',
+    'The request timed out after 60 s',
+    'Timeout while the session starts',
+    'Missing API key',
+    'The OAuth token expired',
+    'The model claude-test is not available',
+    'Service Unavailable',
+    'Not logged in · Please run /login',
+    'Please log in again.',
+    'You exceeded your current quota',
+    'insufficient_quota',
+    'Rate limit reached for the model',
+  ]
+  for (const cause of causes) assert.equal(reasonLine(`debug: the session starts\n${cause}\ndebug: done\n`), cause)
+})
+
+test('the debug lines of the adapter of Claude Code match no word for a failure', () => {
+  const lines = [
+    '[session/create] sessionId=0f3e phase=validate-cwd durationMs=0 totalMs=1',
+    '[session/create] sessionId=0f3e phase=settings durationMs=4 totalMs=12',
+    '[session/create] sessionId=0f3e phase=register durationMs=1 totalMs=2683',
+    '[session/models] sessionId=0f3e phase=read-transcript-tail durationMs=2 totalMs=2 model=unknown permissionMode=unknown',
+    '[session/fork] sessionId=0f3e phase=full-history durationMs=3 totalMs=9 resolution=missing',
+    '[session/query] sessionId=0f3e resume=none apiType=native baseUrl=native',
+    '[idle-compaction] skip: rate limit status is allowed_warning',
+    '[idle-compaction] disarmed: cancel',
+    'Session 0f3e: the identity behind the cached account changed (sign-out, or a probe that found a different login); the query is recreated on the next turn',
+    '[claude-agent-acp] No parent tool_use recorded for subagent a1; sending the Bash permission request unattributed',
+  ]
+  assert.equal(reasonLine(lines.join('\n')), '')
+  // A short word counts only as a whole word, so a debug field does not count.
+  assert.equal(reasonLine('debug: permissionMode=default timeoutMs=5 abortController=on'), '')
 })

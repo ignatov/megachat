@@ -881,9 +881,12 @@ async function failures() {
   // A run with a continuation has the status resumed.
   const afterPrompt = start => (made, runs) => ['interrupted', 'resumed'].includes(runs[0].status) && runs[0].autoResume === true && start.test(runs[0].error ?? '')
     && /after it got the task, so the task can have run in part/.test(runs[0].error ?? '') && runs.some(run => run.continues === runs[0].id)
+  // The adapter writes only its debug lines before the signal, and no debug line names a failure, so the error quotes no
+  // line of the error output. The log keeps the lines.
+  const killedAgent = `${message('error.child.exit.after', message('error.child.signal', 'SIGKILL'))} ${message('error.child.log')}`
   await failureCase(context, view, { item: '14.3 Agent process killed during the task', title: 'killed agent',
     prompt: failurePrompt('Claude', kill, 'killed agent', killTask('agent.txt')), during: runId => killChild(context, view, runId, 'agent'),
-    check: afterPrompt(new RegExp(`^${message('error.child.exit.after', message('error.child.signal', 'SIGKILL')).replace(/[.,]/g, '\\$&')}`)) })
+    check: afterPrompt(new RegExp(`^${killedAgent.replace(/[.,/]/g, '\\$&')}$`)) })
   await failureCase(context, view, { item: '14.3b Claude Code process killed during the task', title: 'killed claude',
     prompt: failurePrompt('Claude', kill, 'killed claude', killTask('claude.txt')), during: runId => killChild(context, view, runId, 'claude'),
     check: afterPrompt(/^The agent (answered session\/prompt with the error|process ended with)/) })

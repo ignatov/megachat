@@ -203,8 +203,20 @@ export const REASON_PART_LIMIT = 300
 const ANSI_SEQUENCE = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g
 /** Each control character except the tab and the line feed. */
 const CONTROL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
-/** The words that mark a line of an error output that tells the reason of a failure. */
-const REASON_WORDS = /error|fail|denied|refused|invalid|unauthorized|forbidden|cannot|unable|exception/i
+/**
+ * The words that mark a line of an error output that tells the reason of a failure. The words of the first row also
+ * count inside a longer word, such as `insufficient_quota`. Each other word must be a whole word, so that a debug line
+ * of an adapter, such as `permissionMode=default` or `timeoutMs=5`, does not count. Some words are narrower, because
+ * the adapter of Claude Code writes them in its normal debug lines: `missing` does not count after `=`
+ * (`resolution=missing`), `rate limit` does not count in `rate limit status`, and `login` counts only in `/login`
+ * (`found a different login`). The word `permission` is not in the list, because that adapter writes `the Bash
+ * permission request` in a normal line. A real permission failure says denied, forbidden or unauthorized.
+ */
+const REASON_WORDS = new RegExp([
+  'error|fail|denied|refused|invalid|unauthorized|forbidden|cannot|unable|exception|quota|segmentation|unavailable',
+  '\\b(?:fatal|panic(?:ked)?|abort(?:ed)?|killed|terminated|died|not found|no such|timed out|timeout|expired|not available|log in)\\b',
+  '(?<!=)\\bmissing\\b', '\\brate limit(?! status)', '/login\\b',
+].join('|'), 'i')
 
 /** The end of [text] with at most [limit] characters. The cut does not separate the two halves of a character. */
 export function textEnd(text, limit) {
@@ -253,13 +265,14 @@ export function errorOutputText(raw, { cutStart = false, open = false, known, li
 }
 
 /**
- * The line of [text] for the reason in the error of a failed run: the last line with one of [REASON_WORDS], else the
- * last line that is not empty, at most [REASON_PART_LIMIT] characters. The last line of a Node.js crash names the
- * version of Node.js, so the line that names the error goes first. A line that [shown] holds already does not count.
+ * The line of [text] for the reason in the error of a failed run: the last line with one of [REASON_WORDS], at most
+ * [REASON_PART_LIMIT] characters, else an empty text. The last line of a Node.js crash names the version of Node.js,
+ * so the line that names the error goes first. A line with no such word is often a debug line of the adapter, which
+ * does not help a person, so it does not go to the error of the run. The log keeps the whole end of the error output.
+ * A line that [shown] holds already does not count.
  */
 export function reasonLine(text, shown = '') {
-  const lines = text.split('\n').map(line => line.trim()).filter(line => line && !shown.includes(line))
-  const line = lines.findLast(item => REASON_WORDS.test(item)) ?? lines.at(-1)
+  const line = text.split('\n').map(line => line.trim()).findLast(line => line && !shown.includes(line) && REASON_WORDS.test(line))
   return line === undefined ? '' : textStart(line, REASON_PART_LIMIT)
 }
 

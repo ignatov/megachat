@@ -190,13 +190,13 @@ test('the filter of the error output removes a secret in two chunks, a cut secre
 test('the log and the error of a failed run hold no key of Central and no other secret of the error output or of the answer', { timeout: 20000 }, async t => {
   const lines = []
   t.mock.method(process.stderr, 'write', text => { lines.push(String(text)); return true })
-  const chunks = [`key=${KEY.slice(0, 10)}`, `${KEY.slice(10)} ${ADDRESS} sk-abcdefghijklmnopqrstuvwxyz\n`]
+  const chunks = [`Error: key=${KEY.slice(0, 10)}`, `${KEY.slice(10)} ${ADDRESS} sk-abcdefghijklmnopqrstuvwxyz\n`]
   const { cwd, service } = await open(t, { env: { FAKE_ACP_NEW: 'exit', FAKE_ACP_STDERR: JSON.stringify(chunks) } })
   const run = await admit(service, { cwd, prompt: 'hello' })
   const failed = (await ended(service, run.id)).runs[run.id]
   const log = lines.join('')
-  assert.ok(log.includes(`  | key=${MARKER} ${MARKER} ${MARKER}`), log)
-  assert.ok(failed.error.includes(`key=${MARKER} ${MARKER} ${MARKER}`), failed.error)
+  assert.ok(log.includes(`  | Error: key=${MARKER} ${MARKER} ${MARKER}`), log)
+  assert.ok(failed.error.includes(message('error.child.line', `Error: key=${MARKER} ${MARKER} ${MARKER}`)), failed.error)
   for (const text of [log, failed.error]) {
     assert.ok(!text.includes(KEY.slice(0, 10)) && !text.includes(KEY.slice(10)) && !text.includes('/wire/') && !text.includes('sk-abc'))
   }
