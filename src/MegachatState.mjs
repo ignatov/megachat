@@ -162,14 +162,18 @@ function addContinuation(state, run, { prompt, task, steered, sent, resumeAttemp
  * Moves the messages of the user that [run] did not handle to its continuation [nextId]. A completed run handled each
  * message that is not `pending`. Another run handled none for certain. A copy is a possible repeat when the agent can
  * have it already: the steering request went out, or the prompt that held the message went out.
+ * The follow-up of a completed run delivers each message that it gets, so such a message gets [outcome], `followUp`,
+ * also after the answer `injected` or after a stop request that came at the end of the turn. A message that a stop
+ * takes keeps an earlier outcome.
  */
 function carrySteers(run, nextId, sent, outcome) {
   const carried = []
   for (const item of run.steers ?? []) {
     if (item.carriedBy || run.status === 'completed' && item.delivery !== 'pending') continue
     const repeat = !!item.repeat || item.sentAt !== undefined || item.delivery === 'delivered' || item.delivery === 'fallback' && sent
-    carried.push({ ...item, delivery: 'fallback', outcome: item.outcome ?? outcome, repeat })
-    Object.assign(item, { delivery: 'fallback', outcome: item.outcome ?? outcome, carriedBy: nextId })
+    const way = run.status === 'completed' ? outcome : item.outcome ?? outcome
+    carried.push({ ...item, delivery: 'fallback', outcome: way, repeat })
+    Object.assign(item, { delivery: 'fallback', outcome: way, carriedBy: nextId })
   }
   return carried
 }

@@ -819,6 +819,30 @@ test('a completed run with a steer message that it did not handle gets a follow-
   assert.deepEqual(next.steers.map(item => [item.text, item.repeat]), [['Too late', false]])
 })
 
+test('a message that goes in a follow-up gets the outcome followUp, also after the answer injected or a stop request', { timeout: 10000 }, async t => {
+  const { harness, state } = await open()
+  t.after(() => harness.close(BACKGROUND_CONTEXT))
+  await state.submit('main', 'Work')
+  // The agent took the message, and the turn ended without work after it: the run service makes it pending again.
+  const dropped = await sentRun(state, 'dropped')
+  const injected = await state.steer('injected', { childSessionId: dropped.childSessionId, prompt: 'Also test it', mode: 'queue' })
+  await state.updateSteer(dropped.id, 'process', injected.id, { sentAt: Date.now(), delivery: 'delivered', outcome: 'injected' })
+  await state.updateSteer(dropped.id, 'process', injected.id, { delivery: 'pending' })
+  await state.transition(dropped.id, ['dispatched'], { status: 'completed', stopReason: 'end_turn' })
+  // The stop for the message came after the end of the turn.
+  const late = await sentRun(state, 'late')
+  const stopped = await state.steer('stopped', { childSessionId: late.childSessionId, prompt: 'Use the other branch', mode: 'interrupt' })
+  assert.equal(await state.restartForSteer(late.id, 'process'), true)
+  await state.transition(late.id, ['dispatched'], { status: 'completed', stopReason: 'end_turn' })
+  const snapshot = await state.snapshot()
+  for (const [run, steer] of [[dropped, injected], [late, stopped]]) {
+    const next = snapshot.runs[snapshot.runs[run.id].resumedBy]
+    assert.equal(next.prompt, message('child.steer.followUp'))
+    assert.equal(findSteer(snapshot, steer.id).item.outcome, 'followUp')
+    assert.equal(next.steers[0].outcome, 'followUp')
+  }
+})
+
 test('the one report of a steered task gives the task and the title of its first run', { timeout: 10000 }, async t => {
   const { harness, state } = await open()
   t.after(() => harness.close(BACKGROUND_CONTEXT))

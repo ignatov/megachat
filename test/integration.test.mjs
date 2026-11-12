@@ -1073,6 +1073,8 @@ test('a message that the agent takes but does not answer before the end of its t
   assert.equal(next.status, 'completed')
   assert.equal(next.prompt, message('child.steer.followUp'))
   assert.equal(next.steers[0].repeat, true)
+  // The tool gave the answer of the agent. The record gives the way that delivered the message.
+  assert.equal(first.steers[0].outcome, 'followUp')
   assert.deepEqual(reportsOf(state), [[next.id]])
 })
 

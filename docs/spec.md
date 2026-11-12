@@ -87,12 +87,14 @@ The ACP extensions that Megachat and Air exchange are in [air-contract.md](air-c
   "promptRequired"`, so the adapter starts no turn of its own. The answer `injected` must mark the message delivered.
 - When the turn ended first (`promptRequired`), or when the agent took the message and the stream started no new part
   of model work after the answer before the end of the turn, the run must get a follow-up in the same provider session
-  with the message. The outcome must be `followUp`. A new part is an update of another kind than the update before it
-  (a message chunk, a thought chunk, a tool call or its update, a plan), or a new tool call. More chunks of the reply
-  that streamed at the answer are no new part: the Codex adapter can send them after its answer.
+  with the message. The outcome in the record must be `followUp`, also when the tool gave `injected`. A new part is an
+  update of another kind than the update before it (a message chunk, a thought chunk, a tool call or its update, a
+  plan), or a new tool call. More chunks of the reply that streamed at the answer are no new part: the Codex adapter
+  can send them after its answer.
 - The answer `failed`, an error, no answer in 20 seconds, an agent without steering, and the mode `interrupt` must use
   the fallback: `session/cancel`, and after the end of the prompt a continuation in the same provider session. Its
-  prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`. After
+  prompt must say that the user stopped the step, and it must hold the message. The outcome must be `restarted`. When
+  the turn ends with `end_turn` before the stop, the message must go in a follow-up, with the outcome `followUp`. After
   one message used the fallback, each other waiting message of the run must go to the same stop without a steering
   request.
 - While a permission request of the run waits for the user, the fallback must wait until the user answered each
