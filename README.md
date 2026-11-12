@@ -383,6 +383,25 @@ The permission dialog of a task goes away in each chat window when the request c
 answer in another window, and when the task stops, fails or reaches its deadline. A window that opens later shows no
 dialog for it.
 
+### The processes of a stopped task
+
+On macOS, a stop of a task also ends each process that the task started: a shell of the agent, and a build, a test
+loop or a server that runs in it, also when the shell runs in a session of its own or its parent ended first. This
+applies to a Stop of a row or of the turn, a cancel, the deadline, the limit of the error output, a stop for a message
+of the user, and a failure of the agent while the daemon runs. The supervisor of the task reads the process table every
+second, without the command lines, and it sends a signal only to a process that the task started: SIGTERM first, and
+SIGKILL after 1 second. Such a stop takes at most 5 seconds longer.
+
+These processes stay, as before:
+
+- the processes of a task that completed, outside the process group of the agent, such as a server that the task
+  started;
+- the processes of each task at a stop or a loss of the daemon, because a task can restart the daemon from its own
+  shell;
+- a process that leaves the task in less than a second, such as `cmd &` in a shell that ends at once.
+
+On other platforms, only the process group of the agent ends, as before.
+
 ## Read the transcript of a task
 
 Click the title of a running task in the Background Tasks tab. The IDE opens the transcript of that run, a plain text
@@ -577,7 +596,7 @@ The session text is data for the agent, not instructions.
 | `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks, with their Stop and their transcript. |
 | `src/ChildTranscript.mjs` | The transcript of each child run, its limit, its secret filter and its removal with the run. |
-| `src/AcpRunService.mjs`, `src/child-supervisor.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits. |
+| `src/AcpRunService.mjs`, `src/child-supervisor.mjs`, `src/RunProcesses.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits, and at a stop or a failure of a task it ends each process that the task started. |
 | `src/ChildPool.mjs` | The places for the child runs, which the ACP and the pi run services share: the limit `children.parallel`, one child in a checkout, and one pi child. |
 | `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices and the rules of a child, the read-only environment of its project, and the read of its transcript. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |

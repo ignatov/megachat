@@ -43,3 +43,21 @@ with the adapter `@agentclientprotocol/claude-agent-acp` 0.102.0 and `children.p
 - With `permissions.defaultMode: "bypassPermissions"` in `~/.claude/settings.json` of the user, the Claude child started
   in the mode `default`, with no error.
 - A load of a transcript in `bypassPermissions` continued in the mode `default`.
+
+One manual check of the processes of a child run ran on 2026-11-12 at `c40c45e`, with stand-in processes and no
+provider: a stand-in daemon with the lifetime pipe, the real `src/child-supervisor.mjs`, a stand-in adapter, a stand-in
+of Claude Code in the process group of the adapter, and a `/bin/zsh` with `detached: true` that ran `sleep 300`, as the
+Bash tool of Claude Code 0.3.321 starts its shell (`detached:to.detached`). Each signal went to a PID that the probe
+started and recorded.
+
+- The shell and its `sleep` survived each end of the run: the kill of `AcpRunService` (a deadline, a limit, the
+  escalation of a cancel, a completed run, a stop of the daemon), a cancel that the agent did not handle, a SIGKILL of
+  the daemon, a crash of the adapter, and a crash of Claude Code. After a crash or a loss, the shell had the parent PID 1.
+- Only a cancel that the agent handled as the code of Claude Code does, with SIGTERM to the process group of the shell,
+  ended them.
+- `zsh -c 'sleep 30 >/dev/null 2>&1 & echo $!'` lived 10.1 ms. Its `sleep` then had the parent PID 1 and the process
+  group of the dead shell.
+- `ps -E -ww` gave the environment of a Node.js process and of `/usr/bin/python3`, but not of `/bin/zsh` and
+  `/bin/sleep`.
+- One read of `ps -A -o pid=,ppid=,pgid=,uid=,lstart=` of 1,254 processes took about 40 ms and 4 ms of CPU time. Under a
+  load average of about 100, one read took up to 1.15 seconds.

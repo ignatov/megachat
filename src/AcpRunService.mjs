@@ -10,7 +10,7 @@ import { waitForState } from './waitForState.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { VERSION } from './MegachatBuild.mjs'
-import { logChildText, logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
+import { logChildText, logEvent, logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
 import { answerText, ERROR_OUTPUT_KEPT, ERROR_OUTPUT_LOGGED, errorOutputText, plainText, REASON_PART_LIMIT, reasonLine,
@@ -50,6 +50,20 @@ const withoutBypass = request => Array.isArray(request?.options)
 const STEER_METHOD = '_session/steering'
 /** The limit of the error output of a child agent, in MB. Above it, Megachat stops the run. */
 const MAX_STDERR_MB = 1
+/**
+ * The longest wait for the exit of the supervisor at the end of a run. Its end of the processes of a run takes at most
+ * 5 seconds: two reads of the process table of at most 2 seconds and the wait between SIGTERM and SIGKILL.
+ */
+const SUPERVISOR_END_MS = 6000
+/** Gives a handler of the chunks of a stream that calls [take] with each whole line. */
+function readLines(take) {
+  let rest = ''
+  return chunk => {
+    const lines = `${rest}${chunk}`.split('\n')
+    rest = lines.pop().slice(-256)
+    for (const line of lines) take(line)
+  }
+}
 /** The ACP code of an agent that asks for a login. */
 const AUTH_REQUIRED = RequestError.authRequired().code
 /** The characters of the message and of the data of an error answer that go to the log. */
@@ -211,12 +225,19 @@ export class AcpRunService {
     let request = methods.agent.initialize
     // The end of the error output of the agent, for the log and the error of a failed run (see `keepErrorOutput`).
     const errorOutput = { text: '', cut: false }
-    // Resolves when the agent process ended and its error output closed.
+    // Resolves when the agent process ended and the daemon got its whole error output: from the line `ended` of the
+    // supervisor, or at the exit of the supervisor and the end of its error output.
     let closed
+    // Resolves at the exit of the supervisor.
+    let exited
+    // A stop by Megachat. While the daemon runs, it also ends each process of the run (see `child-processes`).
+    const stop = () => this.kill(child, { clean: !this.closing })
+    // True when the prompt ended with `end_turn`. Such a run keeps the processes outside the process group of the agent.
+    let completed = false
     // The text of the first limit that the run reached, or null.
     let limited = null
     let waitingPermissions = 0
-    const limit = text => { limited ??= text; this.kill(child) }
+    const limit = text => { limited ??= text; stop() }
     const timeLimit = () => limit(message('error.limit', minutesOf(this.launch.deadlineMs)))
     try {
       // The time of the start shows which children ran at the same time.
@@ -238,18 +259,35 @@ export class AcpRunService {
         launch.command ?? process.execPath, ...launch.args], {
         cwd: launch.cwd ?? run.cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       })
-      closed = Promise.all([new Promise(resolve => { child.once('exit', resolve); child.once('error', resolve) }),
-        new Promise(resolve => child.stderr.once('close', resolve))])
+      exited = new Promise(resolve => { child.once('exit', resolve); child.once('error', resolve) })
+      let stderrBytes = 0
+      let reported
+      let agentEnded
+      closed = new Promise(resolve => {
+        agentEnded = () => { if (reported && stderrBytes >= reported.bytes) resolve() }
+        Promise.all([exited, new Promise(done => child.stderr.once('close', done))]).then(() => resolve())
+      })
+      // The lines of the supervisor on the lifetime pipe: `ended <code> <bytes>` and `refused <pid> <check>`.
+      child.stdio[3].on('error', () => {})
+      child.stdio[3].on('data', readLines(line => {
+        const [word, first, second] = line.split(' ')
+        if (word === 'ended' && /^\d+$/.test(first ?? '') && /^\d+$/.test(second ?? '')) {
+          reported = { code: Number(first), bytes: Number(second) }
+          child.agentExit = { code: reported.code }
+          agentEnded()
+        }
+        else if (word === 'refused' && /^\d+$/.test(first ?? '') && /^\d+$/.test(second ?? '')) logEvent('log.child.refused', first, second, child.pid)
+      }))
       child.once('error', () => { child.stdout.destroy(); child.stdin.destroy() })
       child.once('exit', () => connection?.close())
       work.lifetime.signal.addEventListener('abort', () => this.kill(child), { once: true })
-      work.cancel = () => this.kill(child)
-      let stderrBytes = 0
+      work.cancel = stop
       const decoder = new StringDecoder('utf8')
       child.stderr.on('data', chunk => {
         stderrBytes += chunk.length
         if (stderrBytes > MAX_STDERR_MB * 1024 * 1024) limit(message('error.outputLimit', MAX_STDERR_MB))
         keepErrorOutput(errorOutput, decoder.write(chunk))
+        agentEnded()
       })
       child.stderr.once('end', () => keepErrorOutput(errorOutput, decoder.end()))
       await this.state.transition(run.id, ['launching'], { pid: child.pid })
@@ -259,7 +297,7 @@ export class AcpRunService {
           if (!dispatched && params.update.sessionUpdate !== 'config_option_update') return
           if (dispatched) work.transcript?.update(params.update)
           updates = updates.then(() => this.state.appendUpdate(run.id, generation, params.update))
-          updates.catch(() => this.kill(child))
+          updates.catch(stop)
           return updates
         })
         .onRequest(methods.client.session.requestPermission, async ({ params }) => {
@@ -338,8 +376,8 @@ export class AcpRunService {
       }
       await this.state.transition(run.id, ['launching'], { providerSessionId: sessionId, status: 'ready' })
       work.cancel = () => {
-        ctx.notify(methods.agent.session.cancel, { sessionId }).catch(() => this.kill(child))
-        escalation = setTimeout(() => this.kill(child), 5000)
+        ctx.notify(methods.agent.session.cancel, { sessionId }).catch(stop)
+        escalation = setTimeout(stop, 5000)
       }
       const current = (await this.state.snapshot()).runs[run.id]
       if (current.cancelRequested) {
@@ -382,13 +420,12 @@ export class AcpRunService {
         if (entry.updates === work.updates) await this.state.updateSteer(run.id, generation, id, { delivery: 'pending' })
       }
       const ended = (await this.state.snapshot()).runs[run.id]
-      await this.state.transition(run.id, ['dispatched', 'running', 'approval'], {
-        status: ended.cancelRequested ? 'cancelled'
-          // A stop for a message of the user is an interruption. Its continuation holds the message.
-          : ended.steerRestart && result.stopReason !== 'end_turn' ? 'interrupted'
-            : result.stopReason === 'cancelled' ? 'cancelled' : result.stopReason === 'end_turn' ? 'completed' : 'failed',
-        stopReason: result.stopReason,
-      })
+      const status = ended.cancelRequested ? 'cancelled'
+        // A stop for a message of the user is an interruption. Its continuation holds the message.
+        : ended.steerRestart && result.stopReason !== 'end_turn' ? 'interrupted'
+          : result.stopReason === 'cancelled' ? 'cancelled' : result.stopReason === 'end_turn' ? 'completed' : 'failed'
+      completed = status === 'completed'
+      await this.state.transition(run.id, ['dispatched', 'running', 'approval'], { status, stopReason: result.stopReason })
     }
     catch (error) {
       work.ended = true
@@ -410,11 +447,25 @@ export class AcpRunService {
       })
     }
     finally {
+      // The word `clean` goes before the abort of the lifetime, whose stop has no word.
+      this.kill(child, { clean: !this.closing && !completed })
       work.lifetime.abort()
       clearTimeout(timer)
       clearTimeout(escalation)
       connection?.close()
-      this.kill(child)
+      // The run keeps its place in its directory until the processes of the run ended, so the next run there does not
+      // meet them. The supervisor ends in at most 5 seconds.
+      if (child) {
+        // The timer of the limit ends with the wait. Else it keeps the daemon alive for the whole limit after a stop.
+        let limit
+        const ended = await Promise.race([exited.then(() => true),
+          new Promise(resolve => { limit = setTimeout(resolve, SUPERVISOR_END_MS, false) })])
+        clearTimeout(limit)
+        if (!ended) {
+          try { child.kill('SIGTERM') }
+          catch {}
+        }
+      }
     }
   }
 
@@ -427,8 +478,10 @@ export class AcpRunService {
    */
   async childFailure(runId, child, closed, { answer, request, dispatched, errorOutput }) {
     const { byItself, ended } = await this.errorOutputEnd(child, closed)
-    const exit = !answer && byItself ? child.signalCode ? message('error.child.signal', child.signalCode)
-      : message('error.child.exitCode', child.exitCode) : undefined
+    // The line `ended` of the supervisor gives the exit code of the agent before the supervisor exits.
+    const signal = child.agentExit ? null : child.signalCode
+    const exit = !answer && byItself ? signal ? message('error.child.signal', signal)
+      : message('error.child.exitCode', child.agentExit?.code ?? child.exitCode) : undefined
     if (!answer && !exit) return undefined
     const known = this.state.secrets
     const output = errorOutputText(errorOutput.text, { cutStart: errorOutput.cut, open: !ended, known })
@@ -466,7 +519,7 @@ export class AcpRunService {
       closed.then(() => { clearTimeout(timer); resolve(true) })
     })
     const byItself = await wait(this.errorOutputWaitMs) && !child.stoppedByMegachat
-    this.kill(child)
+    this.kill(child, { clean: !this.closing })
     return { byItself, ended: byItself || await wait(this.errorOutputWaitMs / 4) }
   }
 
@@ -546,12 +599,20 @@ export class AcpRunService {
     finally { clearTimeout(timer) }
   }
 
-  kill(child) {
+  /**
+   * Ends the lifetime pipe of the supervisor of [child], so it stops the agent. With [clean], the word `clean` goes
+   * first, and the supervisor also ends each process of the run (see `child-processes`). Without it, the supervisor
+   * sends SIGKILL only to the process group of the agent, as for a completed run and at a stop of the daemon. Only the
+   * first call counts. One stream gives the word and its end in order, so no signal goes with it.
+   */
+  kill(child, { clean = false } = {}) {
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return
     // An agent that Megachat stopped did not end by itself, so the error of its run names no exit code.
     child.stoppedByMegachat = true
-    try { child.stdio[3]?.destroy(); child.kill('SIGTERM') }
-    catch (error) { if (error.code !== 'ESRCH') throw error }
+    const lifetime = child.stdio[3]
+    if (!lifetime || lifetime.writableEnded || lifetime.destroyed) return
+    try { lifetime.end(clean ? 'clean\n' : undefined) }
+    catch {}
   }
 
   async close() {
