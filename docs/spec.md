@@ -579,3 +579,19 @@ the `npx` entry on a temporary git repository with release tags. `npm test` does
 Omit the final argument to use the shared state directory. The optional final argument selects a separate state directory for a test.
 The daemon writes its log to `daemon/daemon.log` in the state directory.
 Use `node src/main.mjs status` to inspect tasks and `node src/main.mjs stop` to stop the daemon.
+
+One manual check of `agents_steer` ran on 2026-11-12 against `@agentclientprotocol/claude-agent-acp` 0.102.0 and
+`@agentclientprotocol/codex-acp` 2.6.0, with a fake main agent, the Central configuration of the children, and a new
+temporary project. The task was a shell command of some seconds, then a file with the word that the user gives. A steer
+in the mode `queue` gave the word during the command.
+
+- Both `initialize` answers gave `_meta.steering.supported: true`. Both steering requests gave `injected`.
+- Claude: the child wrote the steered word. The running shell tool call was not lost: it ended with `completed` after
+  the full time of the command, and the next tool call wrote the file. So the Claude priority `now` did not stop the tool
+  call here. The first `session/prompt` ended after the steered work, with `end_turn`.
+- Codex: the child named the steered word in its reply. The first `session/prompt` ended after that reply, with
+  `end_turn`. The shell tool of Codex failed on that machine, before and after the steer, so the file was not written,
+  and the check could not tell whether a steer stops a running Codex tool call.
+- Neither adapter gave the steered message in `session/update` on the protocol version 1: no `user_message_chunk`.
+- The check did not try a steer at the end of a turn. The Codex adapter says that a turn can end before Codex reads an
+  injected message, and that it then drops the message. The fake agent tests that case.
