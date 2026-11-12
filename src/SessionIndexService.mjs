@@ -420,6 +420,16 @@ export class SessionIndexService {
     return undefined
   }
 
+  /**
+   * True when a file that the import read to its end is smaller now, or has the same size and another modification
+   * time. A writer of a session file only adds lines, so the same size with a new time means a rewrite in place, also
+   * of bytes before the last [TAIL_BYTES] that the hash of the tail does not cover. A `touch` also gives a new import.
+   * A file of the size -1 has an import that did not reach its end, and only the hash of the tail tells a rewrite.
+   */
+  #rewritten(row, file) {
+    return row.size >= 0 && (file.size < row.size || file.size === row.size && Math.floor(file.mtimeMs) !== row.mtime_ms)
+  }
+
   /** A hash of the [TAIL_BYTES] bytes before [offset], or null at the start of the file. */
   async #tail(path, offset) {
     if (offset <= 0) return null
@@ -470,7 +480,7 @@ export class SessionIndexService {
       if (row.ino === file.ino && row.cwd && !directoryOf(row.cwd, directories)) { await this.index.touch({ ...file, agent }); return true }
       row = undefined
     }
-    if (row && (compressed || row.ino !== file.ino || file.size < row.offset || row.size >= 0 && file.size < row.size
+    if (row && (compressed || row.ino !== file.ino || file.size < row.offset || this.#rewritten(row, file)
       || await this.#tail(path, row.offset) !== row.tail)) {
       await this.#drop(path)
       row = undefined

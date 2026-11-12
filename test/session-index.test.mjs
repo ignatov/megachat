@@ -226,6 +226,24 @@ test('a file that a writer rewrote in place, also to a larger size, is imported 
   await index.catchUp(project)
   assert.equal((await hits(index, 'claude', project, 'zeta')).length, 0)
   assert.equal((await hits(index, 'claude', project, 'iota')).length, 1)
+
+  // A rewrite to the same size that changes only bytes before the last 128: the hash of the tail stays the same.
+  const head = (await readFile(path, 'utf8')).replace('kappa first', 'sigma first')
+  assert.ok(Buffer.byteLength(head) - Buffer.byteLength(head.slice(0, head.indexOf('sigma'))) > 128)
+  await writeFile(path, head)
+  await utimes(path, new Date(NOW + 1000), new Date(NOW + 1000))
+  await index.catchUp(project)
+  assert.equal((await hits(index, 'claude', project, 'kappa')).length, 0)
+  assert.equal((await hits(index, 'claude', project, 'sigma')).length, 1)
+  assert.equal((await index.store.counts()).entries, 3)
+  // A file without a change of its size and its time gets no new read at the next start.
+  await index.close()
+  const fs = countingFs()
+  const quiet = await service(t, directories, fakeState({ workspaces: [project] }), { fs })
+  await quiet.index.apply(ON)
+  await quiet.index.idle()
+  assert.ok(!fs.calls.some(([name, file]) => name === 'open' && file === path), 'A pass reads no file without a change')
+  assert.equal((await hits(quiet.index, 'claude', project, 'sigma')).length, 1)
 })
 
 test('a fork with copied entries keeps each entry one time', async t => {
