@@ -122,6 +122,18 @@ async function answerPrompt(ctx) {
     })
     if (answer.outcome.outcome !== 'selected') return { stopReason: 'cancelled' }
   }
+  // The approval of a plan with the options of the adapter of Claude Code when it allows the mode bypassPermissions.
+  if (text === 'plan') {
+    const answer = await ctx.client.request(methods.client.session.requestPermission, {
+      sessionId: 'fake-session', toolCall: { toolCallId: 'plan', title: 'Approve Plan', kind: 'switch_mode' },
+      options: [{ optionId: 'exit-plan-clear-bypass', kind: 'allow_always', name: 'Yes, clear context and bypass permissions' },
+        { optionId: 'exit-plan-auto', kind: 'allow_always', name: 'Yes, and use auto mode' },
+        { optionId: 'exit-plan-bypass', kind: 'allow_always', name: 'Yes, and bypass permissions' },
+        { optionId: 'exit-plan-default', kind: 'allow_once', name: 'Yes, manually approve edits' },
+        { optionId: 'reject', kind: 'reject_once', name: 'No, keep planning' }],
+    })
+    await writeFile(join(process.cwd(), 'plan-answer'), JSON.stringify(answer.outcome))
+  }
   if (text === 'approvals') {
     const answers = await Promise.all(['first', 'second'].map(name => ctx.client.request(methods.client.session.requestPermission, {
       sessionId: 'fake-session', toolCall: { toolCallId: name, title: `Write the ${name} file` },

@@ -259,8 +259,11 @@ settings say `auto`, each Claude child starts in the mode `auto`, and a project 
 wins over each settings file: `ask` is the mode `default` of Claude Code, so the child asks before each change and each
 command. `allowEdits` is the mode `acceptEdits`, so the child changes files without a question and asks before a
 command. `auto` lets the classifier of Claude Code decide. A question of the child goes to the main conversation.
-Megachat offers no `bypassPermissions` and no `plan`. When Claude Code refuses the mode, for example because your
-settings turn off the mode `auto`, the task fails before it starts.
+Megachat offers no `bypassPermissions` and no `plan`, and it removes each option of a permission request that switches a
+child to `bypassPermissions`. When Claude Code refuses the mode, for example because your settings turn off the mode
+`auto`, the task fails before it starts. Claude Code applies an allow rule of the project settings only in a directory
+that you trusted in Claude Code: in another directory, the child asks all the same. A deny rule applies in each
+directory.
 
 The adapter also switches a Claude child to the `model` of your settings of Claude Code. With `children.claudeModel`
 `inherit`, Megachat keeps that: the model of your settings decides, and without one the child uses

@@ -126,6 +126,23 @@ test('a Claude child loads the project settings, and its options hold no key and
   assert.doesNotMatch(JSON.stringify(options), /test-key|wire/)
 })
 
+test('a Claude child never gets the mode bypassPermissions: its options turn the mode off, and a request loses each bypass option', { timeout: 20000 }, async t => {
+  const { service, cwd, script } = await fixture(t)
+  script.push(call('agents_spawn', { cwd, prompt: 'plan' }), fauxAssistantMessage('Started.'))
+  await service.submit('first', 'Work')
+  const permission = await waitForState(service.state, state => Object.values(state.permissions).find(item => item.status === 'pending'))
+  assert.equal(JSON.parse(await readFile(join(cwd, 'claude-options.json'), 'utf8')).allowDangerouslySkipPermissions, false)
+  // The state keeps the request without the options of the adapter that switch the child to bypassPermissions.
+  assert.deepEqual(permission.request.options.map(option => option.optionId), ['exit-plan-auto', 'exit-plan-default', 'reject'])
+  for (const decision of ['exit-plan-bypass', 'exit-plan-clear-bypass'])
+    await assert.rejects(service.state.respondPermission(permission.id, decision), { code: 'invalid' })
+  assert.equal((await service.state.snapshot()).permissions[permission.id].status, 'pending')
+  await service.state.respondPermission(permission.id, 'exit-plan-default')
+  const state = await waitForState(service.state, value => Object.values(value.runs).every(run => terminalStates.has(run.status)) ? value : undefined)
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'plan-answer'), 'utf8')), { outcome: 'selected', optionId: 'exit-plan-default' })
+})
+
 test('a project ANTHROPIC_BASE_URL refuses a Claude child before the start of the agent, and the message has no value', { timeout: 20000 }, async t => {
   const { cwd, launched, turn } = await fixture(t)
   await mkdir(join(cwd, '.claude'))

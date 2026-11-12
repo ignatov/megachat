@@ -33,6 +33,16 @@ async function refuseProjectBaseUrl(cwd, resolveSettings) {
   if (source) throw new MegachatError('projectBaseUrl', source.path ?? join(cwd, '.claude', 'settings.json'))
 }
 
+/**
+ * Removes each option of a permission request that switches the child to the mode `bypassPermissions`, before the state
+ * keeps the request and the user sees it. A child of Megachat must never get that mode. The Claude option
+ * `allowDangerouslySkipPermissions: false` already tells the adapter of Claude Code to offer no such option. This filter
+ * is the second guard: it does not depend on that Claude option. The adapter names such an option `exit-plan-bypass` or
+ * `exit-plan-clear-bypass`. The state then refuses an answer that names a removed option.
+ */
+const withoutBypass = request => Array.isArray(request?.options)
+  ? { ...request, options: request.options.filter(option => !/bypass/i.test(String(option?.optionId))) } : request
+
 /** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
 const STEER_METHOD = '_session/steering'
 /** The updates that show work of the model, with the part of a step that each one streams. */
@@ -208,7 +218,7 @@ export class AcpRunService {
           waitingPermissions++
           clearTimeout(timer)
           try {
-            const id = await this.state.requestPermission(run.id, generation, params)
+            const id = await this.state.requestPermission(run.id, generation, withoutBypass(params))
             const permission = await waitForState(this.state, snapshot => {
               const value = snapshot.permissions[id]
               if (value.status !== 'pending' || snapshot.runs[run.id].cancelRequested) return value
@@ -237,9 +247,10 @@ export class AcpRunService {
         // A Claude child loads the project settings, as Claude Code does in the project: `CLAUDE.md` with its imports,
         // the permissions, the hooks, the MCP servers and the skills. It loads no local settings and no file of the user.
         // The options hold no session settings: the SDK puts them in the command line of Claude, and the base URL of
-        // Central holds the key. `refuseProjectBaseUrl` guards the base URL.
+        // Central holds the key. `refuseProjectBaseUrl` guards the base URL. `allowDangerouslySkipPermissions: false`
+        // removes the mode `bypassPermissions` from the modes of the session and from the options of the approval of a plan.
         ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: model ? modelRef(model).modelId : launch.model, settingSources: ['project'],
-          promptSuggestions: false, maxTurns: 30 } } } } : {}),
+          promptSuggestions: false, maxTurns: 30, allowDangerouslySkipPermissions: false } } } } : {}),
       }
       let sessionId
       if (run.providerSessionId) {
