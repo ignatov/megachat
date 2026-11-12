@@ -7,7 +7,7 @@ The settings of the reply MUST be these, with the variable of a setting in brack
 - `reply.length`
 - `reply.quoteRequest`
 
-The capabilities `child-settings` (`children.*`), `project-settings`, `spend-limit` (`budget.dailyUsd`), `projects` (`projects.newRoot`) and `learned-memory` (`memory.characters`, `memory.reflection`) and the requirement "Settings of the index of past sessions" give the other settings.
+The capabilities `child-settings` (`children.*`), `project-settings`, `spend-limit` (`budget.dailyUsd`), `projects` (`projects.newRoot`) and `learned-memory` (`memory.*`) and the requirement "Settings of the index of past sessions" give the other settings.
 
 Tests: `test/settings.test.mjs`
 

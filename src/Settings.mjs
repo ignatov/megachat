@@ -250,6 +250,8 @@ export const SETTINGS = [
       return /^\d{4,5}$/.test(text) && Number(text) >= 1000 && Number(text) <= 20000 ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 1000, maximum: 20000 }) },
+  // The background pass that adds entries to `memory.md` from the conversation. `false` stops it.
+  { key: 'memory.reflection', default: true, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   // The consent of the user to the index of the past sessions. Without it, Megachat reads no session file for the index.
   { key: 'sessions.index', default: 'off', applies: 'now',
     validate: value => { const on = toBoolean(value); return on === undefined ? undefined : on ? 'on' : 'off' },

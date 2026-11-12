@@ -186,6 +186,10 @@ async function upgrade(t, variant) {
   assert.deepEqual(recovered.projectCreations, {})
   // A state of v0.2.0 has no record of a write of the memory.
   assert.deepEqual(recovered.memoryWrites, {})
+  // The reflection of the memory starts at the newest entry of the old conversation, so its first pass does not read it.
+  const newest = await service.state.newestEntryId()
+  assert.ok(newest > 0)
+  assert.deepEqual(recovered.memoryReflection, { throughEntryId: newest, userTurns: 0, due: false, notice: null, pass: null })
   assert.deepEqual(recovered.sessionIndex, { task: null, summary: null, repeated: false, running: null })
   assert.equal(recovered.megachatWorkspace, await realpath(join(directories.state, 'workspace')))
   assert.equal(recovered.initiative.suggestion, 'Add a test for the parser.')

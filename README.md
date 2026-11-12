@@ -228,6 +228,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `memory.characters` | `4000` | | The cap of the size of `memory.md` in characters, from `1000` to `20000`. Above it, the main agent cannot add an entry. |
+| `memory.reflection` | `true` | | The reflection: a background pass that adds entries to `memory.md` from the conversation. `false` stops it. See [The learned memory](#the-learned-memory). |
 | `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
 | `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
 | `sessions.notes` | `off` | | A short note in the chat when an agent session waits for you for a long time. It needs `sessions.index`. See [Notes about the sessions that wait](#notes-about-the-sessions-that-wait). |
@@ -354,6 +355,21 @@ Each write checks the entry: Megachat refuses a key, an invisible character and 
 instruction to the model. An entry of yours that fails the check stays in the file and shows as `[blocked: <reason>]`
 in the prompt. A child result, the morning report and the summary of the past sessions cannot change the memory. No
 child gets the memory: not a Claude child, not a Codex child and not a pi child.
+
+The reflection is a background pass that finds a preference that you showed over many turns. It runs after a summary of
+the conversation and after 10 of your turns, 60 seconds after the last turn and only when no turn runs. It does not run
+while the conversation sleeps outside the working hours (see `workday.enabled`). It reads only your messages and the
+replies of the main agent since the last pass, the newest 60,000 characters: no tool result, no child output, no note
+and no automatic turn. It saves only what you said, such as a rule with "always" or "from now on", or a correction that
+you repeated. Text that you paste or quote, such as a file, a log or the output of a program, is not a statement of
+yours, and a reply of the main agent is never a source. It only adds entries, through the same checks as the memory
+tool, and it never saves a topic of `## Do not remember`. A change or a removal is a proposal for you. The next reply
+tells the line of each entry that the reflection added, and each proposal. To take back an entry of the reflection, ask
+the agent to remove it: an undo takes back only the newest write. A message of yours does not stop a pass, and the reply
+after the end of the pass tells its adds. A forget stops a pass, and no later pass reads the conversation before the
+forget. Each pass is one model request with the model of the main agent, at most 1,000 output tokens and no prompt
+cache. It counts in the daily spend, and no pass starts above `budget.dailyUsd`. Set `memory.reflection` to `false` to
+stop it: the later passes then do not read the conversation of that time.
 
 ## The morning report
 
@@ -641,6 +657,7 @@ The session text is data for the agent, not instructions.
 | `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/MegachatMemory.mjs` | The learned memory: the parse of `memory.md`, the checks of an entry, the address of an entry, the write with the second read, the versions, and the section of the prompt. |
+| `src/MemoryReflection.mjs` | The reflection of the learned memory: the transcript of a pass, the parse of the answer, the writes, and the schedule. `resources/reflection.md` holds the prompt of a pass. |
 | `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
 | `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |

@@ -3,7 +3,7 @@
 ### Requirement: Count of the spend
 Megachat MUST count the cost of each model request of the main agent and of each pi child on the local day: each reply, also a reply with tool calls, each summary, each keep-alive request and each reflection request of the memory. A request without a cost from its provider MUST get the cost from the prices of its model data. The cost of the Claude and Codex children MUST NOT be in the count.
 
-Tests: `test/spend.test.mjs`, `test/pi-child.test.mjs`, `test/memory-reflection.test.mjs`
+Tests: `test/spend.test.mjs`, `test/pi-child.test.mjs`
 
 #### Scenario: The cost from the provider
 - **WHEN** the provider gives a request the total cost 0.25 USD

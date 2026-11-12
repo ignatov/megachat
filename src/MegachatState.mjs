@@ -3,6 +3,8 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, InboxDoc, LiveDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
 import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
+import { forgottenTopic } from './MegachatMemory.mjs'
+import { REFLECTION_TURNS } from './MemoryReflection.mjs'
 import { rmdir } from 'node:fs/promises'
 import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
 import { ChildTextFilter, redactOwnSecrets } from './SessionText.mjs'
@@ -55,6 +57,8 @@ const sentStates = new Set(['dispatched', 'running', 'approval'])
  * daemon while the model answered. A turn that fails for another reason fails the same way again.
  */
 const repeatableReasons = new Set(['model_error', 'interrupted'])
+/** The most lines of the notice of the reflection, also after more than one pass without a turn. */
+const NOTICE_LINES = 16
 export const MegachatDoc = defineDoc({
   kind: 'air.megachat', version: 1, scope: 'conversation', history: 'latest', fork: 'initial',
   initial: () => ({ schema: 1, workspaces: [], inputs: {}, runs: {}, permissions: {}, serviceSessions: {}, current: null }),
@@ -303,6 +307,8 @@ export class MegachatState {
   }
 
   async initialize() {
+    // The first pass of the reflection after the upgrade does not read the conversation of an earlier build.
+    const newest = (await this.snapshot())?.memoryReflection ? undefined : await this.newestEntryId()
     await this.change(state => {
       requireCondition(state.schema === 1, 'schema')
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {} }
@@ -317,6 +323,9 @@ export class MegachatState {
       state.projectCreations ??= {}
       // The outcomes of the writes of the tool agents_memory by the request ID. A state of an earlier build has none.
       state.memoryWrites ??= {}
+      // The reflection of the memory: its position, the count of the completed turns of the user since the last pass,
+      // whether a pass is due, the notice for the next turn, and the answer of a pass that did not finish its writes.
+      state.memoryReflection ??= { throughEntryId: newest ?? 0, userTurns: 0, due: false, notice: null, pass: null }
       // The task of an import pass ends with its daemon. A summary that waits for its event turn stays, and so does the
       // summary of the turn that runs, which can wait for its repeat. A state of an earlier build has neither field.
       state.sessionIndex = { task: null, summary: state.sessionIndex?.summary ?? null, repeated: state.sessionIndex?.repeated ?? false,
@@ -333,6 +342,11 @@ export class MegachatState {
         delete run.updateBytes
       }
     })
+  }
+
+  /** The ID of the newest entry of the retained conversation, or 0. */
+  async newestEntryId() {
+    return (await this.root.entries({ order: 'descending' }, 1, undefined, BACKGROUND_CONTEXT)).items[0]?.id ?? 0
   }
 
   async change(operation) {
@@ -429,11 +443,109 @@ export class MegachatState {
   /**
    * Removes each record of `memoryWrites` but the record of the forget [requestId], after the rename of the forget. The
    * result of an earlier write can hold the text of the forgotten entry.
+   *
+   * The reflection does not learn the fact again: its position moves to the newest entry, so no later pass reads the
+   * conversation before the forget, and the count of the turns starts again. A stored answer of a pass loses its adds
+   * that are not written and its proposals. The notice and the lines of the stored answer lose each line that holds the
+   * text [removed] of the removed entry or that the topic rule of [topic] matches. The other lines stay, so the user still
+   * hears of each other add. Without the text of the removed entry ([removed] `undefined`), each line goes.
    */
-  async memoryForgotten(requestId) {
+  async memoryForgotten(requestId, { topic, removed = undefined } = {}) {
+    const newest = await this.newestEntryId()
+    const kept = line => typeof line === 'string' && removed !== undefined && !(removed && line.includes(removed))
+      && !(topic && forgottenTopic(line, [topic]))
     await this.change(state => {
       const own = state.memoryWrites?.[requestId]
       state.memoryWrites = own ? { [requestId]: own } : {}
+      const reflection = state.memoryReflection
+      if (!reflection) return
+      Object.assign(reflection, { throughEntryId: Math.max(reflection.throughEntryId, newest), userTurns: 0, due: false })
+      const lines = reflection.notice?.lines.filter(kept) ?? []
+      reflection.notice = lines.length ? { ...reflection.notice, lines } : null
+      const pass = reflection.pass
+      if (pass) Object.assign(pass, { adds: pass.adds.slice(0, pass.lines.length), proposals: [], userTurns: 0,
+        lines: pass.lines.map(line => kept(line) ? line : null) })
+    })
+  }
+
+  /** A summary completed, so a pass of the reflection is due. */
+  async reflectionDue() {
+    await this.change(state => { if (state.memoryReflection) state.memoryReflection.due = true })
+  }
+
+  /**
+   * Stores the answer of a pass before its first write: `{ id, throughEntryId, userTurns, adds, proposals, lines }`.
+   * `lines` gets the line of each add, or `null` for a refused add, in the order of `adds`. The pass read the
+   * conversation after the position [from]. When the position moved during the request, after a forget, the answer is
+   * not stored. Gives whether it is stored.
+   */
+  async reflectionAnswered(pass, from) {
+    return this.change(state => {
+      if (state.memoryReflection.throughEntryId !== from) return false
+      state.memoryReflection.pass = pass
+      return true
+    })
+  }
+
+  /** Records the outcome of the add [index] of the pass [id]: its [line], or `null` for a refused add. */
+  async reflectionAdded(id, index, line) {
+    await this.change(state => {
+      const pass = state.memoryReflection.pass
+      if (pass?.id === id && pass.lines.length === index && index < pass.adds.length) pass.lines.push(line)
+    })
+  }
+
+  /**
+   * Ends the pass [id]: the position moves to the [throughEntryId] of the stored answer, the count loses the [userTurns]
+   * that the pass read, and the notice for the next turn gets the lines of the adds and the proposals. [id] `null` ends a
+   * pass that needed no request, with the [throughEntryId] and the [userTurns] of the call. Gives the lines of the adds
+   * and the count of the proposals.
+   */
+  async reflectionDone({ id, throughEntryId, userTurns }) {
+    return this.change(state => {
+      const reflection = state.memoryReflection
+      const pass = id === null ? { throughEntryId, userTurns, lines: [], proposals: [] } : reflection.pass
+      if (id !== null && pass?.id !== id) return { lines: [], proposals: 0 }
+      const lines = pass.lines.filter(line => typeof line === 'string')
+      const shown = [...lines, ...pass.proposals.map(proposal => message('memory.reflection.proposal', proposal))]
+      reflection.throughEntryId = Math.max(reflection.throughEntryId, pass.throughEntryId)
+      reflection.userTurns = Math.max(0, reflection.userTurns - pass.userTurns)
+      reflection.due = reflection.userTurns >= REFLECTION_TURNS
+      reflection.pass = null
+      if (shown.length) reflection.notice = { id: randomUUID(), lines: [...(reflection.notice?.lines ?? []), ...shown].slice(-NOTICE_LINES) }
+      return { lines, proposals: pass.proposals.length }
+    })
+  }
+
+  /** A pass failed: the next pass waits for 10 more completed turns of the user, or for a summary. */
+  async reflectionFailed() {
+    await this.change(state => Object.assign(state.memoryReflection, { userTurns: 0, due: false, pass: null }))
+  }
+
+  /** The setting `memory.reflection` is off: the position moves to [throughEntryId] without a pass. */
+  async reflectionSkipped(throughEntryId) {
+    await this.change(state => {
+      const reflection = state.memoryReflection
+      Object.assign(reflection, { throughEntryId: Math.max(reflection.throughEntryId, throughEntryId), userTurns: 0, due: false, pass: null })
+    })
+  }
+
+  /**
+   * A completed turn showed the [lines] of the notice, so they go away. A pass that ended during the turn added its lines
+   * after them, and these lines stay for the next turn.
+   */
+  async reflectionNoticeShown(lines) {
+    await this.change(state => {
+      const notice = state.memoryReflection?.notice
+      if (!notice) return
+      const shown = [...lines]
+      const rest = notice.lines.filter(line => {
+        const index = shown.indexOf(line)
+        if (index < 0) return true
+        shown.splice(index, 1)
+        return false
+      })
+      state.memoryReflection.notice = rest.length ? { ...notice, lines: rest } : null
     })
   }
 
@@ -735,6 +847,12 @@ export class MegachatState {
       const input = state.inputs[state.current.requestId]
       if (state.current.cancelling) status = 'cancelled'
       input.status = status
+      // Each completed turn of the user counts for the reflection of the memory. At 10, a pass is due.
+      const reflection = state.memoryReflection
+      if (reflection && state.current.kind === 'user' && status === 'completed') {
+        reflection.userTurns++
+        if (reflection.userTurns >= REFLECTION_TURNS) reflection.due = true
+      }
       // After a restart, the end of the last turn of the user gives the idle time of the working day.
       input.settledAt = Date.now()
       // Only a completed turn keeps its prompt suggestion. A delegation acknowledgment gets none, also when the main

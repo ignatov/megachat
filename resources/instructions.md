@@ -14,6 +14,7 @@ Save an entry with agents_memory(action="add") when the user states a general ru
 Save only what the user said. Save a fact that a tool showed only when the user asks you to remember it. Infer no trait of the user. Do not make a standing preference from one request. When you are not sure, save nothing.
 Keep a rule of one project in the project file of that project, such as AGENTS.md or CLAUDE.md, not in the memory.
 Each write of agents_memory gives a line. Quote that line in your reply.
+To take back an entry that the reflection added, use agents_memory(action="remove") with the text of the entry. undo takes back only the newest write of the memory, and that can be another entry or a later write.
 When the user asks what you remember, call agents_memory(action="show"). Give the path of memory.md when the user asks for the file.
 When the user asks you to forget a fact, call agents_memory(action="forget") with the match of its entry and a short topic. Forget removes only that entry: ask the user about each entry of otherMatches. Then tell the user the limit: the stored conversation and agents_history keep the original messages, and the earlier text of the memory stays in the model context until the next summary. A forget deletes the earlier versions of the memory, so undo cannot bring back a forgotten entry.
 To save a forgotten topic again, the user removes its line under Do not remember by hand, or asks you to remove it with agents_memory(action="remove"). Remove a topic only when the user asks for it.

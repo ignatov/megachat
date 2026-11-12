@@ -7,6 +7,7 @@ import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { MegachatMemory } from './MegachatMemory.mjs'
 import { automaticKinds, findSteer, lastUserTurnEnd, MegachatState, terminalStates } from './MegachatState.mjs'
+import { MemoryReflection, REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_MS } from './MemoryReflection.mjs'
 import { collectReportData, logReport, MorningReport, REPORT_RECHECK_MS, reportWorkday } from './MorningReport.mjs'
 import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
 import { PiChildHistory } from './PiChildHistory.mjs'
@@ -166,8 +167,8 @@ export class PiMegachatService {
    * morning report, of the idle time of the conversation, of the wait of a child result, and of the notes about the
    * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test. [secrets] is a
    * `KnownSecrets` with the exact values of the own secret of Megachat: the state and the session index remove them.
-   * [memoryPath] is the path of `memory.md`. Without it, the main agent has no memory section and no tool
-   * `agents_memory`, for a test. [memory] gives the hooks of the memory, for a test.
+   * [memoryPath] is the path of `memory.md`. Without it, the main agent has no memory section, no tool
+   * `agents_memory` and no reflection, for a test. [memory] gives the hooks of the memory, for a test.
    */
   static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
@@ -229,7 +230,17 @@ export class PiMegachatService {
       service.sessions.index = service.sessionIndex
     }
     service.sessions.children = new PiChildHistory(harness, state)
-    if (memoryPath) service.memory = new MegachatMemory(memoryPath, { secrets, ...memoryOptions })
+    if (memoryPath) {
+      service.memory = new MegachatMemory(memoryPath, { secrets, ...memoryOptions })
+      // The first paragraph of the file is the system prompt of a reflection request. The rest follows the memory.
+      const [reflectionSystem, ...reflectionRest] = (await resource('reflection.md')).trim().split('\n\n')
+      service.reflection = new MemoryReflection({ state, memory: service.memory, clock: service.workdayClock,
+        prompt: { system: reflectionSystem, instructions: reflectionRest.join('\n\n') },
+        read: { entries: (minEntryId, cursor) => root.entries({ order: 'ascending', minEntryId }, 200, cursor, context), newest: () => state.newestEntryId() },
+        complete: request => service.reflect(request), values: () => service.values, sleeping: () => service.sleeping(),
+        workday: () => workdaySettings(service.values),
+        spent: () => { const limit = service.settings.entry('budget.dailyUsd').value; return limit > 0 && service.spend.today().usd > limit } })
+    }
     service.childExtension = childExtension((usage, model) => service.countSpend(usage, model, 'pi'))
     registry.install(service.childExtension)
     registry.install(service.extension())
@@ -565,11 +576,33 @@ export class PiMegachatService {
    * the tool in a turn reaches the model through the tool result, and the section in the next turn.
    */
   async memorySection() {
-    const turn = (await this.state.snapshot()).current?.id
+    const snapshot = await this.state.snapshot()
+    const turn = snapshot.current?.id
     if (turn !== undefined && this.memoryShown?.turn === turn) return this.memoryShown.text
-    const text = await this.memory.section(this.values['memory.characters'])
-    this.memoryShown = { turn, text }
+    // The notice of the reflection: the line of each add and each proposal of the passes after the last turn.
+    const notice = snapshot.memoryReflection?.notice
+    const shown = notice?.lines.length ? `\n${message('memory.reflection.notice')}\n${notice.lines.join('\n')}` : ''
+    const text = `${await this.memory.section(this.values['memory.characters'])}${shown}`
+    this.memoryShown = { turn, text, notice: shown ? [...notice.lines] : undefined }
     return text
+  }
+
+  /**
+   * Sends one reflection request: the [system] prompt and the user message [text], with the model of the main agent,
+   * as the summary request does. The request has no prompt cache, no reasoning, at most [REFLECTION_MAX_TOKENS] output
+   * tokens and a time limit of [REFLECTION_TIMEOUT_MS]. It does not go through Pi Durable. Its cost counts in the spend.
+   */
+  async reflect({ system, text, signal, characters }) {
+    const model = this.models.getModel(this.model.provider, this.model.modelId)
+    if (!model) throw new Error('model')
+    const answer = await this.models.completeSimple(model, { messages: [
+      { role: 'system', content: system, timestamp: Date.now() },
+      { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() },
+    ] }, { timeoutMs: REFLECTION_TIMEOUT_MS, maxRetries: 0, cacheRetention: 'none', signal,
+      maxTokens: model.maxTokens > 0 ? Math.min(REFLECTION_MAX_TOKENS, model.maxTokens) : REFLECTION_MAX_TOKENS })
+    logEvent('log.reflection', answer.usage?.input ?? 0, answer.usage?.output ?? 0, answer.usage?.cost?.total ?? 0, characters)
+    this.countSpend(answer.usage, model)
+    return answer
   }
 
   /**
@@ -585,7 +618,8 @@ export class PiMegachatService {
     const state = await this.state.snapshot()
     if (automaticKinds.has(state.current?.kind)) return { changed: false, reason: 'automatic', note: message('memory.automatic') }
     const journal = { recorded: state.memoryWrites?.[requestId], record: write => this.state.memoryWritten(requestId, write),
-      forgotten: () => this.state.memoryForgotten(requestId) }
+      // A forget also stops the reflection from learning the fact again (see `MegachatState.memoryForgotten`).
+      forgotten: async info => { await this.state.memoryForgotten(requestId, info); this.reflection?.forgotten() } }
     return args.action === 'undo' ? this.memory.undo(limit, journal) : this.memory.change(args, limit, journal)
   }
 
@@ -613,6 +647,8 @@ export class PiMegachatService {
     const summary = answer.stopReason === 'stop' && !answer.content.some(block => block.type === 'toolCall')
       ? blockText(answer.content).trim() : ''
     if (!summary) return undefined
+    // A completed summary makes a pass of the reflection due. The pass waits for the end of each turn.
+    if (this.reflection) this.reflection.summarized().catch(error => logFailure('log.reflection.failed', error))
     const state = await this.state.snapshot()
     const tasks = Object.values(state.runs)
       .filter(run => !terminalStates.has(run.status) || !run.reported)
@@ -697,7 +733,10 @@ export class PiMegachatService {
     const observe = snapshot => {
       if (running !== Boolean(snapshot.current)) {
         running = Boolean(snapshot.current)
-        if (running) this.keepAlive?.turnStarted()
+        if (running) {
+          this.keepAlive?.turnStarted()
+          this.reflection?.turnStarted()
+        }
         else {
           // Only a turn of the user ends the idle time of the working day. A turn of a child result or of the sessions
           // summary starts the window of keep-alive requests again, and the morning report does not.
@@ -705,6 +744,7 @@ export class PiMegachatService {
           this.keepAlive?.turnEnded(undefined, { kind })
           // A note that waited for the end of the turn goes out now.
           this.sessionNotes.check()
+          this.reflection?.turnEnded()
         }
       }
       kind = snapshot.current?.kind ?? kind
@@ -746,6 +786,8 @@ export class PiMegachatService {
     // An index that cannot open must not stop the chat. The log names the failure, and a change of the setting tries again.
     await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
     this.sessionNotes.apply(notesOn(this.values))
+    // A stored answer of a pass gets its writes, and a due pass waits for the idle time after the start.
+    this.reflection?.resume()
   }
 
   /**
@@ -814,7 +856,10 @@ export class PiMegachatService {
   }
 
   async submit(requestId, text) {
+    // A message of the user stops the timer of the reflection, and a turn starts. A request that runs does not stop.
+    this.reflection?.turnStarted()
     this.pendingUserInputs++
+    let started = false
     try {
       const interrupted = await this.state.interruptAutomaticTurn()
       if (interrupted) {
@@ -824,9 +869,15 @@ export class PiMegachatService {
       }
       const receipt = await this.state.submit(requestId, text)
       if (receipt.status === 'running') this.follow(receipt)
+      started = receipt.status === 'running'
       return receipt
     }
-    finally { this.pendingUserInputs-- }
+    finally {
+      this.pendingUserInputs--
+      // A message that starts no turn, such as a text above the limit or a message during a turn, gives no end of a
+      // turn. So the reflection looks at the state again, and a due pass gets its timer back.
+      if (!started) this.reflection?.check()
+    }
   }
 
   follow(receipt) {
@@ -852,6 +903,9 @@ export class PiMegachatService {
       this.spend.shown(this.notice.day)
       this.settingsPending = true
     }
+    // The turn had the notice of the reflection in its section memory. A failed turn keeps it for the next turn.
+    const reflectionNotice = this.memoryShown?.turn === receipt.mainRunId ? this.memoryShown.notice : undefined
+    if (reflectionNotice && status === 'completed') await this.state.reflectionNoticeShown(reflectionNotice).catch(error => logFailure('log.reflection.failed', error))
     // The turn still holds the state, so the next turn starts with the new settings.
     if (this.settingsPending) await this.applySettings().catch(error => logFailure('log.settings.failed', error))
     await this.state.settleInput(receipt.mainRunId, status, reason)
@@ -936,6 +990,7 @@ export class PiMegachatService {
     this.stopper.stop()
     await this.morningReport?.close()
     await this.sessionNotes?.close()
+    await this.reflection?.close()
     if (this.waitTimer !== undefined) this.workdayClock.clearTimeout(this.waitTimer)
     clearTimeout(this.reportTimer)
     clearTimeout(this.expiry?.timer)

@@ -95,11 +95,11 @@ function fakeModels() {
   return { models, requests }
 }
 
-async function open(t, directory, clock) {
+async function open(t, directory, clock, options = {}) {
   const { models, requests } = fakeModels()
   const service = await PiMegachatService.open(new MemoryStorage(), models, undefined, undefined, {
     settingsPath: join(directory, 'settings.json'), spendPath: join(directory, 'spend.json'), clock, environment: {},
-    keepAlive: { minTokens: 1000, enabled: false } })
+    keepAlive: { minTokens: 1000, enabled: false }, ...options })
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
   await service.resume()
@@ -195,4 +195,28 @@ test('a summary request counts, and a restart of the daemon keeps the count of t
   const second = await open(t, directory, clock)
   assert.equal(second.service.spend.data.usd, spent)
   assert.equal((await second.tool({ action: 'get' })).spend.limit, 0)
+})
+
+test('a reflection request counts in the spend of the day', { timeout: 30000 }, async t => {
+  const directory = await temporary(t)
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done',
+    values: { 'coordinator.model': 'faux/priced' } }), { mode: 0o600 })
+  const { service, say } = await open(t, directory, fakeClock(), { memoryPath: join(directory, 'memory.md') })
+  await say('first', 'From now on, answer in German.')
+  // The provider gives the reflection request the total cost 0.05 USD.
+  const complete = service.models.completeSimple.bind(service.models)
+  const costs = []
+  service.models.completeSimple = async (model, request, options) => {
+    const answer = await complete(model, request, options)
+    if (!text(request.messages[0].content).startsWith('You read a transcript')) return answer
+    costs.push(0.05)
+    return { ...answer, usage: { ...answer.usage, cost: { ...answer.usage.cost, total: 0.05 } } }
+  }
+  const before = service.spend.data.usd
+  await service.state.reflectionDue()
+  service.reflection.idleSince = -Infinity
+  await service.reflection.check()
+  await service.reflection.running
+  assert.deepEqual(costs, [0.05])
+  assert.ok(Math.abs(service.spend.data.usd - before - 0.05) < 1e-12)
 })

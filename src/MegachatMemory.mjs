@@ -378,7 +378,8 @@ function forget(doc, entry, topic, known) {
   const otherMatches = topicMatches(parseMemory(next), text, known)
   const line = entry ? message('memory.line.forget', heading(entry.section), heading('forgotten'), text)
     : message(listed ? 'memory.line.topicKept' : 'memory.line.topic', heading('forgotten'), text)
-  return { text: next, forget: true, result: { line, topic: text, matched: entry !== undefined, otherMatches, note: message('memory.forget.note') } }
+  return { text: next, forget: true, removed: entry ? entry.text : null,
+    result: { line, topic: text, matched: entry !== undefined, otherMatches, note: message('memory.forget.note') } }
 }
 
 /**
@@ -476,17 +477,27 @@ export class MegachatMemory {
    *   action again. Else the file changed after that write, and the call gives the reason `replayed` and changes nothing.
    * - `record({ before, digest, result, forget })`: runs before the rename with the digests of the file before and after
    *   the write. Its result has no `otherMatches`.
-   * - `forgotten()`: runs after the rename of a forget and the delete of the versions. It removes the other records.
+   * - `forgotten({ topic, removed })`: runs after the rename of a forget and the delete of the versions. It removes the
+   *   other records. [removed] is the text of the removed entry, `null` when the forget removed no entry, and `undefined`
+   *   when a call that runs again does not know the text.
+   * - `proceed()`: runs in the queue before the write. `false` refuses the write with the reason `stopped`.
+   * - `settled(result)`: runs in the queue after the write, so the next write of the queue sees its outcome.
    * A forget deletes each version and each undone file only after its rename, so a forget that ends `busy` keeps them.
    */
   change(args, limit, journal = {}) {
-    return this.#serial(() => this.#write(first => {
-      const applied = applyMemoryAction(parseMemory(first.text), args, { known: this.secrets, limit })
-      if (applied.refusal) return { refusal: { changed: false, ...applied.refusal } }
-      const result = { changed: true, ...applied.result, characters: codePoints(applied.text), limit }
-      const { otherMatches, ...stored } = result
-      return { text: applied.text, result, stored, forget: applied.forget === true }
-    }, journal, args.action))
+    return this.#serial(async () => {
+      if (journal.proceed && !await journal.proceed()) return { changed: false, reason: 'stopped' }
+      const result = await this.#write(first => {
+        const applied = applyMemoryAction(parseMemory(first.text), args, { known: this.secrets, limit })
+        if (applied.refusal) return { refusal: { changed: false, ...applied.refusal } }
+        const result = { changed: true, ...applied.result, characters: codePoints(applied.text), limit }
+        const { otherMatches, ...stored } = result
+        return { text: applied.text, result, stored, forget: applied.forget === true,
+          forgotten: applied.forget === true ? { topic: applied.result.topic, removed: applied.removed } : undefined }
+      }, journal, args.action)
+      await journal.settled?.(result)
+      return result
+    })
   }
 
   /**
@@ -580,7 +591,7 @@ export class MegachatMemory {
       }
       await rename(temporary, target)
       await this.hooks.afterRename?.(attempt)
-      await this.#written(digest, forget, journal)
+      await this.#written(digest, forget, journal, built.forgotten)
       await after?.()
       logEvent('log.memory', action, built.result.characters)
       return built.result
@@ -591,13 +602,13 @@ export class MegachatMemory {
 
   /**
    * The steps after the rename of a write with the new [digest]: for a forget, the delete of the versions; then
-   * `last-write.json`; then, for a forget, `forgotten` of the [journal].
+   * `last-write.json`; then, for a forget, `forgotten` of the [journal] with [forgotten].
    */
-  async #written(digest, forget, journal) {
+  async #written(digest, forget, journal, forgotten) {
     if (forget) await this.#purge()
     const last = await this.#lastWrite()
     await this.#private(join(this.versions, LAST_WRITE), JSON.stringify({ digest, forget: forget || last?.forget === true }), true, true)
-    if (forget) await journal.forgotten?.()
+    if (forget) await journal.forgotten?.(forgotten)
   }
 
   /**
@@ -609,7 +620,9 @@ export class MegachatMemory {
   async #replayed(first, current, journal) {
     const { recorded } = journal
     if (recorded.digest !== current) return { changed: false, reason: 'replayed', note: message('memory.replayed') }
-    await this.#written(current, recorded.forget === true, journal)
+    // The record does not hold the text of the removed entry, because a forget must not keep it.
+    const forgotten = recorded.forget === true ? { topic: recorded.result.topic, removed: recorded.result.matched ? undefined : null } : undefined
+    await this.#written(current, recorded.forget === true, journal, forgotten)
     if (!recorded.forget) return recorded.result
     return { ...recorded.result, otherMatches: topicMatches(parseMemory(first.text), recorded.result.topic, this.secrets) }
   }
