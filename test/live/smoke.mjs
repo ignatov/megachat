@@ -4,7 +4,8 @@
 // own throwaway projects. The run costs real money. See the section about the live smoke run in `README.md`.
 //
 // Usage: node test/live/smoke.mjs [<scenario>...]
-// The scenarios are chat, suggest, rules, permissions, tasks, steer, others, workday and restart. Without a name, all of them run.
+// The scenarios are chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw and
+// waiting. Without a name, all of them run.
 import { existsSync } from 'node:fs'
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -15,7 +16,8 @@ import {
 } from './live-client.mjs'
 
 const { terminalStates } = await import(join(LEASE, 'src', 'MegachatState.mjs'))
-const SCENARIOS = ['chat', 'suggest', 'rules', 'permissions', 'tasks', 'steer', 'others', 'workday', 'restart']
+const SCENARIOS = ['chat', 'suggest', 'rules', 'permissions', 'tasks', 'steer', 'others', 'workday', 'restart', 'twotools',
+  'withdraw', 'waiting']
 const selected = process.argv.slice(2).length ? process.argv.slice(2) : SCENARIOS
 for (const name of selected) if (!SCENARIOS.includes(name)) throw new Error(`Unknown scenario ${name}`)
 
@@ -170,7 +172,7 @@ const prompts = {
 
 // Item 1: the reply stream, also when the model thinks first.
 async function chat() {
-  const project = await makeProject(root, 'chat', { 'parser.py': 'def parse(text):\n    return [line.split(",") for line in text.splitlines()]\n' })
+  const project = await makeProject(root, 'chat', parserFile)
   const context = await setup('chat', { 'reply.suggestions': 'ghost', 'coordinator.thinking': 'medium' })
   const view = await connect(context, [project])
   const first = await turn(context, view, 'Think it through first. Then explain in about 120 words, in plain prose and without a list, why a durable queue helps a chat agent that hands work to helpers.')
@@ -188,25 +190,44 @@ async function chat() {
   await stopDaemon(context.home, context.env)
 }
 
-// Item 2: the prompt suggestion in the modes ghost, reply and off.
-async function suggest() {
-  const project = await makeProject(root, 'suggest', { 'parser.py': 'def parse(text):\n    return [line.split(",") for line in text.splitlines()]\n' })
-  const context = await setup('suggest', { 'reply.suggestions': 'ghost', 'children.permissionMode': 'allowEdits' })
-  const view = await connect(context, [project])
+/** The child task of the second try of [ghostSuggestion]: a Claude task that writes a test, or a pi task that only reads. */
+const ghostTasks = {
+  claude: project => prompts.one(project, 'empty test', 'Create the file test_parser.py with one pytest test: parse("") must return []. Do not run it, and change no other file.'),
+  pi: project => `Start one pi task now in the project ${project}. Title: "parser bug". Task for the child: "Read parser.py and name in one sentence the input with quoted fields that it splits wrongly. Change no file." Do not wait for the result. Answer in one sentence.`,
+}
+
+/**
+ * Gets a prompt suggestion in the mode ghost: from the reply of a user step, or else from the report of a child result
+ * that leaves a clear next action. [agent] is the agent of that child. Gives the suggestion, the index of the first
+ * update of its step, and its source.
+ */
+async function ghostSuggestion(context, view, project, agent = 'claude') {
   const review = code => `Read this Python function and name its bug in one sentence. Do not change a file. ${code}`
   let step = await turn(context, view, review('def parse(text): return [line.split(",") for line in text.splitlines()] # for CSV text with quoted fields'))
   let ghost = suggestions(step.updates).filter(item => item.text).at(-1)
   let from = step.from
   let source = 'reply of the user step'
   if (!ghost) {
-    // A child result that leaves a clear next action. The suggestion then comes in the automatic step of the report.
-    step = await turn(context, view, prompts.one(project, 'empty test', 'Create the file test_parser.py with one pytest test: parse("") must return []. Do not run it, and change no other file.'))
-    await waitState(context.home, quiet(1), 360000, 'the test task')
+    // The suggestion then comes in the automatic step of the report.
+    const count = runsOf(await snapshot(context.home)).length
+    step = await turn(context, view, ghostTasks[agent](project))
+    await waitState(context.home, quiet(count + 1), 360000, 'the test task')
     await delay(3000)
     ghost = suggestions(view.updates.slice(step.to)).filter(item => item.text).at(-1)
     from = step.to
     source = 'report of the child result'
   }
+  return { ghost, from, source }
+}
+
+const parserFile = { 'parser.py': 'def parse(text):\n    return [line.split(",") for line in text.splitlines()]\n' }
+
+// Item 2: the prompt suggestion in the modes ghost, reply and off.
+async function suggest() {
+  const project = await makeProject(root, 'suggest', parserFile)
+  const context = await setup('suggest', { 'reply.suggestions': 'ghost', 'children.permissionMode': 'allowEdits' })
+  const view = await connect(context, [project])
+  const { ghost, from, source } = await ghostSuggestion(context, view, project)
   const window = view.updates.slice(from).filter(item => !ghost || item.at <= ghost.at + 50)
   const ghostReply = replies(window).map(item => item.text).join('')
   const lastChunk = Math.max(0, ...window.filter(item => item.update?.sessionUpdate === 'agent_message_chunk').map(item => item.at))
@@ -454,13 +475,17 @@ async function workday() {
   for (const idleMinutes of [1, 0]) await workdayCase(idleMinutes)
 }
 
+/** The settings of a working day of one day in 3 days, so that the conversation sleeps today. */
+function nightSettings(idleMinutes) {
+  const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+  return { 'children.permissionMode': 'allowEdits', 'workday.enabled': true, 'workday.days': days[(new Date().getDay() + 3) % 7],
+    'workday.start': '09:00', 'workday.end': '10:00', 'workday.idleMinutes': idleMinutes }
+}
+
 async function workdayCase(idleMinutes) {
   const item = `9 Working day, idleMinutes ${idleMinutes}`
-  const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
-  const today = new Date().getDay()
   const project = await makeProject(root, `workday-${idleMinutes}`)
-  const context = await setup(`workday-${idleMinutes}`, { 'children.permissionMode': 'allowEdits', 'workday.enabled': true,
-    'workday.days': days[(today + 3) % 7], 'workday.start': '09:00', 'workday.end': '10:00', 'workday.idleMinutes': idleMinutes })
+  const context = await setup(`workday-${idleMinutes}`, nightSettings(idleMinutes))
   const view = await connect(context, [project])
   const task = idleMinutes > 0 ? `Run the shell command \`sleep ${idleMinutes * 60 + 20}\`. Then create the file w.txt with the text w.`
     : 'Create the file w.txt with the text w. Do nothing else.'
@@ -521,6 +546,163 @@ async function restart() {
     transcripts: facts.map(item => ({ exists: item.exists, ended: item.ended, continues: /continues an earlier run/.test(item.text ?? ''), lines: (item.text ?? '').split('\n').length })) })
 }
 
+/** The text of a model message of the conversation. */
+const textOf = item => typeof item.content === 'string' ? item.content
+  : (item.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('')
+const modelItems = async home => (await conversationOf(home)).entries.flatMap(entry => entry.model ?? [])
+
+/** The model messages after the last user message that holds [text], up to the next user message. */
+async function turnItems(home, text) {
+  const items = await modelItems(home)
+  const start = items.findLastIndex(item => item.role === 'user' && textOf(item).includes(text))
+  if (start < 0) return []
+  const end = items.findIndex((item, index) => index > start && item.role === 'user')
+  return items.slice(start + 1, end < 0 ? undefined : end)
+}
+const toolCalls = item => item.role === 'assistant' ? (item.content ?? []).filter(block => block.type === 'toolCall') : []
+/** The lines of the daemon log of [home] that tell of a write of the guard against a lost wake-up of the scheduler. */
+const wakeWrites = async home => ((await readText(join(home, 'daemon', 'daemon.log'))) ?? '').split('\n')
+  .filter(line => /wrote its record again/.test(line)).length
+
+// Item 11: one reply of the main agent with two tool calls, in three turns in a row. Each turn must end. Before the
+// guard of `src/SchedulerWake.mjs`, the step that waits for its tool calls could lose its wake-up, and the turn then
+// had no end.
+async function twotools() {
+  const project = await makeProject(root, 'twotools')
+  const context = await setup('twotools', {})
+  const view = await connect(context, [project])
+  const steps = []
+  for (const index of [1, 2, 3]) {
+    const text = `Question ${index}. Call the tools agents_list and agents_settings (action get) together, in one reply. Then tell me in one short sentence the number of the tasks and the value of reply.suggestions.`
+    const step = await turn(context, view, text)
+    const items = step.stalled ? [] : await turnItems(context.home, `Question ${index}.`)
+    const calls = items.map(item => toolCalls(item).map(block => block.name)).filter(names => names.length)
+    steps.push({ stalled: Boolean(step.stalled), stopReason: step.stopReason ?? null, seconds: Math.round((step.endedAt - step.sentAt) / 1000),
+      toolCallsByReply: calls, twoInOneReply: calls.some(names => names.includes('agents_list') && names.includes('agents_settings')),
+      answer: excerpt(replies(step.updates).map(item => item.text).join(''), 300) })
+  }
+  const guardWrites = await wakeWrites(context.home)
+  await view.close()
+  await stopDaemon(context.home, context.env)
+  const ended = steps.every(step => !step.stalled && step.stopReason === 'end_turn')
+  const parallel = steps.every(step => step.twoInOneReply)
+  record('11 Two tool calls in one reply', ended && parallel ? 'pass' : 'fail', { everyTurnEnded: ended, twoCallsInEachTurn: parallel,
+    guardWrites, steps })
+}
+
+// Item 12: a change of reply.suggestions from ghost to reply withdraws the shown prompt suggestion, and a new attach gets
+// no suggestion. Part A changes the setting through the main agent. A turn of the user withdraws the suggestion at its
+// start in each mode, so part A does not depend on the mode. Part B changes the setting file while the daemon is
+// stopped. Only the withdrawal at the start of the daemon then removes the suggestion.
+async function withdraw() {
+  const project = await makeProject(root, 'withdraw', parserFile)
+  const context = await setup('withdraw', { 'reply.suggestions': 'ghost', 'children.permissionMode': 'allowEdits' })
+  const values = mode => ({ 'keepAlive.enabled': false, 'reply.suggestions': mode, 'children.permissionMode': 'allowEdits' })
+  const attachFacts = async name => {
+    const client = await connect(context, [project], { name, sessionId: context.sessionId })
+    await delay(4000)
+    const shown = suggestions(client.updates).filter(item => item.text).map(item => item.text)
+    const stored = Boolean((await snapshot(context.home)).initiative.promptSuggestion)
+    await client.close()
+    return { shown, stored }
+  }
+  const settingOf = async () => JSON.parse(await readText(join(context.home, 'settings.json'))).values['reply.suggestions']
+
+  // Part A: the setting through the main agent.
+  let view = await connect(context, [project])
+  context.sessionId = view.sessionId
+  const first = await ghostSuggestion(context, view, project, 'pi')
+  const partA = { source: first.source, suggestion: first.ghost?.text ?? null }
+  if (first.ghost) {
+    const change = await turn(context, view, 'Set the setting reply.suggestions to reply. Answer in one short sentence.')
+    await delay(3000)
+    const later = suggestions(view.updates.slice(change.from))
+    const withdrawal = later.find(item => item.text === null)
+    Object.assign(partA, { setting: await settingOf(), withdrawal: iso(withdrawal?.at), turnSent: iso(change.sentAt), turnEnded: iso(change.endedAt),
+      shownAfterWithdrawal: later.filter(item => item.text && (!withdrawal || item.at > withdrawal.at)).map(item => item.text),
+      newAttach: await attachFacts('view A') })
+    partA.ok = partA.setting === 'reply' && Boolean(withdrawal) && !partA.shownAfterWithdrawal.length && !partA.newAttach.stored
+      && !partA.newAttach.shown.length
+  }
+  await view.close()
+
+  // Part B: the setting file, changed while the daemon is stopped, as an edit of the user between two starts.
+  await stopDaemon(context.home, context.env)
+  await writeSettings(context.home, values('ghost'))
+  view = await connect(context, [project], { name: 'view B', sessionId: context.sessionId })
+  const second = await ghostSuggestion(context, view, project, 'pi')
+  const partB = { source: second.source, suggestion: second.ghost?.text ?? null }
+  if (second.ghost) {
+    const before = view.updates.length
+    await stopDaemon(context.home, context.env)
+    await writeSettings(context.home, values('reply'))
+    partB.newAttach = await attachFacts('view B2')
+    // The first view lost its daemon. It gets the withdrawal only when it attaches to the new daemon.
+    const later = suggestions(view.updates.slice(before))
+    partB.firstView = { exitCode: view.exitCode ?? 'still running', withdrawal: later.some(item => item.text === null),
+      shownAgain: later.filter(item => item.text).map(item => item.text) }
+    partB.ok = !partB.newAttach.shown.length && !partB.newAttach.stored
+  }
+  await view.close()
+  await stopDaemon(context.home, context.env)
+  const status = !first.ghost || !second.ghost ? 'not checked' : partA.ok && partB.ok ? 'pass' : 'fail'
+  record('12 Suggestion withdrawn at a change of the mode', status, { throughMainAgent: partA, throughSettingFileAndStart: partB })
+}
+
+// Item 13: a turn of the user before a waiting result. The conversation sleeps, a child ends, and the user asks for the
+// task. A pi child does the task, because it is short and it needs no Claude account. The main agent can answer in two
+// correct ways. With agents_list, the run has separateResult true: the answer must say that the task ended and that its
+// result follows, and the result message must come after the turn. With agents_inspect, the main agent reads the
+// result: the answer gives it, and no result message repeats it. In both ways, the answer must not say that the task
+// has no result or still runs. The first question asks for the task, the second one asks for the list of the tasks.
+async function waiting() {
+  const project = await makeProject(root, 'waiting', { 'README.md': 'Heron field notes\n\nA list of birds.\n', 'NOTES.md': 'Egret survey\n\nTwo birds.\n' })
+  const context = await setup('waiting', nightSettings(0))
+  const view = await connect(context, [project])
+  const cases = [['night read', 'README.md', 'Heron field notes', 'How is the task?'], ['night notes', 'NOTES.md', 'Egret survey', 'Which tasks do I have?']]
+  for (const [title, file, line, question] of cases) {
+    const item = `13 Waiting result, "${question}"`
+    const count = runsOf(await snapshot(context.home)).length
+    const first = await turn(context, view, `Start one pi task now in the project ${project}. Title: "${title}". Task for the child: "Read ${file} and give its first line." Do not wait for the result. Answer in one sentence.`)
+    const done = await waitState(context.home, state => runsOf(state).length > count && runsOf(state).every(entry => terminalStates.has(entry.status)) ? state : undefined, 480000, `the task ${title}`)
+    const run = byTitle(done, title).at(-1)
+    if (run?.status !== 'completed') {
+      record(item, 'not checked', { reason: 'The child task did not complete.', runs: runsOf(done).map(entry => ({ agent: entry.agent, status: entry.status, error: redact(entry.error ?? '') })) })
+      continue
+    }
+    await delay(20000)
+    const asleep = await snapshot(context.home)
+    const second = await turn(context, view, question)
+    const after = await waitState(context.home, quiet(count + 1), 120000, 'the result message after the user turn').catch(() => snapshot(context.home))
+    await delay(3000)
+    const items = await turnItems(context.home, question)
+    const calls = items.flatMap(entry => toolCalls(entry).map(block => block.name))
+    const listed = items.filter(entry => entry.role === 'toolResult' && entry.toolName === 'agents_list').map(entry => {
+      try { return JSON.parse(textOf(entry)).runs?.map(entry => ({ title: entry.title, status: entry.status, separateResult: entry.separateResult ?? null })) }
+      catch { return excerpt(textOf(entry), 200) }
+    })
+    const userInput = Object.entries(after.inputs).filter(([key, input]) => !key.startsWith('children:') && input.admittedAt >= second.sentAt - 1000)[0]?.[1]
+    const settled = userInput?.settledAt ?? second.endedAt
+    const reports = Object.entries(after.inputs).filter(([key, input]) => key.startsWith('children:') && input.admittedAt >= settled - 1000).map(([, input]) => input)
+    const answer = replies(second.updates).map(entry => entry.text).join('')
+    const resultMessage = replies(view.updates.slice(second.to)).map(entry => entry.text).join('\n')
+    // The words of a real model vary. These patterns only flag the answer. The report quotes it for a reader.
+    const saysEnded = /\b(ended|finished|completed|complete|done)\b/i.test(answer)
+    const saysFollows = /\b(follow|follows|coming|comes|separate|own message|next message|shortly|soon|arrive)/i.test(answer)
+    const saysOpen = /no result|not (yet )?(reported|returned|delivered|sent)|(isn't|is not|hasn't|has not) (yet )?(done|finished|ended|completed)|still (runs|running|working|in progress)|\bis running\b/i.test(answer)
+    const way = calls.includes('agents_inspect') ? 'agents_inspect' : calls.includes('agents_list') ? 'agents_list' : 'no tool'
+    const ok = !byTitle(asleep, title).at(-1).reported && !saysOpen && (way === 'agents_list'
+      ? saysEnded && saysFollows && reports.length === 1 && resultMessage.length > 0
+      : way === 'agents_inspect' && answer.includes(line) && after.runs[run.id].reported && reports.length === 0 && !resultMessage)
+    record(item, ok ? 'pass' : 'fail', { way, childFinished: iso(run.finishedAt), firstTurnEnded: iso(first.endedAt),
+      reportedBeforeQuestion: byTitle(asleep, title).at(-1).reported, toolsOfTheTurn: calls, agentsList: listed, answer: redact(answer),
+      saysEnded, saysFollows, saysOpen, userTurnSettled: iso(userInput?.settledAt), resultMessages: reports.length,
+      resultAdmitted: iso(reports[0]?.admittedAt), resultMessage: excerpt(resultMessage, 400) })
+  }
+  await view.close()
+  await stopDaemon(context.home, context.env)
+}
+
 /** The files in [home] and the log of the client that hold a value or an address of Central. */
 async function scanLeaks(home, ...files) {
   const found = []
@@ -550,7 +732,7 @@ async function spend() {
   return { usd: Number(usd.toFixed(4)), piUsd: Number(piUsd.toFixed(4)) }
 }
 
-const scenarios = { chat, suggest, rules, permissions, tasks, steer, others, workday, restart }
+const scenarios = { chat, suggest, rules, permissions, tasks, steer, others, workday, restart, twotools, withdraw, waiting }
 try {
   for (const name of selected) {
     say(`Scenario ${name} starts at ${new Date().toISOString().slice(11, 19)}.`)

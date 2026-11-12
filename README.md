@@ -629,9 +629,11 @@ tests the last build, and that build can be older than the source. Only `npm run
 main agent through Central and real Claude, Codex and pi children, and it drives the daemon with a scripted ACP client
 that sends what Air sends. It checks the reply stream, the prompt suggestion, the project rules of a Claude child, the
 permission mode and the model of a Claude child, the rows of the background tasks with their Stop and their transcript,
-the parallel children, the steering, a Codex and a pi child, the wait of a child result outside the working hours, and
-a restart of the daemon during a child. The scenarios are `chat`, `suggest`, `rules`, `permissions`, `tasks`, `steer`,
-`others`, `workday` and `restart`. Without a name, all of them run, in about 30 minutes.
+the parallel children, the steering, a Codex and a pi child, the wait of a child result outside the working hours, a
+restart of the daemon during a child, a reply with two tool calls in three turns in a row, the withdrawal of the prompt
+suggestion at a change of the mode, and the answer of the main agent about a task whose result waits. The scenarios are
+`chat`, `suggest`, `rules`, `permissions`, `tasks`, `steer`, `others`, `workday`, `restart`, `twotools`, `withdraw` and
+`waiting`. Without a name, all of them run, in about 40 minutes.
 
 - The run uses the Central account of the machine and costs real money. One full run cost about 0.5 USD for the main
   agent and the pi children in the count of the daemon. The Claude and Codex accounts paid for about 25 small children,
