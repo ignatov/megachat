@@ -576,6 +576,67 @@ test('the secret filter finds an assignment in a JSON text with escaped quotes, 
   assert.ok(performance.now() - start < 50)
 })
 
+test('the secret filter replaces the password of a URL, Basic authentication and a passphrase in quotes, and keeps the text around them', () => {
+  const marker = message('sessions.secret')
+  const replaced = [
+    ['git clone https://alice:Tr0ub4dor3@git.example.com/team/repo.git', `git clone https://alice:${marker}@git.example.com/team/repo.git`],
+    ['redis://:s3cretpass@cache.example.com:6379/0', `redis://:${marker}@cache.example.com:6379/0`],
+    ['DATABASE_URL=postgres://app:p%40ss:word@db.example.com/app', `DATABASE_URL=postgres://app:${marker}@db.example.com/app`],
+    ['Authorization: Basic YWxpY2U6czNjcjN0', `Authorization: Basic ${marker}`],
+    ['{"cmd":"curl -H \\"authorization: basic YWxpY2U6czNjcjN0\\" https://x"}', `{"cmd":"curl -H \\"authorization: basic ${marker}\\" https://x"}`],
+    ['curl -u alice:Tr0ub4dor3 https://api.example.com', `curl -u alice:${marker} https://api.example.com`],
+    ['curl -s --user=alice:Tr0ub4dor3 https://api.example.com', `curl -s --user=alice:${marker} https://api.example.com`],
+    ['PASSPHRASE="correct horse battery staple"', `PASSPHRASE="${marker}"`],
+    ["passphrase: 'correct horse battery staple'", `passphrase: '${marker}'`],
+    ['{\\"password\\": \\"correct horse battery staple\\"}', `{\\"password\\": \\"${marker}\\"}`],
+    ['"secret": "it\'s a long phrase, with commas; and more"', `"secret": "${marker}"`],
+  ]
+  for (const [text, expected] of replaced) assert.equal(redactSecrets(text), expected, text)
+  const kept = [
+    'Write to alice@example.com about the release.',
+    'mailto:alice@example.com',
+    'git remote add origin git@github.com:owner/repo.git',
+    'ssh://git@github.com/owner/repo.git',
+    'https://alice@example.com/path',
+    'http://localhost:8080/path?q=1:2',
+    'Reset the password of the user, then sign in again.',
+    'password: see the vault',
+    'Basic usage of the tool is simple, and basic auth works.',
+    'Basic test',
+    'git push -u origin main',
+    'docker run -u 1000:1000 image',
+    '"token": "12345678 90"',
+  ]
+  for (const text of kept) assert.equal(redactSecrets(text), text)
+  // Each new pattern takes a linear time on a long line of its own start.
+  for (const line of ['a.'.repeat(2000), 'curl -u '.repeat(500), 'Basic '.repeat(700), 'password="'.repeat(400), `http://a:${'b'.repeat(4000)}`]) {
+    const start = performance.now()
+    redactSecrets(line)
+    assert.ok(performance.now() - start < 50, line.slice(0, 10))
+  }
+})
+
+test('an index file of the version before the filter of URLs, Basic authentication and passphrases is made again', async t => {
+  const directories = await fixture(t)
+  const { home, project, path } = directories
+  await claudeSession(home, project, 'one', [claudeLine('u1', 'user', 'juniper https://alice:Tr0ub4dor3@git.example.com/repo', project)])
+  const state = fakeState({ workspaces: [project] })
+  const first = await service(t, directories, state)
+  await first.index.apply(ON)
+  await first.index.idle()
+  await first.index.close()
+  // A file of the version 2 holds the text that the filter of that version kept.
+  const raw = new DatabaseSync(path)
+  raw.exec("UPDATE meta SET version = 2; UPDATE texts SET text = 'juniper https://alice:Tr0ub4dor3@git.example.com/repo'")
+  raw.close()
+  const second = await service(t, directories, state)
+  await second.index.apply(ON)
+  await second.index.idle()
+  const session = await second.index.store.session('claude', project, 'one')
+  const [entry] = (await second.index.store.entries(session.id)).entries
+  assert.equal(entry.text, `juniper https://alice:${message('sessions.secret')}@git.example.com/repo`)
+})
+
 test('a title of a session goes through the secret filter and the limit of a title', async t => {
   const directories = await fixture(t)
   const { home, project } = directories

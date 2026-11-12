@@ -2,8 +2,12 @@ import { sep } from 'node:path'
 import { corrupt, deleteSidecar, fold, FTS_TABLE, matchExpression, openSidecar } from './SqliteSidecar.mjs'
 import { indexedTitle } from './SessionText.mjs'
 
-/** A change of the tables or of the parsers needs a new version. A file of another version is made again. */
-export const VERSION = 2
+/**
+ * A change of the tables, of the parsers or of the secret filter needs a new version. A file of another version is
+ * made again, so the filter of this build reads each kept text. The version 3 has the filter of the password of a
+ * URL, of Basic authentication and of a passphrase in quotes.
+ */
+export const VERSION = 3
 /**
  * The matches that bm25 ranks together: the matches with the highest entry IDs first, then older ones window by
  * window, as in the conversation index. bm25 costs up to about 50 µs for each match of a common term, so the window is

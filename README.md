@@ -441,8 +441,11 @@ Codex sessions then reads them live, as before.
   read the archived Codex sessions.
 - **Where it is.** `sessions.sqlite` in the state directory, with the mode 0600. Nothing leaves the machine.
 - **Secrets.** Before the index keeps a text, it replaces what looks like a secret with `[secret removed]`: API keys
-  with well-known prefixes such as `sk-`, `ghp_` or `AKIA`, Bearer tokens, private keys, JWTs, and assignments such as
-  `password=...`. This is a best effort. A secret of another shape can stay in the index.
+  with well-known prefixes such as `sk-`, `ghp_` or `AKIA`, Bearer tokens, private keys, JWTs, assignments such as
+  `password=...` (a value in quotes as a whole, so a passphrase with spaces goes too), the password of a URL such as
+  `https://user:password@host`, Basic authentication, and `curl -u user:password`. The name, the user and the host
+  stay. This is a best effort. A secret of another shape can stay in the index. A new build with a change of the
+  filter makes the index again one time.
 - **The import.** The first pass runs in the background, the projects of an IDE first and the newest sessions first.
   The chat lists it as a background task with its progress. After the first pass, the main agent tells you the count of
   the sessions and of the projects, and the last unfinished sessions. Then the index catches up at the start of the
