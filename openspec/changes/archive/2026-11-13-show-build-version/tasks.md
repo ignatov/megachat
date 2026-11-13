@@ -19,14 +19,14 @@
 ## 4. install
 
 - [x] 4.1 Verify with a new case in `test/install.test.mjs`: `install` in a temporary git repository with the version `0.3.0`, the tag `v0.3.0` and two commits prints the last line "Megachat 0.3.0+2.g<7 digits> runs from <directory>.". The case "Install in a copy" keeps its text. No new string goes to `resources/Megachat.properties`: the messages `install.copy` and `install.release` keep their text and get the new value.
-- [ ] 4.2 Run `npm run test:package`, because `install` and the launcher path of the version change. Verify that the packed copy still gives the version of `package.json` in `agentInfo`.
+- [x] 4.2 Run `npm run test:package`, because `install` and the launcher path of the version change. Verify that the packed copy still gives the version of `package.json` in `agentInfo`.
 - [x] 4.3 Check the `Tests:` line of the delta of "Last lines and exit code of install". Run `npm test`.
 
 ## 5. Documents
 
 - [x] 5.1 Update `README.md`: in "Install from a checkout", the version of a checkout with an example; in "Commands", the key `version` of `status`; in "Releases", that a copy of the install line gives the release form and that the build and the tests of a release run give `<version>+g<commit>`; the row of `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs`.
 - [x] 5.2 Update the line about `agentInfo` in `docs/air-contract.md`: the version of the build, not the version of `package.json`. No ACP extension changes, so Air needs no change and no IJAI ticket.
-- [ ] 5.3 Run `npm test`, `npm run test:bundle`, `npm run test:package` and `openspec validate show-build-version --strict`.
+- [x] 5.3 Run `npm test`, `npm run test:bundle`, `npm run test:package` and `openspec validate show-build-version --strict`.
 
 ## 6. Manual checks of the author
 

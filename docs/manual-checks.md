@@ -71,3 +71,14 @@ tools.", sent `session/cancel` after 6 seconds, and then sent "Count from 1 to 5
 - After the change, the stopped turn ended with `cancelled` and 985 characters of partial text in the chat. The second
   reply was "One, two, three, four, five.", 28 characters, with `end_turn`. The conversation had the entry
   `air.megachat.stopped` with the marker after the `aborted` entry of the partial reply. The run cost 0.0051 USD.
+
+## Open checks
+
+These checks need the author by hand. Each one names its OpenSpec change.
+
+- `show-build-version` (task 6.1): start Megachat from the checkout of `main` in the IDE with the Air support. Verify
+  that the agent information of the IDE (the log or the about view of the agent, where the IDE shows it) has
+  `0.4.0+<count>.g<commit>`, and that `node src/main.mjs status` prints the same `version`.
+- `show-build-version` (task 6.2): after the first release with this change, run the install line with a temporary
+  `MEGACHAT_ACP_CONFIG` and a temporary npm cache. Verify that the last line gives the release form, such as
+  "Megachat 0.4.1", with no `+`.
