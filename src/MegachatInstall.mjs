@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { CentralConfigurationService } from './CentralConfigurationService.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { message } from './messages.mjs'
-import { npmPathEntry } from './npmEnvironment.mjs'
+import { ENTRY_GIT_VARIABLES, npmPathEntry } from './npmEnvironment.mjs'
 import { gitCheckout } from './sourceBuildId.mjs'
 
 /** A test sets this variable, so that no test can reach the `acp.json` of the user. */
@@ -16,11 +16,14 @@ export const ACP_CONFIG_VARIABLE = 'MEGACHAT_ACP_CONFIG'
 const ENTRY = 'Megachat'
 /** The package spec of the last release for npx. `#semver:x` selects the tag `v<version>` with the highest version. */
 export const RELEASE_SPEC = 'github:ignatov/megachat#semver:x'
+/** The command and the arguments of the npx entry. `install` 0.3.0 and 0.4.0 wrote an entry with only these keys. */
+const NPX_START = { command: 'npx', args: ['-y', RELEASE_SPEC, 'acp'] }
 /**
  * The entry of a copy that is not a git checkout. The IDE starts `npx` with its own Node.js, and npx starts the last
- * release. So the next start of the agent after a release starts the new release.
+ * release. So the next start of the agent after a release starts the new release. The `env` holds the time limits of
+ * git for a stalled transfer of npx (see [ENTRY_GIT_VARIABLES]).
  */
-export const RELEASE_ENTRY = { command: 'npx', args: ['-y', RELEASE_SPEC, 'acp'] }
+export const RELEASE_ENTRY = { ...NPX_START, env: { ...ENTRY_GIT_VARIABLES } }
 
 /** The ACP configuration of the JetBrains IDEs: `~/.jetbrains/acp.json`, or the file that the variable names. */
 export function acpConfigPath(environment = process.env) {
@@ -53,6 +56,14 @@ export function earlierEntry(entry) {
     && typeof entry.command === 'string' && /(^|[\\/])node(\.exe)?$/.test(entry.command)
     && Array.isArray(entry.args) && entry.args.length === 2 && entry.args[1] === 'acp' && typeof entry.args[0] === 'string'
     && /[\\/]_npx[\\/][^\\/]+[\\/]node_modules[\\/]megachat[\\/]bin[\\/]megachat\.mjs$/.test(entry.args[0])
+}
+
+/**
+ * Whether [entry] is the entry that `install` 0.3.0 and 0.4.0 wrote: [RELEASE_ENTRY] without the `env`, and with no
+ * other key. So `install` replaces it with [RELEASE_ENTRY]. An entry with an `env` of the user stays a different entry.
+ */
+export function entryWithoutTimeLimits(entry) {
+  return isDeepStrictEqual(entry, NPX_START)
 }
 
 /**
@@ -130,8 +141,9 @@ async function checks({ configuration, platform, path }) {
 /**
  * The command `install`: checks the machine and adds the entry `Megachat` to `acp.json`. In a git checkout, the entry
  * starts the checkout with the Node.js of this process. In each other copy, the entry is [RELEASE_ENTRY], and it
- * replaces an [earlierEntry]. The command prints one line for each result, then the version and the directory of this
- * copy. It returns 0 only when the entry is in place and each check passed.
+ * replaces an [earlierEntry] or an [entryWithoutTimeLimits]. The command prints one line for each result, then the lines
+ * about the IDE build, the network and npx, then the version and the directory of this copy. It returns 0 only when the
+ * entry is in place and each check passed. The lines about the IDE build and the network do not change it.
  */
 export async function install({ environment = process.env, platform = process.platform, print = line => process.stdout.write(`${line}\n`),
   root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '') } = {}) {
@@ -144,20 +156,28 @@ export async function install({ environment = process.env, platform = process.pl
   const checkout = gitCheckout(root)
   const entry = checkout ? { command: await stableNodePath({ path: environment.PATH ?? '', platform }), args: [join(root, 'bin', 'megachat.mjs'), 'acp'] }
     : RELEASE_ENTRY
-  const result = await writeEntry(path, entry, new Date(), checkout ? () => false : earlierEntry)
+  const result = await writeEntry(path, entry, new Date(), checkout ? () => false : existing => earlierEntry(existing) || entryWithoutTimeLimits(existing))
   const pasted = value => `"${ENTRY}": ${JSON.stringify(value)}`
   switch (result.status) {
     case 'created': print(message('install.created', path)); break
     case 'added': print(message('install.added', path, result.backup)); break
-    case 'replaced': print(message('install.replaced', path, result.backup)); print(pasted(result.existing)); break
+    case 'replaced':
+      print(message(earlierEntry(result.existing) ? 'install.replaced' : 'install.replacedEarlier', path, result.backup))
+      print(pasted(result.existing))
+      break
     case 'same': print(message('install.same', path)); break
     case 'different': print(message('install.different', path)); print(pasted(result.existing)); print(message('install.entry')); print(pasted(entry)); break
     default: print(message('install.unreadable', path)); print(pasted(entry))
   }
   const placed = ['created', 'added', 'replaced', 'same'].includes(result.status)
+  // Nothing in a terminal tells which IDE build starts the entry, so this line only names the need.
+  print(message('install.air'))
   if (checkout) print(message('install.copy', root, megachatVersion()))
   else {
-    if (placed) print(message('install.ide'))
+    if (placed) {
+      print(message('install.network'))
+      print(message('install.ide'))
+    }
     print(message('install.release', root, megachatVersion()))
   }
   return passed && placed ? 0 : 1

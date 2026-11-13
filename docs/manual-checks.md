@@ -95,6 +95,24 @@ state listed one known repository and held one child run of the period in it. Th
 - `tokprof flame --project <repository> --stack agent,project --value cost` for the same period gave the same cost, to
   the cent.
 
+One local probe of a stalled start (change `first-start-feedback`) ran on 2026-11-13 with git 2.50.1 (Apple Git-155)
+and npm 11.19.0. A Node.js server on `127.0.0.1` accepted each connection, read the input and never answered. No request
+left the machine.
+
+| Command | Variables | Result |
+| --- | --- | --- |
+| `git ls-remote http://127.0.0.1:<port>/megachat.git` | `GIT_HTTP_LOW_SPEED_LIMIT=1000`, `GIT_HTTP_LOW_SPEED_TIME=5` | exit code 128 after 5.3 s, "Operation too slow. Less than 1000 bytes/sec transferred the last 5 seconds" |
+| the same | none | no end in 45 s (the probe stopped it) |
+| `git ls-remote https://github.com/ignatov/megachat.git` with `https_proxy` set to the server | the two variables, time 5 | no end in 45 s |
+| the same | none | no end in 45 s |
+| `npm view semver version` with `NPM_CONFIG_HTTPS_PROXY` set to the server and a temporary cache | `NPM_CONFIG_FETCH_TIMEOUT=5000`, `NPM_CONFIG_FETCH_RETRIES=0` | no end in 45 s |
+
+- The low speed limit of git applies after the connection, when git waits for the answer to its request. It does not
+  apply while git waits for the answer of a proxy to `CONNECT`. git has no setting for the connect time of HTTPS, and
+  the time limit of npm does not apply there either.
+- With the values of the entry (time 20), the case of `test/install.test.mjs` ended after 20.1 s with the exit code 128
+  and "Operation too slow".
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.
@@ -108,3 +126,24 @@ These checks need the author by hand. Each one names its OpenSpec change.
 - `limit-report-to-known-projects` (task 5.1): start the daemon with `MEGACHAT_HOME=$(mktemp -d)`, `report.morning` on,
   one known repository with a child run of the period, and tokprof on `PATH`. Verify that the Money part of the text of
   the report names only that repository, gives no sum of four digits, and says "Other work on this machine: not shown."
+- `first-start-feedback` (task 5.3): turn off Wi-Fi and each other network, with a warm npm cache of the IDE. Open
+  Megachat in the IDE. Record the time to the end, the exit code, the error output of npx in the log of the IDE
+  (`idea.log` or the log of the ACP agent), and what the IDE shows. Repeat with an empty npm cache of the IDE. Record
+  whether the SSH fallback of npm waits, and how long.
+- `first-start-feedback` (task 5.4): with the network on, start a local server that accepts each connection and never
+  answers (the probe above), and set `HTTPS_PROXY` to it in the `env` of the entry `Megachat`, next to the two
+  variables. Open Megachat in the IDE. Verify that the IDE passes the `env` (the start goes to the proxy), and record
+  how long the start waits before the IDE or npx ends it. Remove the proxy from the entry after the check.
+- `first-start-feedback` (task 5.5): block the packets to port 443 of `github.com` with `pfctl` (a rule `block drop`),
+  and open Megachat in the IDE. Record the time to the end and the output. Remove the rule after the check.
+- `first-start-feedback` (task 5.6): open Megachat in an IDE build without the Air support. Record where the IDE shows
+  the line "This ACP client has no Air support for Megachat", and whether the IDE cancels or closes the session when a
+  window releases it.
+- `first-start-feedback` (task 5.7): run the npx entry two times in a row in a terminal, with the network on and
+  `--loglevel silly`, as after the first start. Record the reason when a start ends at once with the exit code 128.
+- `first-start-feedback` (task 5.8): file one IJAI ticket for the Air side of the proposal: a time limit for the first
+  answer of an npx agent, such as 3 minutes; the exit code and the error output of an agent that ends before its first
+  answer, in the chat or in a notification; and a sign of progress while npx installs an agent. No ACP extension
+  changes, so `docs/air-contract.md` does not change.
+- `first-start-feedback` (task 5.9): record the results of 5.3 to 5.7 here and in `README.md`, part "The start in the
+  IDE".

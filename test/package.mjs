@@ -135,6 +135,7 @@ test('the packed copy starts its daemon and both agents, and install writes the 
     .catch(error => error)
   t.diagnostic(`install exited with ${install.code ?? 0}:\n${install.stdout}`)
   assert.deepEqual(JSON.parse(await readFile(acpConfig, 'utf8')).agent_servers.Megachat, RELEASE_ENTRY)
+  assert.deepEqual(RELEASE_ENTRY.env, { GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' })
 
   await stopDaemon(state)
   for (let attempt = 0; attempt < 100 && (await processesIn(scratch)).length > 0; attempt++) await delay(100)
@@ -161,7 +162,8 @@ test('the npx entry starts the highest release tag, its daemon gets no environme
     })
     // The environment that the IDE gives an npx entry: no variable of npm, the npm variables of Air with a temporary
     // cache, a home without Central, and a user with codex and claude on the PATH. The test sends no prompt, so these
-    // commands only show what the daemon finds. git must not read the configuration of the user.
+    // commands only show what the daemon finds. git must not read the configuration of the user. The IDE adds the env
+    // of the entry, with the time limits of git.
     const user = join(scratch, 'user', 'bin')
     for (const directory of [user, join(scratch, 'home'), join(scratch, 'project')]) await mkdir(directory, { recursive: true })
     for (const command of ['codex', 'claude']) await writeFile(join(user, command), '#!/bin/sh\n', { mode: 0o755 })
@@ -171,7 +173,9 @@ test('the npx entry starts the highest release tag, its daemon gets no environme
       MEGACHAT_LEGACY_DIRS: '', MEGACHAT_ACP_CONFIG: join(scratch, 'acp.json'), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       NPM_CONFIG_CACHE: join(scratch, 'npm-cache'), NPM_CONFIG_MIN_RELEASE_AGE: '0', NPM_CONFIG_GLOBAL: 'false', NPM_CONFIG_DRY_RUN: 'false',
       NPM_CONFIG_INCLUDE: 'optional', NPM_CONFIG_ENGINE_STRICT: 'false', NPM_CONFIG_STRICT_PEER_DEPS: 'false', NODE_USE_SYSTEM_CA: '1',
+      ...RELEASE_ENTRY.env,
     })
+    assert.deepEqual(Object.keys(RELEASE_ENTRY.env), ['GIT_HTTP_LOW_SPEED_LIMIT', 'GIT_HTTP_LOW_SPEED_TIME'])
 
     // A repository with the files of this checkout, as GitHub has them, and the release tag of the version.
     const repository = join(scratch, 'repository')
@@ -202,7 +206,8 @@ test('the npx entry starts the highest release tag, its daemon gets no environme
     const daemon = async () => {
       const pid = await daemonPid(state)
       const environment = await processEnvironment(pid)
-      assert.deepEqual(environment.names.filter(name => /^npm_/.test(name) || [...IDE_NPM_VARIABLES, 'INIT_CWD', 'NODE', 'COLOR'].includes(name)), [])
+      assert.deepEqual(environment.names.filter(name => /^npm_/.test(name) || [...IDE_NPM_VARIABLES, 'INIT_CWD', 'NODE', 'COLOR',
+        ...Object.keys(RELEASE_ENTRY.env)].includes(name)), [])
       assert.ok(environment.names.includes('NODE_USE_SYSTEM_CA'))
       assert.deepEqual(environment.path.split(delimiter).filter(entry => npmPathEntry(entry)), [])
       // npx puts the node_modules/.bin directory of the copy first on its PATH, and that directory holds the codex of

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import test from 'node:test'
-import { IDE_NPM_VARIABLES, npmPathEntry, startedByNpm, withoutNpm } from '../src/npmEnvironment.mjs'
+import { ENTRY_GIT_VARIABLES, IDE_NPM_VARIABLES, npmPathEntry, startedByNpm, withoutNpm } from '../src/npmEnvironment.mjs'
 import { commandOnPath, processEnvironment } from './process-environment.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
@@ -58,6 +58,20 @@ test('without npm, the environment loses the variables and the PATH entries of n
   assert.equal(withoutNpm(direct), direct)
 })
 
+test('without npm, the environment loses the time limits of git with the values of the entry and keeps other values', () => {
+  assert.deepEqual(ENTRY_GIT_VARIABLES, { GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' })
+  const npx = { npm_execpath: '/npm', HOME: '/Users/me' }
+  assert.deepEqual(withoutNpm({ ...npx, GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' }), { HOME: '/Users/me' })
+  // The values of the user stay, also when only one variable has the value of the entry.
+  assert.deepEqual(withoutNpm({ ...npx, GIT_HTTP_LOW_SPEED_LIMIT: '50', GIT_HTTP_LOW_SPEED_TIME: '600' }),
+    { HOME: '/Users/me', GIT_HTTP_LOW_SPEED_LIMIT: '50', GIT_HTTP_LOW_SPEED_TIME: '600' })
+  assert.deepEqual(withoutNpm({ ...npx, GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '600' }),
+    { HOME: '/Users/me', GIT_HTTP_LOW_SPEED_TIME: '600' })
+  // After a direct start, each value stays.
+  const direct = { HOME: '/Users/me', GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' }
+  assert.equal(withoutNpm(direct), direct)
+})
+
 /** Starts the daemon of [state] with `start` in [env], and returns the environment that the daemon got. */
 async function daemonEnvironment(state, env) {
   await execute(process.execPath, [main, 'start', state], { env })
@@ -91,10 +105,12 @@ test('a daemon that npx started gets the environment of the IDE, and a daemon th
       ...ide, npm_execpath: join(directory, 'npm', 'bin', 'npm-cli.js'), npm_command: 'exec', npm_lifecycle_event: 'npx',
       npm_config_local_prefix: directory, npm_node_execpath: process.execPath, NODE: process.execPath, INIT_CWD: directory, COLOR: '0',
       EDITOR: 'vi', ...Object.fromEntries(IDE_NPM_VARIABLES.map(name => [name, 'false'])), NPM_CONFIG_CACHE: join(directory, 'npm-cache'),
+      GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20',
       PATH: [copy, join(directory, 'node_modules', '.bin'), gyp, ide.PATH].join(':'),
     }
     const cleaned = await daemonEnvironment(fromNpm, npx)
-    assert.deepEqual(cleaned.names.filter(name => /^npm_/.test(name) || [...IDE_NPM_VARIABLES, 'INIT_CWD', 'NODE', 'COLOR', 'EDITOR'].includes(name)), [])
+    assert.deepEqual(cleaned.names.filter(name => /^npm_/.test(name) || [...IDE_NPM_VARIABLES, 'INIT_CWD', 'NODE', 'COLOR', 'EDITOR',
+      'GIT_HTTP_LOW_SPEED_LIMIT', 'GIT_HTTP_LOW_SPEED_TIME'].includes(name)), [])
     for (const name of ['NPM_CONFIG_REGISTRY', 'NODE_USE_SYSTEM_CA']) assert.ok(cleaned.names.includes(name), name)
     assert.equal(cleaned.path, ide.PATH)
     assert.equal(await commandOnPath('codex', cleaned.path), join(user, 'codex'))
@@ -104,7 +120,8 @@ test('a daemon that npx started gets the environment of the IDE, and a daemon th
     const own = { ...npx }
     delete own.npm_execpath
     const kept = await daemonEnvironment(direct, own)
-    for (const name of ['npm_command', 'npm_config_local_prefix', 'NPM_CONFIG_CACHE', 'INIT_CWD', 'NODE', 'COLOR']) assert.ok(kept.names.includes(name), name)
+    for (const name of ['npm_command', 'npm_config_local_prefix', 'NPM_CONFIG_CACHE', 'INIT_CWD', 'NODE', 'COLOR', 'GIT_HTTP_LOW_SPEED_LIMIT',
+      'GIT_HTTP_LOW_SPEED_TIME']) assert.ok(kept.names.includes(name), name)
     assert.equal(kept.path, own.PATH)
     assert.equal(await commandOnPath('codex', kept.path), join(copy, 'codex'))
   })

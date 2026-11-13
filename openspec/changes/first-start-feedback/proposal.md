@@ -39,8 +39,8 @@ wait for the first answer, what it shows during the first start, and what it sho
   the Air side, below.
 - **No time limit stays in the daemon and the children.** When npx started Megachat, the daemon and each child get
   neither variable with the value of the entry. So a slow `git fetch` of a child task does not end after 20 seconds.
-- **The entry of install 0.3.0 gets the new entry.** In a copy without `.git`, `install` replaces the entry that
-  `install` 0.3.0 wrote (the same entry without `env`), with a copy of the file first, as it does for the entry of
+- **The entry of install 0.3.0 and 0.4.0 gets the new entry.** In a copy without `.git`, `install` replaces the entry that
+  `install` 0.3.0 and 0.4.0 wrote (the same entry without `env`), with a copy of the file first, as it does for the entry of
   0.2.0.
 - **Two new lines of `install`.**
   - In a copy without `.git`: each start in the IDE needs the network, because npx asks GitHub for the last release;
@@ -72,7 +72,7 @@ None.
 ### Modified Capabilities
 
 - `install`: the requirement "Entry of a copy without .git" gets the `env`. New requirements give the time limits of
-  the entry, the replacement of the entry of `install` 0.3.0, and the lines about the network and the IDE build.
+  the entry, the replacement of the entry of `install` 0.3.0 and 0.4.0, and the lines about the network and the IDE build.
 - `launch`: new requirements remove the variables of the entry from the daemon and its children, and give the line of
   a client without the Air support.
 

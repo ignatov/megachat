@@ -110,6 +110,11 @@ export class AcpBridge {
       .onRequest(methods.agent.initialize, async ctx => {
         const air = ctx.params.clientCapabilities?._meta?.jetbrains?.air
         const capabilities = air?.version >= 1 && Array.isArray(air.capabilities) ? air.capabilities : []
+        // The IDE keeps the error output of an agent in its log, so a bug report shows a client without the Air support.
+        if (!(air?.version >= 1) && !this.noAirReported) {
+          this.noAirReported = true
+          process.stderr.write(`${message('log.noAir')}\n`)
+        }
         this.nativeTurns = capabilities.includes('asyncTasks')
         this.serviceSessions = capabilities.includes('serviceSessions')
         this.workspaces = capabilities.includes('workspaces')

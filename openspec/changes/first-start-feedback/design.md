@@ -90,22 +90,27 @@ Alternatives:
 ### 2. The removal of the variables from the daemon and its children
 
 `withoutNpm` in `src/npmEnvironment.mjs` removes the two variables only when npm started the process and each variable
-has exactly the value of the entry. The module that holds the entry exports the values, so one place holds them. A
-value of the user stays. After a direct start, the environment stays as it is.
+has exactly the value of the entry. `ENTRY_GIT_VARIABLES` in `src/npmEnvironment.mjs` holds the values, and
+`RELEASE_ENTRY` in `src/MegachatInstall.mjs` takes its `env` from it, so one place holds them. The values are not in
+`src/MegachatInstall.mjs`, because `src/npmEnvironment.mjs` has only `node:` imports, and `src/MegachatInstall.mjs`
+imports it. A value of the user stays. After a direct start, the environment stays as it is.
 
-### 3. The replacement of the entry of install 0.3.0
+### 3. The replacement of the entry of install 0.3.0 and 0.4.0
 
-`install` 0.3.0 wrote exactly `{"command":"npx","args":["-y","github:ignatov/megachat#semver:x","acp"]}`. In a copy
+`install` 0.3.0 and 0.4.0 wrote exactly `{"command":"npx","args":["-y","github:ignatov/megachat#semver:x","acp"]}`. In a copy
 without `.git`, the function that accepts a replaceable entry accepts the entry of 0.2.0 and this entry. The write
 keeps the copy of the file, the place of the entry, the other keys and the mode, as for the entry of 0.2.0. The line is
 the new message `install.replacedEarlier`, because the message of 0.2.0 says that the earlier entry started a copy
 with Node.js. An entry with another key, such as an `env` of the user, stays a different entry: `install` changes
-nothing and exits with 1. In a git checkout, the entry of 0.3.0 stays a different entry, as today.
+nothing and exits with 1. In a git checkout, this entry stays a different entry, as today.
 
 ### 4. The lines of install
 
-- `install.network`, only in a copy without `.git`, directly before `install.ide`.
-- `install.air`, in each copy, directly before `install.ide` in a copy and before `install.copy` in a checkout.
+- `install.air`, in each copy, after the line of the entry: before `install.network` in a copy, and directly before
+  `install.copy` in a checkout.
+- `install.network`, only in a copy without `.git`, directly before `install.ide`. `install` prints it only with
+  `install.ide`, when the entry is in place: for a different entry, no start in the IDE uses the entry of the copy.
+- So the order in a copy is `install.air`, `install.network`, `install.ide`, `install.release`.
 - The order of the last lines does not change, so the requirement "Last lines and exit code of install" keeps its
   text. The change `show-build-version` modifies that requirement, so this change does not.
 
@@ -139,6 +144,6 @@ same.
 
 ## Migration Plan
 
-The next `install` of a copy replaces the entry of 0.3.0, with a copy of the file. A user who does not run `install`
+The next `install` of a copy replaces the entry of 0.3.0 and 0.4.0, with a copy of the file. A user who does not run `install`
 again keeps the entry without `env`, which works as today. A rollback is a revert of the commit: `install` of the
 earlier code then calls the entry with `env` a different entry and does not change it.

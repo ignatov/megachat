@@ -52,6 +52,39 @@ test('concurrent ACP opens start one daemon without a separate start command', {
   assert.equal((await daemon.json('/state')).current, null)
 })
 
+test('acp writes one line about a client without the Air support, and a client of Air gets no such line', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-no-air-'))
+  t.after(async () => {
+    try { await stopDaemon(directory) }
+    finally { await rm(directory, { force: true, recursive: true }) }
+  })
+  /** Sends `initialize` with each of [capabilities] in one connection, and returns the answers and the error output. */
+  const initialize = async (...capabilities) => {
+    const bridge = spawn(process.execPath, [fileURLToPath(new URL('../src/main.mjs', import.meta.url)), 'acp', directory])
+    t.after(() => bridge.kill())
+    let output = ''
+    let errors = ''
+    bridge.stdout.on('data', chunk => { output += chunk })
+    bridge.stderr.on('data', chunk => { errors += chunk })
+    const exited = once(bridge, 'exit')
+    bridge.stdin.end(capabilities.map((clientCapabilities, index) =>
+      `${JSON.stringify({ jsonrpc: '2.0', id: index + 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities } })}\n`).join(''))
+    const [code] = await exited
+    assert.equal(code, 0, errors)
+    return { answers: output.trim().split('\n').map(line => JSON.parse(line).result), lines: errors.split('\n').filter(line => line.includes('has no Air support for Megachat')) }
+  }
+  // Two requests of one connection give one line.
+  const plain = await initialize({}, {})
+  assert.equal(plain.lines.length, 1, plain.lines.join('\n'))
+  assert.equal(plain.answers.length, 2)
+  for (const answer of plain.answers) assert.equal(answer.agentInfo.title, 'Megachat')
+  const air = await initialize({ _meta: { jetbrains: { air: { version: 1, capabilities: ['asyncTasks'] } } } })
+  assert.deepEqual(air.lines, [])
+  assert.equal(air.answers[0].agentInfo.title, 'Megachat')
+  // The answer stays the same, apart from the capability of the client.
+  assert.deepEqual({ ...plain.answers[0], _meta: undefined }, { ...air.answers[0], _meta: undefined })
+})
+
 for (const [stop, code] of [['signal', 0], ['storage', 1]]) {
   test(`a daemon that gets a ${stop} stop during its start exits, and leaves no lock and no connection file`, { timeout: 20000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'megachat-stop-start-'))

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 import { once } from 'node:events'
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -8,13 +9,17 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { megachatVersion } from '../src/MegachatBuild.mjs'
-import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
+import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, entryWithoutTimeLimits, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('../bin/megachat.mjs', import.meta.url))
 /** The entry that `install` 0.2.0 wrote. */
 const earlier = { command: '/opt/homebrew/bin/node', args: ['/Users/me/.npm/_npx/ad3589aca26e8aac/node_modules/megachat/bin/megachat.mjs', 'acp'] }
 const entry = { command: '/usr/local/bin/node', args: ['/opt/megachat/bin/megachat.mjs', 'acp'] }
+/** The entry that `install` 0.3.0 and 0.4.0 wrote. */
+const withoutTimeLimits = { command: 'npx', args: ['-y', 'github:ignatov/megachat#semver:x', 'acp'] }
+const air = 'Megachat cannot check the IDE build. Megachat needs an IDE build with the Air support for Megachat'
+const network = 'Each start of Megachat in the IDE needs the network, because npx asks GitHub for the last release.'
 const mode = async path => (await stat(path)).mode & 0o777
 const temporary = async t => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-install-')))
@@ -121,6 +126,39 @@ test('the earlier entry is an entry of install 0.2.0 that starts a copy in an _n
   assert.equal(earlierEntry({ command: '/usr/bin/env', args: earlier.args }), false)
 })
 
+test('the entry without time limits is exactly the npx entry of install 0.3.0 and 0.4.0', () => {
+  assert.equal(entryWithoutTimeLimits(withoutTimeLimits), true)
+  assert.equal(entryWithoutTimeLimits(RELEASE_ENTRY), false)
+  assert.equal(entryWithoutTimeLimits({ ...withoutTimeLimits, env: { HTTPS_PROXY: 'http://proxy.example.com:3128' } }), false)
+  assert.equal(entryWithoutTimeLimits({ ...withoutTimeLimits, args: [...withoutTimeLimits.args, '/tmp/state'] }), false)
+  assert.equal(entryWithoutTimeLimits(earlier), false)
+})
+
+test('git with the env of the npx entry ends a transfer from a server that never answers', { timeout: 60000 }, async t => {
+  // The server accepts each connection, reads the request and never answers.
+  const sockets = new Set()
+  const server = createServer(socket => { sockets.add(socket); socket.on('data', () => {}); socket.on('error', () => {}) })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close() })
+  // git must not read the configuration or the proxy of the user.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(https?|all|no)_proxy$/i.test(name) && !/^GIT_/.test(name)))
+  const child = spawn('git', ['ls-remote', `http://127.0.0.1:${server.address().port}/megachat.git`], { stdio: ['ignore', 'ignore', 'pipe'],
+    env: { ...env, ...RELEASE_ENTRY.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } })
+  let stderr = ''
+  child.stderr.on('data', chunk => { stderr += chunk })
+  const started = Date.now()
+  const exited = once(child, 'exit')
+  // The test cannot hang: SIGKILL ends git after 40 seconds.
+  const timer = setTimeout(() => child.kill('SIGKILL'), 40000)
+  const [code, signal] = await exited
+  clearTimeout(timer)
+  const seconds = (Date.now() - started) / 1000
+  t.diagnostic(`git ended after ${seconds} s`)
+  assert.deepEqual([code, signal], [128, null], stderr)
+  assert.ok(seconds < 30, `${seconds} s`)
+  assert.match(stderr, /Operation too slow/)
+})
+
 test('a replaceable entry gets the new entry in its place, and the file gets a backup', async t => {
   const directory = await temporary(t)
   const path = join(directory, 'acp.json')
@@ -170,6 +208,9 @@ test('install in a git checkout writes the entry that starts the checkout once, 
     `Megachat ${megachatVersion()} runs from ${dirname(dirname(launcher))}.`]) {
     assert.ok(first.stdout.includes(line), `${line}\n${first.stdout}`)
   }
+  const lines = first.stdout.trimEnd().split('\n')
+  assert.ok(lines.at(-2).startsWith(air), first.stdout)
+  assert.ok(!first.stdout.includes(network), first.stdout)
   const expected = { agent_servers: { Megachat: { command: join(nodes, 'node'), args: [launcher, 'acp'] } } }
   const text = await readFile(path, 'utf8')
   assert.deepEqual(JSON.parse(text), expected)
@@ -266,10 +307,15 @@ test('install in a copy without .git writes the npx entry of the last release, a
 
   const first = await install()
   assert.equal(first.code, macOS ? 0 : 1, first.stdout + first.stderr)
-  assert.deepEqual(RELEASE_ENTRY, { command: 'npx', args: ['-y', 'github:ignatov/megachat#semver:x', 'acp'] })
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { agent_servers: { Megachat: RELEASE_ENTRY } })
-  for (const line of [`Megachat created ${path} with the entry Megachat.`, ide]) assert.ok(first.stdout.includes(line), `${line}\n${first.stdout}`)
-  assert.equal(first.stdout.trimEnd().split('\n').at(-1), last)
+  assert.equal(await readFile(path, 'utf8'), `${JSON.stringify({ agent_servers: { Megachat: { command: 'npx',
+    args: ['-y', 'github:ignatov/megachat#semver:x', 'acp'], env: { GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' } } } }, null, 2)}\n`)
+  assert.ok(first.stdout.includes(`Megachat created ${path} with the entry Megachat.`), first.stdout)
+  // The lines about the IDE build, the network and npx come before the last line, in this order.
+  const lines = first.stdout.trimEnd().split('\n')
+  assert.ok(lines.at(-4).startsWith(air), first.stdout)
+  assert.ok(lines.at(-3).startsWith(network), first.stdout)
+  assert.ok(lines.at(-2).startsWith(ide), first.stdout)
+  assert.equal(lines.at(-1), last)
 
   const second = await install()
   assert.ok(second.stdout.includes(`Megachat is installed already: ${path} holds the same entry Megachat.`), second.stdout)
@@ -282,6 +328,30 @@ test('install in a copy without .git writes the npx entry of the last release, a
   assert.ok(replaced.stdout.includes(`"Megachat": ${JSON.stringify(earlier)}`), replaced.stdout)
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { agent_servers: { Megachat: RELEASE_ENTRY } })
   assert.deepEqual(JSON.parse(await readFile(join(directory, backup), 'utf8')), { agent_servers: { Megachat: earlier } })
+  await rm(join(directory, backup))
+
+  // The entry of install 0.3.0 and 0.4.0 gets the time limits in its place, and the file keeps its mode.
+  const withoutLimits = JSON.stringify({ agent_servers: { First: { command: '/bin/first' }, Megachat: withoutTimeLimits, Last: { command: '/bin/last' } } })
+  await writeFile(path, withoutLimits)
+  await chmod(path, 0o640)
+  const updated = await install()
+  assert.equal(updated.code, first.code, updated.stdout + updated.stderr)
+  const updatedBackup = (await readdir(directory)).find(name => name.startsWith('acp.json.before-megachat-'))
+  assert.ok(updated.stdout.includes(`Megachat replaced the earlier entry Megachat in ${path}. That entry of Megachat 0.3.0 or 0.4.0 had no time limits of git for a stalled network. The earlier file is in ${join(directory, updatedBackup)}.`), updated.stdout)
+  assert.ok(updated.stdout.includes(`"Megachat": ${JSON.stringify(withoutTimeLimits)}`), updated.stdout)
+  assert.equal(await readFile(join(directory, updatedBackup), 'utf8'), withoutLimits)
+  const written = JSON.parse(await readFile(path, 'utf8'))
+  assert.deepEqual(Object.keys(written.agent_servers), ['First', 'Megachat', 'Last'])
+  assert.deepEqual(written.agent_servers.Megachat, RELEASE_ENTRY)
+  assert.equal(await mode(path), 0o640)
+  assert.ok(updated.stdout.includes(ide), updated.stdout)
+
+  // An env of the user makes it a different entry.
+  const proxy = JSON.stringify({ agent_servers: { Megachat: { ...withoutTimeLimits, env: { HTTPS_PROXY: 'http://proxy.example.com:3128' } } } })
+  await writeFile(path, proxy)
+  const kept = await install()
+  assert.equal(kept.code, 1, kept.stdout + kept.stderr)
+  assert.equal(await readFile(path, 'utf8'), proxy)
 
   // The entry of a checkout is a different entry: a developer uses it on purpose.
   const checkout = JSON.stringify({ agent_servers: { Megachat: { command: '/opt/homebrew/bin/node', args: ['/Users/me/src/megachat/bin/megachat.mjs', 'acp'] } } })
@@ -290,6 +360,8 @@ test('install in a copy without .git writes the npx entry of the last release, a
   assert.equal(different.code, 1)
   assert.ok(different.stdout.includes(`"Megachat": ${JSON.stringify(RELEASE_ENTRY)}`), different.stdout)
   assert.ok(!different.stdout.includes(ide), different.stdout)
+  assert.ok(!different.stdout.includes(network), different.stdout)
+  assert.ok(different.stdout.includes(air), different.stdout)
   assert.equal(different.stdout.trimEnd().split('\n').at(-1), last)
   assert.equal(await readFile(path, 'utf8'), checkout)
 })

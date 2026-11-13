@@ -21,13 +21,19 @@ The line checks what the machine needs, and prints one line for each result. The
 `agent_servers` in `~/.jetbrains/acp.json`:
 
 ```json
-"Megachat": { "command": "npx", "args": ["-y", "github:ignatov/megachat#semver:x", "acp"] }
+"Megachat": {
+  "command": "npx",
+  "args": ["-y", "github:ignatov/megachat#semver:x", "acp"],
+  "env": { "GIT_HTTP_LOW_SPEED_LIMIT": "1000", "GIT_HTTP_LOW_SPEED_TIME": "20" }
+}
 ```
 
 The IDE starts the command `npx` with its own Node.js and its own npm cache. So each start of the agent in the IDE
-starts the last release. The exit code of the line is 0 only when the entry is in place and each check passed. The
-last line gives the version and the directory of the copy that ran the install. That copy is in the npm cache of the
-terminal, and the IDE does not use it.
+starts the last release. The `env` is a time limit of git for a stalled network, as "The start in the IDE" tells. The
+exit code of the line is 0 only when the entry is in place and each check passed. Before its last line, the line says
+that it cannot check the IDE build, and that each start in the IDE needs the network. The last line gives the version
+and the directory of the copy that ran the install. That copy is in the npm cache of the terminal, and the IDE does not
+use it.
 
 The machine needs:
 
@@ -35,7 +41,9 @@ The machine needs:
   sources of the IDE has it. An IDE build without it starts Megachat as an ordinary custom ACP agent. Then Megachat
   gets no list of the open projects and cannot hide its delegated sessions from the session list. That IDE also does
   not know that the session persists, so it can cancel or close the session when a window releases it. Nobody tested
-  Megachat on such a build. When the policy of the organization does not allow custom agents, the IDE does not show
+  Megachat on such a build. The install line cannot check the IDE build. When the IDE starts Megachat without the Air
+  support, Megachat writes the line "This ACP client has no Air support for Megachat" to its error output, and the IDE
+  keeps that output in its log. When the policy of the organization does not allow custom agents, the IDE does not show
   Megachat.
 - git, and access to `github.com`. The repository is public, so the line needs no GitHub account.
 - Node.js 22.19 or later for the install line. The IDE runs Megachat with its own Node.js.
@@ -62,7 +70,17 @@ test and the release 0.2.0 on GitHub:
 Without the network, `npx` cannot ask GitHub for the tags, so Megachat does not start, also when the copy is in the
 cache. With a proxy that refused each connection, `npx` ended after 1.3 to 2.4 seconds with the exit code 128 and
 printed nothing. With a proxy that accepted each connection and never answered, `npx` did not end in 180 seconds. The
-IDE waits for the first answer of an agent without a time limit. Nobody found a reliable time limit for this case yet.
+IDE waits for the first answer of an agent without a time limit. Before the first answer, only npx and git run, so
+Megachat cannot show a message or end the start then.
+
+The `env` of the entry sets `GIT_HTTP_LOW_SPEED_LIMIT` to 1000 and `GIT_HTTP_LOW_SPEED_TIME` to 20. Then git ends an
+HTTPS transfer that stays below 1000 bytes per second for 20 seconds, and npm does not run it a second time. In a local
+probe, a server that accepted each connection and never answered made `git ls-remote` end after 5.3 seconds with the
+time 5, and the exit code 128. Without the variables, it did not end in 45 seconds. These variables do not end a proxy
+that never answers `CONNECT`, and they do not end a network that drops the packets of the connection: git and npm have
+no time limit for that wait. Only a time limit of the IDE can end such a start, so that is a request to Air.
+`docs/manual-checks.md` holds the probe. The daemon and its children do not get these two values, so a slow `git fetch`
+of a task does not end after 20 seconds. Another value of the user stays.
 
 **Disk use.** The IDE keeps its copy in its own npm cache, in the Node.js directory of the IDE, such as
 `~/Library/Caches/JetBrains/<product>/acp-agents/.runtimes/node/<version>/npm-cache`. The install line keeps another
@@ -70,9 +88,11 @@ copy in the npm cache of the terminal, `~/.npm`. So the two copies take about 2.
 
 The installed copy does not use `package-lock.json`. So its indirect dependencies can differ from the tested ones.
 
-When `acp.json` has an entry `Megachat` that the install line of Megachat 0.2.0 wrote, the line replaces it with the
-new entry. That earlier entry starts a copy in an `_npx` directory directly with Node.js. The line copies the file to
-`acp.json.before-megachat-<UTC time>` first, and prints the earlier entry. When `acp.json` has another entry
+When `acp.json` has an entry `Megachat` that the install line of Megachat 0.2.0, 0.3.0 or 0.4.0 wrote, the line
+replaces it with the new entry. The entry of 0.2.0 starts a copy in an `_npx` directory directly with Node.js. The
+entry of 0.3.0 and 0.4.0 is the npx entry without the `env`. The line copies the file to
+`acp.json.before-megachat-<UTC time>` first, and prints the earlier entry. An npx entry with an `env` of the user is
+another entry. When `acp.json` has another entry
 `Megachat`, the line does not change the file. It prints both entries and what to do. Two copies of Megachat on one
 machine replace the daemon of each other.
 

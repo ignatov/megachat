@@ -16,6 +16,13 @@ import { basename, delimiter, dirname, isAbsolute } from 'node:path'
 export const IDE_NPM_VARIABLES = ['NPM_CONFIG_CACHE', 'NPM_CONFIG_MIN_RELEASE_AGE', 'NPM_CONFIG_GLOBAL', 'NPM_CONFIG_DRY_RUN',
   'NPM_CONFIG_INCLUDE', 'NPM_CONFIG_ENGINE_STRICT', 'NPM_CONFIG_STRICT_PEER_DEPS']
 
+/**
+ * The `env` of the npx entry in `acp.json`. git ends an HTTPS transfer that stays below 1000 bytes per second for 20
+ * seconds, so a stalled `git ls-remote` of npx ends. The entry of `install` uses these values. The daemon and its
+ * children do not get them, so a slow `git fetch` of a child does not end after 20 seconds. `acp.json` holds strings.
+ */
+export const ENTRY_GIT_VARIABLES = Object.freeze({ GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' })
+
 /** Whether npm or npx started the process of [environment]. npm sets `npm_execpath` in each process that it starts. */
 export function startedByNpm(environment) {
   return typeof environment.npm_execpath === 'string' && environment.npm_execpath !== ''
@@ -51,7 +58,8 @@ function withoutNpmPath(path, pathDelimiter) {
  *
  * npm adds the variables `npm_*`, `INIT_CWD`, `COLOR`, `NODE` and `EDITOR`, and the entries at the start of `PATH`.
  * The result has none of them, and none of [IDE_NPM_VARIABLES]. Another `NPM_CONFIG_*` variable comes from the user,
- * and it stays. npm sets `EDITOR` to `EDITOR`, `VISUAL` or `vi`, so an `EDITOR` with the value of `VISUAL` or with the
+ * and it stays. A variable of [ENTRY_GIT_VARIABLES] with the value of the entry goes, and another value of the user
+ * stays. npm sets `EDITOR` to `EDITOR`, `VISUAL` or `vi`, so an `EDITOR` with the value of `VISUAL` or with the
  * default of npm goes. A program that reads `EDITOR` uses the same editor without it. npm removes duplicates from the
  * `PATH` that it gets, so a duplicate of the IDE does not come back.
  */
@@ -63,6 +71,7 @@ export function withoutNpm(environment, { pathDelimiter = delimiter, platform = 
     if (name.startsWith('npm_') || IDE_NPM_VARIABLES.includes(name) || name === 'INIT_CWD' || name === 'COLOR') continue
     if (name === 'NODE' && value === environment.npm_node_execpath) continue
     if (name === 'EDITOR' && value === npmEditor) continue
+    if (Object.hasOwn(ENTRY_GIT_VARIABLES, name) && value === ENTRY_GIT_VARIABLES[name]) continue
     result[name] = /^path$/i.test(name) ? withoutNpmPath(value, pathDelimiter) : value
   }
   return result
