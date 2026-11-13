@@ -78,7 +78,8 @@ test('the variable replaces the limit of 100,000 tokens, and the limit sets the 
 })
 
 test('a context above the limit gets a summary, a context below the limit does not, and the history keeps each message', { timeout: 30000 }, async t => {
-  const { service, summaryRequests, say, summarized } = await fixture(t, { compactTokens: 30000 })
+  // The limit keeps a margin above the two small messages and the rules of the onboarding, which grow with each setting.
+  const { service, summaryRequests, say, summarized } = await fixture(t, { compactTokens: 32000 })
   await say('small-1', `Quillfeather ${large('alpha')}`)
   await say('small-2', large('beta'))
   assert.equal(summaryRequests.length, 0)

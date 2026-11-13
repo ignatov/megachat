@@ -458,3 +458,14 @@ test('the rules of the main agent say that tasks in different directories run at
   assert.match(rules, /Tasks in different directories run at the same time, at most children\.parallel of them\./)
   assert.match(rules, /Tasks in one directory or in a directory inside it run one after the other/)
 })
+
+test('each run takes the time limit of children.timeoutMinutes of its directory at its start, and 0 gives no limit', { timeout: 30000 }, async t => {
+  const { cwd, service, children } = await open(t)
+  children.settings = directory => ({ 'children.timeoutMinutes': directory === cwd.a ? 0.005 : 0 })
+  const [limited] = await admit(service, { cwd: cwd.a, prompt: 'wait' })
+  const [free] = await admit(service, { cwd: cwd.b, prompt: 'wait' })
+  const state = await until(service, value => terminalStates.has(value.runs[limited.id].status))
+  assert.deepEqual([state.runs[limited.id].status, state.runs[limited.id].error], ['interrupted', message('error.limit', minutesOf(300))])
+  await new Promise(resolve => setTimeout(resolve, 600))
+  assert.ok(!terminalStates.has((await service.state.snapshot()).runs[free.id].status))
+})

@@ -4,6 +4,7 @@ import { ConversationBusy, ConversationIdle } from '@earendil-works/pi-durable'
 import { steerBlock } from './AcpRunService.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { maxAutomaticResumes, MegachatDoc, terminalStates } from './MegachatState.mjs'
+import { childDeadlineMs } from './Settings.mjs'
 import { logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
 import { PiChildDoc } from './PiChild.mjs'
 
@@ -44,14 +45,18 @@ function transcribe(transcript, entry) {
  * in the same storage, so a message arrives one time, also after a restart.
  */
 export class PiRunService {
-  constructor(state, harness, { agent, pool = new ChildPool(), deadlineMs = 1800000, transcripts } = {}) {
+  constructor(state, harness, { agent, pool = new ChildPool(), deadlineMs, settings = () => ({}), transcripts } = {}) {
     this.state = state
     // The transcripts of the runs (`ChildTranscripts`). A test without it writes none.
     this.transcripts = transcripts
     this.harness = harness
     this.agent = agent
     this.pool = pool
+    // The time limit of a run in milliseconds. Without it, `children.timeoutMinutes` of the directory of the run at its
+    // start gives it. A test gives it.
     this.deadlineMs = deadlineMs
+    // The effective settings for a directory, with the project values of that directory.
+    this.settings = settings
     this.active = new Map()
     this.stopping = false
     this.closing = false
@@ -131,6 +136,10 @@ export class PiRunService {
     let timer
     let limited = false
     let dispatched = run.status === 'dispatched'
+    // A run keeps the limit of its start, also through a restart. A run of an older daemon has only `deadlineAt`, of
+    // the limit of 30 minutes. 0 gives no limit.
+    const deadlineMs = run.deadlineMs ?? (run.deadlineAt !== undefined && run.deadlineAt !== null ? 1800000
+      : this.deadlineMs ?? childDeadlineMs(this.settings(run.cwd)))
     try {
       let submissionId = run.submissionId
       let baseline = run.entryBaseline ?? 0
@@ -144,23 +153,23 @@ export class PiRunService {
         requireCondition(conversation, 'missing')
       }
       else {
-        const deadlineAt = Date.now() + this.deadlineMs
-        if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, deadlineAt, startedAt: Date.now() })) return
+        const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : null
+        if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, deadlineAt, deadlineMs, startedAt: Date.now() })) return
         work.transcript = this.transcripts?.begin(run)
-        run = { ...run, deadlineAt }
+        run = { ...run, deadlineAt, deadlineMs }
         // A step before the dispatch can wait on the file system. A cancel, the deadline and a daemon stop end the wait,
         // and the run ends as for an error. The dispatch is one commit, so it gets no such end.
         const launch = new AbortController()
         const stopped = new Promise((_, reject) => launch.signal.addEventListener('abort',
-          () => reject(limited ? new MegachatError('limit', minutesOf(this.deadlineMs)) : new Error('stopped')), { once: true }))
+          () => reject(limited ? new MegachatError('limit', minutesOf(deadlineMs)) : new Error('stopped')), { once: true }))
         stopped.catch(() => {})
         const step = promise => Promise.race([promise, stopped])
         work.lifetime.signal.addEventListener('abort', () => launch.abort(), { once: true })
         work.cancel = () => launch.abort()
-        timer = setTimeout(() => {
+        if (deadlineMs > 0) timer = setTimeout(() => {
           limited = true
           launch.abort()
-        }, this.deadlineMs)
+        }, deadlineMs)
         const agent = await step(this.agent(run.cwd))
         if (run.providerSessionId) {
           conversation = await step(this.harness.conversation(Number(run.providerSessionId), context))
@@ -190,10 +199,10 @@ export class PiRunService {
       if ((await this.state.snapshot()).runs[run.id].cancelRequested) work.cancel()
       work.deliver = () => this.deliverSteers(run.id, generation, work, conversation)
       work.deliver()
-      timer = setTimeout(() => {
+      if (deadlineMs > 0) timer = setTimeout(() => {
         limited = true
         conversation.abort(context).catch(() => {})
-      }, Math.max(0, (run.deadlineAt ?? Date.now() + this.deadlineMs) - Date.now()))
+      }, Math.max(0, (run.deadlineAt ?? Date.now() + deadlineMs) - Date.now()))
       const settled = await this.follow(run, work, generation, conversation, submissionId, baseline)
       const current = (await this.state.snapshot()).runs[run.id]
       const reason = settled.status === 'done' ? 'end_turn' : String(settled.reason ?? 'unknown').slice(0, 64)
@@ -202,7 +211,7 @@ export class PiRunService {
       const status = current.cancelRequested ? 'cancelled' : settled.status === 'done' ? 'completed'
         : restarted || limited || repeatableReasons.has(reason) ? 'interrupted' : 'failed'
       const error = status === 'failed' ? message('error.pi.stopped', reason)
-        : status === 'interrupted' && !restarted ? (limited ? message('error.limit', minutesOf(this.deadlineMs)) : message('error.interrupted')) : undefined
+        : status === 'interrupted' && !restarted ? (limited ? message('error.limit', minutesOf(deadlineMs)) : message('error.interrupted')) : undefined
       // A continuation carries a withdrawn message. Without one, the report tells the main agent to send it again.
       const continued = restarted || status === 'interrupted' && !limited && (current.resumeAttempt ?? 0) < maxAutomaticResumes
       const unhandled = error !== undefined && !continued && work.withdrawn > 0

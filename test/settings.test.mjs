@@ -118,6 +118,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
+    'children.timeoutMinutes': 240,
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'memory.reflection': true, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
@@ -177,6 +178,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
+    'children.timeoutMinutes': [[0, 0], [' 120 ', 120], ['1440', 1440]],
     'projects.newRoot': [['~', '~'], [' ~/work/ ', '~/work'], ['/srv/projects', '/srv/projects']],
     'budget.dailyUsd': [[0, 0], ['2.5', 2.5], [100000, 100000]],
     'memory.characters': [[1000, 1000], [' 4000 ', 4000], ['20000', 20000]],
@@ -219,6 +221,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
+    'children.timeoutMinutes': [-1, 1441, '1.5', 'long', '', true],
     'projects.newRoot': ['src', '', '~user/src', 5],
     'budget.dailyUsd': [-1, 'much', 100001, true],
     // The default memory of 4,000 characters holds about 40 entries. Less than 1,000 holds too few.
@@ -585,7 +588,7 @@ test('the setup rules name each setting of this build and no other setting', asy
 test('each setting of the children, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
   const values = { 'children.agent': 'codex', 'children.parallel': 1, 'children.piModel': DEEP, 'children.permissionMode': 'allowEdits', 'children.commit': 'deny', 'children.push': 'allow', 'children.daemonRestart': 'deny',
-    'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
+    'children.timeoutMinutes': 0, 'projects.newRoot': '~/work', 'budget.dailyUsd': 3 }
   const first = await open(t, directory)
   for (const [key, value] of Object.entries(values)) await first.tool({ action: 'set', key, value })
   await first.close()

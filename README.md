@@ -282,6 +282,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
+| `children.timeoutMinutes` | `240` | | The time limit of a child run in minutes, from `0` to `1440`. `0` gives no limit. A run keeps the limit of its start. The wait for a permission request does not count. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `memory.characters` | `4000` | | The cap of the size of `memory.md` in characters, from `1000` to `20000`. Above it, the main agent cannot add an entry. |
@@ -297,8 +298,8 @@ says that you approved it. Else it says in its result that the step is necessary
 next child, also in the turn that made it.
 
 A setting of one child run can have a value for one project: `children.agent`, `children.piModel`,
-`children.claudeModel`, `children.codexModel`, `children.permissionMode`, `children.commit`, `children.push` and
-`children.daemonRestart`. Say for example "in this project, children do not push". The main agent then stores the value for the directory of the
+`children.claudeModel`, `children.codexModel`, `children.permissionMode`, `children.commit`, `children.push`,
+`children.daemonRestart` and `children.timeoutMinutes`. Say for example "in this project, children do not push". The main agent then stores the value for the directory of the
 project, and the global value stays. A child gets the value of the nearest project directory that is its directory or
 holds it, else the global value. A symbolic link to a project is that project. The daemon reads the value at each
 dispatch, also for a follow-up and for a continuation. Ask the agent for the settings to see the project values, or to
@@ -549,7 +550,7 @@ Use pi only to read and to summarize. Give each task that changes code, runs a c
 Code to Claude or Codex. The main agent uses pi only when you name it, and `children.agent` cannot select it.
 
 A pi child is a task as the others are: the chat lists it as a background task of the agent Pi, it waits its turn, it
-stops at the deadline of 30 minutes and after 20 tool rounds, and you can cancel it. A follow-up goes to the same
+stops at the time limit of `children.timeoutMinutes` and after 20 tool rounds, and you can cancel it. A follow-up goes to the same
 conversation. A message that you add with `agents_steer` reaches the child after its current tool round. A daemon
 restart continues the run. Its cost is in the daily spend. Megachat cannot delete the
 conversation of a pi child, so `conversation.sqlite` keeps it after the run leaves the state.

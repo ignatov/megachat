@@ -151,7 +151,7 @@ Tests: `test/pi-child.test.mjs`
 - **THEN** the state refuses the run with the code `invalid`
 
 ### Requirement: Cancel and deadline of a pi run
-`agents_cancel` and the deadline of 30 minutes MUST abort the conversation of the child. The main conversation MUST continue. A run at the deadline MUST become interrupted with no continuation. Before the dispatch, in `launching` and `ready`, `agents_cancel`, the deadline and a daemon stop MUST also end a run whose step waits, so the run cannot hold the place of a child.
+`agents_cancel` and the deadline of `children.timeoutMinutes` (see the capability `child-settings`) MUST abort the conversation of the child. The main conversation MUST continue. A run at the deadline MUST become interrupted with no continuation. Before the dispatch, in `launching` and `ready`, `agents_cancel`, the deadline and a daemon stop MUST also end a run whose step waits, so the run cannot hold the place of a child.
 
 Tests: `test/pi-child.test.mjs`
 

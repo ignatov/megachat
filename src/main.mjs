@@ -109,7 +109,8 @@ async function daemon() {
     transcripts = new ChildTranscripts(join(directory, 'transcripts'), { secrets: configuration.secrets })
     await transcripts.start(service.state)
     proceed()
-    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd), pool, transcripts })
+    piChildren = new PiRunService(service.state, service.harness, { agent: cwd => service.childAgent(cwd),
+      settings: cwd => service.settings.values(cwd), pool, transcripts })
     await piChildren.start()
     proceed()
     children = new AcpRunService(service.state, configuration, { historyServer: server.historyConfiguration(),

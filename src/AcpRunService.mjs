@@ -15,7 +15,7 @@ import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
 import { answerText, ERROR_OUTPUT_KEPT, ERROR_OUTPUT_LOGGED, errorOutputText, plainText, REASON_PART_LIMIT, reasonLine,
   redactSecrets, textEnd, textStart } from './SessionText.mjs'
-import { CLAUDE_PERMISSION_MODES, modelRef } from './Settings.mjs'
+import { childDeadlineMs, CLAUDE_PERMISSION_MODES, modelRef } from './Settings.mjs'
 
 /**
  * Refuses a Claude child in [cwd] when its project settings set `ANTHROPIC_BASE_URL` in `env`. Claude Code applies the
@@ -142,7 +142,7 @@ export function steerBlock(items) {
  */
 export class AcpRunService {
   constructor(state, configuration, {
-    command, args, deadlineMs = 1800000, historyServer, childRules, steerTimeoutMs = 20000, pool = new ChildPool(),
+    command, args, deadlineMs, historyServer, childRules, steerTimeoutMs = 20000, pool = new ChildPool(),
     settings = () => ({}), resolveSettings = resolveClaudeSettings, transcripts, errorOutputWaitMs = 2000,
   } = {}) {
     this.state = state
@@ -238,7 +238,10 @@ export class AcpRunService {
     let limited = null
     let waitingPermissions = 0
     const limit = text => { limited ??= text; stop() }
-    const timeLimit = () => limit(message('error.limit', minutesOf(this.launch.deadlineMs)))
+    // The time limit of the run: the value of `children.timeoutMinutes` at its start, 0 for no limit. A test gives it.
+    let deadlineMs = 0
+    const timeLimit = () => limit(message('error.limit', minutesOf(deadlineMs)))
+    const armDeadline = () => { if (deadlineMs > 0) timer = setTimeout(timeLimit, deadlineMs) }
     try {
       // The time of the start shows which children ran at the same time.
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, startedAt: Date.now() })) return
@@ -247,6 +250,7 @@ export class AcpRunService {
       if (agent === 'claude') await refuseProjectBaseUrl(run.cwd, this.resolveSettings)
       // The settings of the dispatch in the directory of the run. A change during the run applies to the next child.
       const values = this.settings(run.cwd)
+      deadlineMs = this.launch.deadlineMs ?? childDeadlineMs(values)
       const choice = values['children.permissionMode'] ?? 'inherit'
       const mode = agent === 'claude' ? CLAUDE_PERMISSION_MODES[choice] : undefined
       // The model setting of the agent. `inherit` gives no model, so the configuration of the agent decides.
@@ -291,7 +295,7 @@ export class AcpRunService {
       })
       child.stderr.once('end', () => keepErrorOutput(errorOutput, decoder.end()))
       await this.state.transition(run.id, ['launching'], { pid: child.pid })
-      timer = setTimeout(timeLimit, this.launch.deadlineMs)
+      armDeadline()
       connection = client({ name: 'air-megachat' })
         .onNotification(methods.client.session.update, ({ params }) => {
           if (!dispatched && params.update.sessionUpdate !== 'config_option_update') return
@@ -317,7 +321,7 @@ export class AcpRunService {
           finally {
             // An agent can ask for more than one permission at a time. The deadline starts again only when no
             // request waits, and only while the run is alive: after its end, nothing clears a new timer.
-            if (--waitingPermissions === 0 && !work.lifetime.signal.aborted) timer = setTimeout(timeLimit, this.launch.deadlineMs)
+            if (--waitingPermissions === 0 && !work.lifetime.signal.aborted) armDeadline()
           }
         })
         .connect(countWork(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), work))

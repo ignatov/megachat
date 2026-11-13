@@ -15,7 +15,7 @@ Tests: `test/compaction.test.mjs`
 - **THEN** the limit is 50,000 tokens, and a value of `many` or `0` gives the limit of 100,000 tokens
 
 #### Scenario: A context below and above the limit
-- **WHEN** the limit is 30,000 tokens, and the user sends two messages of about 10,000 tokens and then three more
+- **WHEN** the limit is 32,000 tokens, and the user sends two messages of about 10,000 tokens and then three more
 - **THEN** the context of the first two messages gets no summary, and the larger context gets a summary in its model context
 
 ### Requirement: Summary content

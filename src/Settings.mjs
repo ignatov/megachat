@@ -40,6 +40,17 @@ export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
 export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
 /** The default agents of a new child task. A pi child cannot change code, so it is no default: the user names it. */
 export const CHILD_AGENTS = ['claude', 'codex']
+/** The time limit of a child run in minutes by default, the value of `children.timeoutMinutes`. */
+export const DEFAULT_CHILD_TIMEOUT_MINUTES = 240
+
+/**
+ * The time limit in milliseconds of a child run from the settings [values] of its directory. 0 gives no limit.
+ */
+export function childDeadlineMs(values) {
+  const minutes = values['children.timeoutMinutes'] ?? DEFAULT_CHILD_TIMEOUT_MINUTES
+  return minutes * 60000
+}
+
 /** The count of the child runs that run at the same time by default, and the highest count of `children.parallel`. */
 export const DEFAULT_PARALLEL_CHILDREN = 3
 export const MAX_PARALLEL_CHILDREN = 8
@@ -231,6 +242,13 @@ export const SETTINGS = [
   { key: 'children.push', default: 'ask', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
   { key: 'children.daemonRestart', default: 'ask', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS),
     allowed: () => ({ values: CHILD_PERMISSIONS }) },
+  // The time limit of a child run in minutes. 0 gives no limit. A run keeps the value of its start.
+  { key: 'children.timeoutMinutes', default: DEFAULT_CHILD_TIMEOUT_MINUTES, applies: 'nextChild', project: true,
+    validate: value => {
+      const text = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : ''
+      return /^\d{1,4}$/.test(text) && Number(text) <= 1440 ? Number(text) : undefined
+    },
+    allowed: () => ({ minimum: 0, maximum: 1440 }) },
   { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
     // The value must be a path that each create can use: an absolute path after the expansion of `~`, as the create
     // expands it on this platform.

@@ -88,14 +88,14 @@ async function temporary(t) {
  * A service with a pi run service and, with [acp], an ACP run service with the fake agent. Both share one pool. The
  * main agent uses the free model, and [values] go to `settings.json`.
  */
-async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, acp = false, startPi = true, resumeDelayMs, launch, memoryPath } = {}) {
+async function open(t, { directory, cwd }, { values = {}, storage = new MemoryStorage(), main = [], child = [], deadlineMs, settings, acp = false, startPi = true, resumeDelayMs, launch, memoryPath } = {}) {
   await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values: { 'coordinator.model': MAIN, ...values } }), { mode: 0o600 })
   const { models, requests } = fakeModels(main, child)
   const service = await PiMegachatService.open(storage, models, undefined, {}, { settingsPath: join(directory, 'settings.json'),
     spendPath: join(directory, 'spend.json'), keepAlive: { enabled: false }, environment: {}, resumeDelayMs, memoryPath })
   await service.state.addWorkspace(cwd)
   const pool = new ChildPool()
-  const pi = new PiRunService(service.state, service.harness, { agent: launch ?? (directory => service.childAgent(directory)), pool, deadlineMs })
+  const pi = new PiRunService(service.state, service.harness, { agent: launch ?? (directory => service.childAgent(directory)), pool, deadlineMs, settings })
   if (startPi) await pi.start()
   const launched = []
   const children = acp ? new AcpRunService(service.state, { childLaunch: async agent => { launched.push(agent); return { env: process.env } } },
@@ -276,6 +276,17 @@ test('the deadline stops a pi child without a continuation, and the main convers
   main.push(fauxAssistantMessage('Still here.'))
   state = await turn('hello', 'Hello')
   assert.equal(state.inputs.hello.status, 'completed')
+})
+
+test('a pi child takes the time limit of children.timeoutMinutes at its start, and keeps it in the run', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { turn } = await open(t, project, { settings: () => ({ 'children.timeoutMinutes': 0.005 }),
+    main: [call('agents_spawn', { cwd, prompt: 'Wait.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('It ran out of time.')],
+    child: [hang],
+  })
+  const [run] = Object.values((await turn('spawn')).runs)
+  assert.deepEqual([run.status, run.error, run.deadlineMs], ['interrupted', message('error.limit', minutesOf(300)), 300])
 })
 
 test('a pi child ends after 20 tool rounds as failed with the reason code', { timeout: 30000 }, async t => {

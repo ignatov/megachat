@@ -25,7 +25,7 @@ export function requireCondition(condition, code = 'invalid', ...args) {
 
 /** The duration [ms] in minutes for a text, with at most two significant digits. */
 export function minutesOf(ms) {
-  return String(Number((ms / 60000).toPrecision(2)))
+  return ms % 60000 === 0 ? String(ms / 60000) : String(Number((ms / 60000).toPrecision(2)))
 }
 
 /**
