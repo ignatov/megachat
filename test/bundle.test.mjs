@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
@@ -55,4 +55,20 @@ test('the bundle answers ACP initialize and its daemon reports the build', { ski
   const descriptor = JSON.parse(await readFile(join(directory, 'state', 'daemon', 'connection.json'), 'utf8'))
   const build = (await readFile(new URL('../out/bundle/build-id.txt', import.meta.url), 'utf8')).trim()
   assert.ok(descriptor.build.startsWith(`${build}+`), descriptor.build)
+})
+
+test('the bundle holds no agent and no platform binary of an agent', { skip: !existsSync(bundle) && 'run npm run build' }, async () => {
+  const output = fileURLToPath(new URL('../out/bundle/', import.meta.url))
+  const entries = await readdir(output, { withFileTypes: true, recursive: true })
+  const files = entries.filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name))
+  for (const file of files) {
+    assert.doesNotMatch(relative(output, file), /@openai[\\/]codex|claude-agent-sdk-|claude-agent-acp|codex-acp/, file)
+  }
+  // esbuild puts a bundled package into dist, so the text of dist must not hold the code of an agent either.
+  for (const file of files.filter(item => item.endsWith('.mjs') || item.endsWith('.js'))) {
+    const text = await readFile(file, 'utf8')
+    for (const code of ['useBundledClaudeCli', 'PLATFORM_PACKAGE_BY_TARGET', 'codex-acp login --client-name']) {
+      assert.ok(!text.includes(code), `${relative(output, file)} holds ${code}`)
+    }
+  }
 })

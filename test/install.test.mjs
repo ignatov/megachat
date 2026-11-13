@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { megachatVersion } from '../src/MegachatBuild.mjs'
-import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, entryWithoutTimeLimits, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
+import { CentralConfigurationService } from '../src/CentralConfigurationService.mjs'
+import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, entryWithoutTimeLimits, install, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('../bin/megachat.mjs', import.meta.url))
@@ -203,8 +204,9 @@ test('install in a git checkout writes the entry that starts the checkout once, 
   assert.equal(first.code, macOS ? 0 : 1, first.stdout + first.stderr)
   assert.doesNotMatch(first.stdout, /test-key/)
   for (const line of [macOS ? 'The platform is macOS.' : `Nobody tested Megachat on ${process.platform}.`,
-    'Central gives a valid configuration.', `Claude Code is at ${join(home, '.local', 'bin', 'claude')}, and it uses Central.`,
-    `Codex is at ${join(tools, 'codex')}.`, `Megachat created ${path} with the entry Megachat.`,
+    'Central gives a valid configuration.', `A Claude child uses Claude Code at ${join(home, '.local', 'bin', 'claude')}.`,
+    `A Claude child gets its key from the Central entry in ${join(home, '.claude', 'settings.json')}.`,
+    `A Codex child uses Codex at ${join(tools, 'codex')}.`, `Megachat created ${path} with the entry Megachat.`,
     `Megachat ${megachatVersion()} runs from ${dirname(dirname(launcher))}.`]) {
     assert.ok(first.stdout.includes(line), `${line}\n${first.stdout}`)
   }
@@ -222,7 +224,7 @@ test('install in a git checkout writes the entry that starts the checkout once, 
   assert.equal(await readFile(path, 'utf8'), text)
 })
 
-test('install names each missing tool, writes the entry and exits with 1', { timeout: 60000 }, async t => {
+test('install names each missing tool, uses the binaries of npm, writes the entry and exits with 1 without Central', { timeout: 60000 }, async t => {
   const directory = await temporary(t)
   const home = join(directory, 'home')
   await mkdir(home)
@@ -234,10 +236,60 @@ test('install names each missing tool, writes the entry and exits with 1', { tim
   const result = await run(['install', join(directory, 'state')], { HOME: home, PATH: [npx, '/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: path })
   assert.equal(result.code, 1, result.stdout + result.stderr)
   for (const line of [`Central is not at ${join(home, '.local', 'bin', 'central')}.`,
-    `Claude Code is not at ${join(home, '.local', 'bin', 'claude')}.`, 'The command codex is not on the PATH.']) {
+    `Claude Code is not at ${join(home, '.local', 'bin', 'claude')}. A Claude child uses the Claude Code that npm installed with Megachat.`,
+    'A Claude child gets no key from Central. Run "central login"',
+    'The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat.']) {
     assert.ok(result.stdout.includes(line), `${line}\n${result.stdout}`)
   }
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).agent_servers.Megachat.args, [launcher, 'acp'])
+})
+
+test('install with only Central and the binaries of npm exits with 0, with the pi route for Claude', { timeout: 60000 }, async t => {
+  const directory = await temporary(t)
+  const { home, nodes } = await fakeMachine(directory)
+  // No Claude Code, no settings of Claude Code and no codex on the PATH: only Central of the user.
+  await rm(join(home, '.local', 'bin', 'claude'))
+  await rm(join(home, '.claude', 'settings.json'))
+  const path = join(directory, 'acp.json')
+  const result = await run(['install', join(directory, 'state')], { HOME: home, PATH: [nodes, '/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: path })
+  assert.equal(result.code, process.platform === 'darwin' ? 0 : 1, result.stdout + result.stderr)
+  for (const line of ['Central gives a valid configuration.',
+    `Claude Code is not at ${join(home, '.local', 'bin', 'claude')}. A Claude child uses the Claude Code that npm installed with Megachat.`,
+    `A Claude child gets its key from the pi route of Central, because ${join(home, '.claude', 'settings.json')} has no valid Central entry.`,
+    'Run "central add claude-code"',
+    'The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat.']) {
+    assert.ok(result.stdout.includes(line), `${line}\n${result.stdout}`)
+  }
+})
+
+/** Runs install in this process with the Central of [fakeMachine] and the platform binaries [binaries]. */
+async function installWith(t, directory, { binaries, claude = true, settings = true }) {
+  const { home } = await fakeMachine(directory)
+  if (!claude) await rm(join(home, '.local', 'bin', 'claude'))
+  if (!settings) await rm(join(home, '.claude', 'settings.json'))
+  const environment = { HOME: home, PATH: ['/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: join(directory, 'acp.json') }
+  // The test names each path, so install does not read the home of the user.
+  const configuration = new CentralConfigurationService({ central: join(home, '.local', 'bin', 'central'), claude: join(home, '.local', 'bin', 'claude'),
+    settings: join(home, '.claude', 'settings.json'), environment })
+  t.mock.method(process.stderr, 'write', () => true)
+  const lines = []
+  const code = await install({ environment, platform: 'darwin', print: line => lines.push(line), configuration, binaries })
+  return { code, text: lines.join('\n') }
+}
+
+test('install says when no binary of an agent is available, and exits with 1 when no child agent is ready', { timeout: 60000 }, async t => {
+  const none = await installWith(t, await temporary(t), { binaries: {}, claude: false })
+  assert.ok(none.text.includes('No Claude Code is available for a Claude child.'), none.text)
+  assert.ok(none.text.includes('No Codex is available for a Codex child.'), none.text)
+  assert.equal(none.code, 1, none.text)
+  // Without the Central entry of Claude Code, the pi route of Central gives the key, so Claude is ready.
+  const pi = await installWith(t, await temporary(t), { binaries: { claude: '/npm/claude' }, settings: false })
+  assert.ok(pi.text.includes('A Claude child gets its key from the pi route of Central'), pi.text)
+  assert.equal(pi.code, 0, pi.text)
+  // The binary of npm and the Central entry make Claude ready.
+  const claude = await installWith(t, await temporary(t), { binaries: { claude: '/npm/claude' }, claude: false })
+  assert.ok(claude.text.includes('A Claude child uses the Claude Code that npm installed with Megachat.'), claude.text)
+  assert.equal(claude.code, 0, claude.text)
 })
 
 test('install keeps a different entry and prints both entries', { timeout: 60000 }, async t => {

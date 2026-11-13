@@ -70,3 +70,18 @@ Tests: `test/launch.test.mjs`, `test/package.mjs`
 #### Scenario: The PATH of the app-server of the Codex history
 - **WHEN** Megachat starts the app-server of the Codex history, and the `PATH` of Megachat is `/usr/bin`
 - **THEN** Central gets the arguments `run`, `codex`, `--`, `app-server`, `--listen` and `stdio://`, and the `PATH` starts with the `bin` directory of Megachat, then the directory of the node that runs Megachat, and it ends with `/usr/bin`
+
+## ADDED Requirements
+
+### Requirement: Arguments of Central for Codex
+`bin/codex` MUST give Codex the arguments of Central before the arguments of the Codex ACP, because they are options of `codex`. Before the subcommand `app-server`, it MUST leave out `--profile` and its value, because Codex refuses `--profile` there. Without `central add codex`, Central passes `--profile jetbrains-central`, which only turns on the plugin of Central, and the route of Central in `-c` options, which stay.
+
+Tests: `test/launch.test.mjs`
+
+#### Scenario: The app-server of the Codex ACP
+- **WHEN** the arguments of Central are `--profile jetbrains-central -c model_provider=jetbrains-central`, and the Codex ACP starts `bin/codex` with `app-server --listen stdio://`
+- **THEN** the Codex of the user gets `-c model_provider=jetbrains-central app-server --listen stdio://`
+
+#### Scenario: Another subcommand
+- **WHEN** the arguments of Central are `--profile jetbrains-central`, and `bin/codex` gets `exec hello`
+- **THEN** the Codex of the user gets `--profile jetbrains-central exec hello`

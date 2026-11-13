@@ -127,6 +127,16 @@ Alternatives:
 
 Central needs no Codex of its own: it starts `codex` of the `PATH` (fact 2), which is the shim.
 
+The live check of task 5.2 found two faults of the present shim on a machine without `central add codex`. First, the
+shim put the arguments of Central after the subcommand of the Codex ACP, so Codex got
+`app-server ... --profile jetbrains-central` and refused it. Second, Codex 0.166 refuses `--profile` for `app-server`
+also before the subcommand: "--profile only applies to runtime commands". The four `-c` options of Central hold the
+whole route (`model_provider`, `model_providers.wire.name`, `model_providers.wire.base_url`,
+`model_providers.wire.wire_api`). The profile file `jetbrains-central.config.toml` only turns on the plugin
+`jetbrains-central@jetbrains-central`. So the shim puts the arguments of Central first, and before `app-server` it
+leaves out `--profile` and its value. A Codex child of such a machine then runs without the plugin of Central. A
+machine with `central add codex` gets no argument from Central, so nothing changes there.
+
 ### D4. The app-server of the Codex history through the shim
 
 `codexAppServerLaunch()` puts `bin/` first on the `PATH`, as `childLaunch('codex')` does, and sets
@@ -184,6 +194,12 @@ check again.", as for Codex, because a Claude child no longer needs `central add
   names the fix. A child then fails as now.
 - [On a machine without Codex, Central writes `jetbrains-central.config.toml` and a plugin cache into `~/.codex`] →
   Central does this also for a Codex child now. Megachat writes nothing there.
+- [Without `central add codex`, Central passes the base URL with the key of Central in a `-c` option, so each local
+  user can read it in the command line of the Codex process] → This is how `central run codex` works now, also with
+  the Codex CLI of the user. `central add codex` writes the route into `~/.codex/config.toml` and removes it from the
+  command line. The README can name it.
+- [Without `central add codex`, a Codex child runs without the plugin of Central] → The route stays. With
+  `central add codex`, the configuration of the user keeps the plugin.
 - [The test of the shim runs the bundled `codex --version`] → The binary is in `node_modules` of each checkout. The
   test sets `CODEX_HOME` to a temporary directory.
 

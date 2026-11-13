@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { delimiter } from 'node:path'
+import { accessSync, constants, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const bin = fileURLToPath(new URL('.', import.meta.url)).replace(/\/$/, '')
@@ -9,9 +11,54 @@ const overrides = env.MEGACHAT_CODEX_ARGS
 let command
 let args
 let cwd
+/** The first executable file `codex` of the `PATH` without this directory: the Codex CLI of the user. */
+function userCodex() {
+  for (const directory of env.PATH.split(delimiter).filter(Boolean)) {
+    const file = join(directory, 'codex')
+    try {
+      accessSync(file, constants.X_OK)
+      if (statSync(file).isFile()) return file
+    }
+    catch { /* The next directory. */ }
+  }
+  return undefined
+}
+
+/**
+ * Codex refuses `--profile` for `app-server`. Without `central add codex`, Central passes `--profile jetbrains-central`,
+ * which only turns on the plugin of Central, and the route of Central in `-c` options. So before `app-server` the
+ * profile goes, and the route stays.
+ */
+function withoutProfile(list) {
+  const server = list.indexOf('app-server')
+  if (server < 0) return list
+  const result = []
+  for (let index = 0; index < list.length; index++) {
+    if (index < server && (list[index] === '--profile' || list[index] === '-p')) index++
+    else if (index < server && list[index].startsWith('--profile=')) continue
+    else result.push(list[index])
+  }
+  return result
+}
+
 if (overrides !== undefined) {
-  command = 'codex'
-  args = [...process.argv.slice(2), ...JSON.parse(overrides)]
+  // The Codex ACP or Central starts this shim as Codex. Without the Codex CLI of the user, the Codex that npm installed
+  // with the Codex ACP runs. Its launcher replaces its own process with the native binary.
+  const user = userCodex()
+  if (user !== undefined) {
+    command = user
+    args = []
+  }
+  else {
+    let launcher
+    try { launcher = createRequire(import.meta.resolve('@agentclientprotocol/codex-acp/dist/index.js')).resolve('@openai/codex/bin/codex.js') }
+    catch { process.exit(1) }
+    command = process.execPath
+    args = [launcher]
+  }
+  // The arguments of Central, such as `--profile jetbrains-central` and `-c`, are options of `codex` itself, so they
+  // go before the subcommand of the Codex ACP, such as `app-server`.
+  args.push(...withoutProfile([...JSON.parse(overrides), ...process.argv.slice(2)]))
   delete env.MEGACHAT_CODEX_ARGS
   delete env.CODEX_PATH
 }

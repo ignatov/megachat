@@ -138,6 +138,29 @@ with OK" through `CentralConfigurationService.models()`.
 - The response ended with the stop reason `stop` and the text "OK", after 4.8 s, with 14 input tokens and 4 output
   tokens.
 
+One manual check of the binaries that npm installed with the agents ran on 2026-11-13 on macOS arm64, with the Central
+CLI of that day, `@agentclientprotocol/codex-acp` 2.6.0 with `@openai/codex` 0.166.0, and
+`@anthropic-ai/claude-agent-sdk` 0.3.321. No check printed a key or a base URL.
+
+- The bundled `claude` binary, with an empty `HOME` and the base URL and the key of `central run pi`, answered `ok` to
+  `-p` with the model `claude-haiku-4-5`. So the route of pi in Central serves the requests of Claude Code. Its base URL
+  has the path `/wire/<key>/pi/anthropic`, and the base URL of the entry of `central add claude-code` has
+  `/wire/<key>/claude-code/anthropic`, with another key.
+- The bundled `codex`, behind `central run codex -- exec`, with an empty `CODEX_HOME` and no other `codex` on the
+  `PATH`, answered `ok`. Central does not ask the binary for its version. With an empty `CODEX_HOME`, Central passes
+  `--profile jetbrains-central` and four `-c` options with the route, and writes `jetbrains-central.config.toml`, which
+  only turns on its plugin. With `central add codex`, Central passes no argument.
+- The bundled `codex app-server` answered `thread/list` of the Codex history with an empty `CODEX_HOME`.
+- A Codex child as Megachat starts it: `central run codex --` with `bin/` first on the `PATH`, no other `codex`, and an
+  empty `CODEX_HOME`. The first run failed: Codex refused `--profile` for `app-server`, before and after the
+  subcommand. After the shim left out the profile before `app-server`, the child answered `ok` with `end_turn` in
+  3 seconds, and the process of the app-server was `@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`.
+  The Codex history through `codexAppServerLaunch()` then listed the session of that child.
+- Without `central add codex`, the base URL of Central with its key is in the command line of the Codex process.
+- With an empty `HOME`, `central add claude-code` stops at "not logged in" before it looks for Claude Code, so the
+  check could not tell whether it needs the CLI. `central agents --json` finds Claude Code only as `claude` on the
+  `PATH`, and reports `installed` apart from `configured`.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.

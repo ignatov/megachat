@@ -113,8 +113,12 @@ test('the packed copy starts its daemon and both agents, and install writes the 
   assert.ok(descriptor.build.startsWith(`${build}+`), descriptor.build)
 
   // Without the variables of the IDE, the default agent commands of the copy resolve into the node_modules of npm.
-  const { CentralConfigurationService } = await import(pathToFileURL(join(copy, 'src', 'CentralConfigurationService.mjs')).href)
-  const configuration = new CentralConfigurationService({ environment: { HOME: home, PATH: [join(prefix, 'node_modules', '.bin'), '/usr/bin', '/bin'].join(delimiter) } })
+  // The PATH has no node_modules/.bin and no other codex, so the children use the platform binaries that npm installed.
+  const { bundledBinaries, CentralConfigurationService } = await import(pathToFileURL(join(copy, 'src', 'CentralConfigurationService.mjs')).href)
+  const binaries = bundledBinaries()
+  assert.ok(binaries.claude?.startsWith(join(prefix, 'node_modules', '@anthropic-ai')), binaries.claude)
+  assert.equal(binaries.codex, join(prefix, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'))
+  const configuration = new CentralConfigurationService({ environment: { HOME: home, PATH: ['/usr/bin', '/bin'].join(delimiter) } })
   // The real child environment holds the Central key. These agents get no prompt, so they do not need it.
   configuration.childEnvironment = async () => configuration.baseEnvironment()
   const claude = await configuration.childLaunch('claude')
@@ -123,7 +127,7 @@ test('the packed copy starts its daemon and both agents, and install writes the 
   assert.equal(typeof claudeAnswer.result?.protocolVersion, 'number', JSON.stringify(claudeAnswer))
 
   // `central run codex` puts `bin` of the copy first on PATH and starts `codex`. This test starts that shim directly,
-  // with the Codex of the install for the app-server and a temporary Codex home.
+  // with the Codex that npm installed with the Codex agent for the app-server and a temporary Codex home.
   const codex = await configuration.childLaunch('codex')
   assert.equal(codex.env.PATH.split(delimiter)[0].replace(/\/$/, ''), join(copy, 'bin'))
   const codexAnswer = await initialized(join(copy, 'bin', 'codex'), [], { env: { ...codex.env, CODEX_HOME: join(scratch, 'codex-home') }, cwd: scratch })

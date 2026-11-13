@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { constants, existsSync } from 'node:fs'
+import { access, readFile, stat } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +13,55 @@ import { KnownSecrets } from './SessionText.mjs'
 import { DEFAULT_CLAUDE_MODEL, modelRef } from './Settings.mjs'
 
 const execute = promisify(execFile)
+
+/** The directory of the `codex` shim. Central starts `codex` of the `PATH`, so this directory comes first there. */
+const BIN = fileURLToPath(new URL('../bin/', import.meta.url))
+
+/** Whether the path is a file that the user can run. */
+export async function executableFile(path) {
+  try {
+    await access(path, constants.X_OK)
+    return (await stat(path)).isFile()
+  }
+  catch { return false }
+}
+
+/**
+ * The platform binaries that npm installed with the agents of Megachat: the `claude` binary of the SDK of the Claude
+ * agent, and the launcher `codex.js` of the Codex of the Codex agent. A value is `undefined` when the module system
+ * does not find the binary, such as in the bundle, which holds no agent. A child uses such a binary only when the
+ * user has no Claude Code at `~/.local/bin/claude` or no `codex` on the `PATH`.
+ */
+export function bundledBinaries() {
+  return { claude: bundledClaude(), codex: bundledCodex() }
+}
+
+/** The candidates follow `claudeCliPath()` of `claude-agent-acp`, which starts this binary without `CLAUDE_CODE_EXECUTABLE`. */
+function bundledClaude() {
+  try {
+    const sdk = createRequire(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js')).resolve('@anthropic-ai/claude-agent-sdk')
+    const extension = process.platform === 'win32' ? '.exe' : ''
+    const names = process.platform === 'linux' ? [`linux-${process.arch}`, `linux-${process.arch}-musl`] : [`${process.platform}-${process.arch}`]
+    for (const name of names) {
+      try { return createRequire(sdk).resolve(`@anthropic-ai/claude-agent-sdk-${name}/claude${extension}`) }
+      catch { /* The next candidate. */ }
+    }
+  }
+  catch { /* No Claude agent of npm. */ }
+  return undefined
+}
+
+/** `codex.js` finds the binary in the package of the platform, else in its own `vendor` directory. */
+function bundledCodex() {
+  try {
+    const launcher = createRequire(import.meta.resolve('@agentclientprotocol/codex-acp/dist/index.js')).resolve('@openai/codex/bin/codex.js')
+    const platform = process.platform === 'android' ? 'linux' : process.platform
+    try { createRequire(launcher).resolve(`@openai/codex-${platform}-${process.arch}/package.json`) }
+    catch { if (!existsSync(join(dirname(launcher), '..', 'vendor'))) return undefined }
+    return launcher
+  }
+  catch { return undefined }
+}
 
 /** The IDE passes the ACP command of its installed Claude and Codex agents in these variables. */
 export const CLAUDE_ACP_VARIABLE = 'MEGACHAT_CLAUDE_ACP'
@@ -93,9 +144,8 @@ export class CentralConfigurationService {
 
   async pi(signal) {
     try {
-      const bin = fileURLToPath(new URL('../bin/', import.meta.url))
       const result = await execute(this.central, ['run', 'pi'], {
-        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
+        env: { ...process.env, PATH: `${BIN}${delimiter}${process.env.PATH ?? ''}` },
         timeout: 15000, maxBuffer: 128000, signal,
       })
       const configuration = JSON.parse(result.stdout).anthropic
@@ -148,7 +198,13 @@ export class CentralConfigurationService {
     return models
   }
 
-  async childEnvironment() {
+  /**
+   * The key and the base URL of a Claude child, and their source. The source `settings` is the Central entry of the
+   * settings of Claude Code, which `central add claude-code` writes. Without a valid entry, the source is `pi`: the
+   * configuration of the main agent from `central run pi`, on the route of pi in Central. The log gets one line for
+   * the fallback, with no message of the error, because the output of the key helper can hold the key.
+   */
+  async claudeConfiguration() {
     try {
       const settings = JSON.parse(await readFile(this.settings, 'utf8'))
       const baseUrl = settings.env?.ANTHROPIC_BASE_URL
@@ -157,15 +213,30 @@ export class CentralConfigurationService {
       const apiKey = result.stdout.trim()
       this.validate({ baseUrl, apiKey })
       this.remember({ baseUrl, apiKey })
-      return {
-        ...this.baseEnvironment(), ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey, CLAUDE_CODE_EXECUTABLE: this.claude,
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
-        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
-      }
+      return { baseUrl, apiKey, source: 'settings' }
+    }
+    catch (error) { logFailure('log.central.claudeFallback', error) }
+    try {
+      const { baseUrl, apiKey } = await this.pi()
+      return { baseUrl, apiKey, source: 'pi' }
     }
     catch (error) {
       logFailure('log.central.claude', error)
       throw new MegachatError('central')
+    }
+  }
+
+  /**
+   * The child uses Claude Code at `~/.local/bin/claude` when that file is there. Else no `CLAUDE_CODE_EXECUTABLE` is
+   * set, and the Claude agent starts the `claude` binary of its SDK.
+   */
+  async childEnvironment() {
+    const { baseUrl, apiKey } = await this.claudeConfiguration()
+    const executable = await executableFile(this.claude) ? { CLAUDE_CODE_EXECUTABLE: this.claude } : {}
+    return {
+      ...this.baseEnvironment(), ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey, ...executable,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
     }
   }
 
@@ -177,9 +248,14 @@ export class CentralConfigurationService {
     return { ...variables, PATH: [dirname(process.execPath), environment.PATH].filter(Boolean).join(delimiter) }
   }
 
-  /** Starts the read-only Codex app-server through the same Central entry point as Codex runs. */
+  /**
+   * Starts the read-only Codex app-server through the same Central entry point and the same `codex` as Codex runs.
+   * `MEGACHAT_CODEX_ARGS` makes `bin/codex` start the Codex of the user or of the Codex agent directly, not the Codex ACP.
+   */
   codexAppServerLaunch() {
-    return { command: this.central, args: ['run', 'codex', '--', 'app-server', '--listen', 'stdio://'], env: this.baseEnvironment() }
+    const env = this.baseEnvironment()
+    return { command: this.central, args: ['run', 'codex', '--', 'app-server', '--listen', 'stdio://'],
+      env: { ...env, MEGACHAT_CODEX_ARGS: '[]', PATH: `${BIN}${delimiter}${env.PATH}` } }
   }
 
   /**
@@ -202,6 +278,6 @@ export class CentralConfigurationService {
     if (codex !== undefined) agentCommand(codex)
     return { command: this.central, args: ['run', 'codex', '--'],
       env: { ...env, ...(codex !== undefined ? { [CODEX_ACP_VARIABLE]: codex } : {}),
-        PATH: `${fileURLToPath(new URL('../bin/', import.meta.url))}${delimiter}${env.PATH}` } }
+        PATH: `${BIN}${delimiter}${env.PATH}` } }
   }
 }

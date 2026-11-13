@@ -30,10 +30,11 @@ The line checks what the machine needs, and prints one line for each result. The
 
 The IDE starts the command `npx` with its own Node.js and its own npm cache. So each start of the agent in the IDE
 starts the last release. The `env` is a time limit of git for a stalled network, as "The start in the IDE" tells. The
-exit code of the line is 0 only when the entry is in place and each check passed. Before its last line, the line says
-that it cannot check the IDE build, and that each start in the IDE needs the network. The last line gives the version
-and the directory of the copy that ran the install. That copy is in the npm cache of the terminal, and the IDE does not
-use it.
+exit code of the line is 0 only when the entry is in place, the checks of the platform and of Central passed, and a
+child agent is ready: Claude with a binary and a key, or Codex with a binary. The lines about Claude Code and Codex say
+which binary and which key a child uses. Before its last line, the line says that it cannot check the IDE build, and
+that each start in the IDE needs the network. The last line gives the version and the directory of the copy that ran the
+install. That copy is in the npm cache of the terminal, and the IDE does not use it.
 
 The machine needs:
 
@@ -48,9 +49,16 @@ The machine needs:
 - git, and access to `github.com`. The repository is public, so the line needs no GitHub account.
 - Node.js 22.19 or later for the install line. The IDE runs Megachat with its own Node.js.
 - The Central command at `~/.local/bin/central`, with a login: `central login`.
-- Claude Code at `~/.local/bin/claude`, set up through Central: `central add claude-code`.
-- The Codex command, `codex`, on the `PATH`. Codex history requires the local Codex CLI with the app-server history
-  API.
+- Optional: the Central entry of Claude Code in `~/.claude/settings.json`: `central add claude-code`. A Claude child
+  takes its key from it when it is there. Else a Claude child takes the key of the main agent, from `central run pi`,
+  and Central counts its requests as requests of pi. The documentation of Central lists an installed agent as a
+  requirement of `central add`, so you can need Claude Code for that command.
+- Optional: Claude Code at `~/.local/bin/claude`. A Claude child uses it when it is there. Else a Claude child uses
+  the Claude Code that npm installed with Megachat.
+- Optional: the Codex command, `codex`, on the `PATH`. A Codex child and the Codex history use it when it is there.
+  Else they use the Codex that npm installed with Megachat. `central run codex` gives Codex the route of Central, so
+  `central add codex` is not necessary. Without it, Central puts the route in the command line of Codex, where each
+  local user can read the key of Central, and a Codex child runs without the plugin of Central.
 - macOS. Nobody tested Megachat on another platform.
 
 **The start in the IDE.** These numbers come from the npm 11.19.1 of the IDE on one Mac, with an empty npm cache of a

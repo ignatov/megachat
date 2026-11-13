@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
-import { CentralConfigurationService } from './CentralConfigurationService.mjs'
+import { bundledBinaries, CentralConfigurationService } from './CentralConfigurationService.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { message } from './messages.mjs'
 import { ENTRY_GIT_VARIABLES, npmPathEntry } from './npmEnvironment.mjs'
@@ -118,24 +118,40 @@ async function codexOnPath(path) {
 
 /**
  * Checks what Megachat needs at run time, at the places that `CentralConfigurationService` and the shims use. Each
- * result is one line. The checks never print the output of Central or of the key helper of Claude Code.
+ * result is one line. The checks never print the output of Central or of the key helper of Claude Code. [binaries]
+ * holds the platform binaries that npm installed with the agents. The checks pass when the platform and Central pass
+ * and a child agent is ready: Claude with a binary and a key, or Codex with a binary. A Claude child gets its key from
+ * the Central entry of Claude Code, else from the route of pi in Central.
  */
-async function checks({ configuration, platform, path }) {
-  const results = [platform === 'darwin' ? { passed: true, text: message('install.macos') }
-    : { passed: false, text: message('install.platform', platform) }]
-  if (!await executable(configuration.central)) results.push({ passed: false, text: message('install.centralMissing', configuration.central) })
+async function checks({ configuration, platform, path, binaries }) {
+  const lines = []
+  const platformPassed = platform === 'darwin'
+  lines.push(platformPassed ? message('install.macos') : message('install.platform', platform))
+  let centralPassed = false
+  if (!await executable(configuration.central)) lines.push(message('install.centralMissing', configuration.central))
   else {
-    try { await configuration.pi(); results.push({ passed: true, text: message('install.central') }) }
-    catch { results.push({ passed: false, text: message('install.centralFailed') }) }
+    try {
+      await configuration.pi()
+      centralPassed = true
+      lines.push(message('install.central'))
+    }
+    catch { lines.push(message('install.centralFailed')) }
   }
-  if (!await executable(configuration.claude)) results.push({ passed: false, text: message('install.claudeMissing', configuration.claude) })
-  else {
-    try { await configuration.childEnvironment(); results.push({ passed: true, text: message('install.claude', configuration.claude) }) }
-    catch { results.push({ passed: false, text: message('install.claudeCentral') }) }
+  const userClaude = await executable(configuration.claude)
+  lines.push(userClaude ? message('install.claude', configuration.claude)
+    : binaries.claude ? message('install.claudeBundled', configuration.claude) : message('install.claudeMissing', configuration.claude))
+  let claudeKey = false
+  try {
+    const { source } = await configuration.claudeConfiguration()
+    claudeKey = true
+    lines.push(message(source === 'settings' ? 'install.claudeKey' : 'install.claudeKeyPi', configuration.settings))
   }
+  catch { lines.push(message('install.claudeCentral')) }
   const codex = await codexOnPath(path)
-  results.push(codex ? { passed: true, text: message('install.codex', codex) } : { passed: false, text: message('install.codexMissing') })
-  return results
+  lines.push(codex ? message('install.codex', codex) : binaries.codex ? message('install.codexBundled') : message('install.codexMissing'))
+  const claudeReady = (userClaude || binaries.claude !== undefined) && claudeKey
+  const codexReady = codex !== undefined || binaries.codex !== undefined
+  return { lines, passed: platformPassed && centralPassed && (claudeReady || codexReady) }
 }
 
 /**
@@ -143,15 +159,14 @@ async function checks({ configuration, platform, path }) {
  * starts the checkout with the Node.js of this process. In each other copy, the entry is [RELEASE_ENTRY], and it
  * replaces an [earlierEntry] or an [entryWithoutTimeLimits]. The command prints one line for each result, then the lines
  * about the IDE build, the network and npx, then the version and the directory of this copy. It returns 0 only when the
- * entry is in place and each check passed. The lines about the IDE build and the network do not change it.
+ * entry is in place and the checks passed. The lines about the IDE build and the network do not change it. A test can
+ * pass its own [configuration] and [binaries].
  */
 export async function install({ environment = process.env, platform = process.platform, print = line => process.stdout.write(`${line}\n`),
-  root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '') } = {}) {
-  let passed = true
-  for (const result of await checks({ configuration: new CentralConfigurationService({ environment }), platform, path: environment.PATH ?? '' })) {
-    print(result.text)
-    passed &&= result.passed
-  }
+  root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, ''),
+  configuration = new CentralConfigurationService({ environment }), binaries = bundledBinaries() } = {}) {
+  const { lines, passed } = await checks({ configuration, platform, path: environment.PATH ?? '', binaries })
+  for (const line of lines) print(line)
   const path = acpConfigPath(environment)
   const checkout = gitCheckout(root)
   const entry = checkout ? { command: await stableNodePath({ path: environment.PATH ?? '', platform }), args: [join(root, 'bin', 'megachat.mjs'), 'acp'] }

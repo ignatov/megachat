@@ -259,23 +259,105 @@ test('a client that passes no agent command keeps a daemon of its own build', ()
 test('the environment of a Claude child has the Central configuration and no background tasks', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'megachat-settings-'))
   t.after(() => rm(directory, { force: true, recursive: true }))
-  // The test has its own settings file. It must not read the settings of the user or run the key command of the user.
+  // The test has its own settings file and Central command. It must not read the settings of the user, run the key
+  // command of the user, or start the Central of the user.
   const settings = join(directory, 'settings.json')
+  const central = join(directory, 'missing-central')
   await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test' } }))
-  const configuration = new CentralConfigurationService({ settings, claude: '/air/claude', environment: { PATH: '/usr/bin', HOME: directory, SECRET: 'x' } })
+  // An executable Claude Code of the user goes to the agent in CLAUDE_CODE_EXECUTABLE.
+  const claude = join(directory, 'claude')
+  await writeFile(claude, '#!/bin/sh\n', { mode: 0o755 })
+  const configuration = new CentralConfigurationService({ settings, central, claude, environment: { PATH: '/usr/bin', HOME: directory, SECRET: 'x' } })
   const environment = await configuration.childEnvironment()
   assert.equal(environment.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1')
   assert.equal(environment.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION, 'false')
   assert.equal(environment.ANTHROPIC_API_KEY, 'test-key')
   assert.equal(environment.ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/wire/test')
-  assert.equal(environment.CLAUDE_CODE_EXECUTABLE, '/air/claude')
+  assert.equal(environment.CLAUDE_CODE_EXECUTABLE, claude)
   assert.equal(environment.PATH.split(delimiter)[0], dirname(process.execPath))
+  // Without Claude Code of the user, no CLAUDE_CODE_EXECUTABLE: the Claude agent starts the claude binary of its SDK.
+  const bundled = new CentralConfigurationService({ settings, central, claude: join(directory, 'missing'), environment: { PATH: '/usr/bin', HOME: directory } })
+  assert.equal('CLAUDE_CODE_EXECUTABLE' in await bundled.childEnvironment(), false)
   // A variable that is not in the list of the base environment does not reach the child.
   assert.equal(environment.SECRET, undefined)
-  // A base URL that is not the local Central proxy gives no environment.
+})
+
+test('a Claude child takes the Central entry of Claude Code first, else the configuration of the main agent, and fails without both', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-claude-key-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const settings = join(directory, 'settings.json')
+  const central = join(directory, 'central')
+  const ran = join(directory, 'central-ran')
+  // The Central command of the test notes each run in a file and prints a configuration of the main agent.
+  const centralScript = (body) => writeFile(central, `#!/bin/sh\ntouch '${ran}'\n${body}\n`, { mode: 0o755 })
+  await centralScript(`printf '%s' '${JSON.stringify({ anthropic: { apiKey: 'pi-key', baseUrl: 'http://127.0.0.1:9/wire/pi/' } })}'`)
+  const configuration = new CentralConfigurationService({ settings, central, claude: join(directory, 'missing'), environment: { PATH: '/usr/bin', HOME: directory } })
+  const log = []
+  t.mock.method(process.stderr, 'write', text => { log.push(String(text)); return true })
+
+  // The Central entry of the settings of Claude Code: the Central command does not run.
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test' } }))
+  let environment = await configuration.childEnvironment()
+  assert.equal(environment.ANTHROPIC_API_KEY, 'test-key')
+  assert.equal(environment.ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/wire/test')
+  assert.equal(existsSync(ran), false)
+  assert.equal((await configuration.claudeConfiguration()).source, 'settings')
+
+  // No settings of Claude Code: the configuration of the main agent, with one log line.
+  await rm(settings)
+  log.length = 0
+  environment = await configuration.childEnvironment()
+  assert.equal(environment.ANTHROPIC_API_KEY, 'pi-key')
+  assert.equal(environment.ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/wire/pi/')
+  const fallback = log.filter(line => line.includes('The settings of Claude Code give no Central entry'))
+  assert.equal(fallback.length, 1, log.join(''))
+  assert.equal((await configuration.claudeConfiguration()).source, 'pi')
+
+  // A base URL of the settings that is not the local proxy.
   await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: 'https://example.com/wire/test' } }))
-  t.mock.method(process.stderr, 'write', () => true)
+  assert.equal((await configuration.childEnvironment()).ANTHROPIC_API_KEY, 'pi-key')
+
+  // No configuration at all: the launch fails, and no log line holds the output of the command.
+  await rm(settings)
+  await centralScript("echo 'apiKey sk-secret-value'\nexit 7")
+  log.length = 0
   await assert.rejects(configuration.childEnvironment(), { code: 'central' })
+  assert.ok(!log.join('').includes('sk-secret-value'), log.join(''))
+})
+
+test('the app-server of the Codex history starts through Central with the PATH of a Codex child', () => {
+  const configuration = new CentralConfigurationService({ central: '/central', environment: { PATH: '/usr/bin' } })
+  const launch = configuration.codexAppServerLaunch()
+  assert.equal(launch.command, '/central')
+  assert.deepEqual(launch.args, ['run', 'codex', '--', 'app-server', '--listen', 'stdio://'])
+  const path = launch.env.PATH.split(delimiter)
+  assert.match(path[0], /bin\/?$/)
+  assert.equal(path[1], dirname(process.execPath))
+  assert.equal(path.at(-1), '/usr/bin')
+  // bin/codex then starts Codex directly, not the Codex ACP.
+  assert.equal(launch.env.MEGACHAT_CODEX_ARGS, '[]')
+})
+
+test('bin/codex starts the Codex of the user, else the Codex that npm installed with the Codex agent', { timeout: 30000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-codex-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const user = join(directory, 'user')
+  await mkdir(user)
+  await writeFile(join(user, 'codex'), '#!/bin/sh\necho user codex\n', { mode: 0o755 })
+  const shim = fileURLToPath(new URL('../bin/codex', import.meta.url))
+  const codex = path => execFileSync(process.execPath, [shim, '--version'], { encoding: 'utf8', timeout: 20000,
+    env: { HOME: directory, CODEX_HOME: directory, PATH: path, MEGACHAT_CODEX_ARGS: '[]' } }).trim()
+  assert.equal(codex([user, '/usr/bin', '/bin'].join(delimiter)), 'user codex')
+  assert.match(codex(['/usr/bin', '/bin'].join(delimiter)), /^codex-cli /)
+  // The arguments of Central are options of codex, so they come before the subcommand that the Codex ACP gives.
+  await writeFile(join(user, 'codex'), '#!/bin/sh\necho "$@"\n', { mode: 0o755 })
+  const ordered = execFileSync(process.execPath, [shim, 'app-server', '--listen', 'stdio://'], { encoding: 'utf8', timeout: 20000,
+    env: { HOME: directory, PATH: [user, '/usr/bin', '/bin'].join(delimiter), MEGACHAT_CODEX_ARGS: '["--profile","jetbrains-central","-c","model_provider=jetbrains-central"]' } }).trim()
+  // Codex refuses --profile for app-server, so the profile goes, and the route of Central in -c stays.
+  assert.equal(ordered, '-c model_provider=jetbrains-central app-server --listen stdio://')
+  const exec = execFileSync(process.execPath, [shim, 'exec', 'hello'], { encoding: 'utf8', timeout: 20000,
+    env: { HOME: directory, PATH: [user, '/usr/bin', '/bin'].join(delimiter), MEGACHAT_CODEX_ARGS: '["--profile","jetbrains-central"]' } }).trim()
+  assert.equal(exec, '--profile jetbrains-central exec hello')
 })
 
 test('the Central configuration gives the secret filter its exact key and base URL, also after a refresh, and keeps them in the memory only', async t => {
