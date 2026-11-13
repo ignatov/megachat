@@ -8,8 +8,6 @@ import { ProjectReadEnv } from './ProjectReadEnv.mjs'
 
 /** The name of the extension that a pi child selects. It is the only extension of a child conversation. */
 export const CHILD_EXTENSION = 'air.megachat.child'
-/** The tool rounds of one run of a pi child. A Claude child has 30, and a read-only task needs fewer. */
-export const CHILD_TURNS = 20
 /** The repository rules that a pi child gets, at most this count of bytes. */
 export const RULES_LIMIT = 32000
 const RULES_FILES = ['AGENTS.md', 'CLAUDE.md']
@@ -102,9 +100,10 @@ function rulesBlock(rules, intro, truncated) {
 
 /**
  * The choices of a child conversation at each dispatch: the [model], the directory of the run, only the extension of a
- * child with its tool `read`, the child instructions and the turn limit. A follow-up gets them again, so a change of the
+ * child with its tool `read` and the child instructions. The choices hold no `maxTurns`, so Pi Durable gives no turn
+ * limit, and only the time limit `children.timeoutMinutes` stops a run. A follow-up gets them again, so a change of the
  * model or of the repository rules reaches the next run.
  */
 export async function childAgent(cwd, model, extension) {
-  return { model, cwd, extensions: [extension], tools: [readTool], instructions: await childInstructions(cwd), maxTurns: CHILD_TURNS }
+  return { model, cwd, extensions: [extension], tools: [readTool], instructions: await childInstructions(cwd) }
 }

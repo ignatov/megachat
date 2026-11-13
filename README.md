@@ -551,7 +551,7 @@ Use pi only to read and to summarize. Give each task that changes code, runs a c
 Code to Claude or Codex. The main agent uses pi only when you name it, and `children.agent` cannot select it.
 
 A pi child is a task as the others are: the chat lists it as a background task of the agent Pi, it waits its turn, it
-stops at the time limit of `children.timeoutMinutes` and after 20 tool rounds, and you can cancel it. A follow-up goes to the same
+has no turn limit, only the time limit of `children.timeoutMinutes` stops it, and you can cancel it. A follow-up goes to the same
 conversation. A message that you add with `agents_steer` reaches the child after its current tool round. A daemon
 restart continues the run. Its cost is in the daily spend. Megachat cannot delete the
 conversation of a pi child, so `conversation.sqlite` keeps it after the run leaves the state.

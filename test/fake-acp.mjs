@@ -144,7 +144,7 @@ async function answerPrompt(ctx) {
   // The prompt `chatty` writes to the error output, as an adapter writes its debug lines, and completes.
   if (text === 'chatty') await writeError('debug: the session starts\n')
   // The prompt `noisy` writes more error output than a child may write, then waits as `wait` does.
-  if (text === 'noisy') process.stderr.write('x'.repeat(1024 * 1024 + 1))
+  if (text === 'noisy') process.stderr.write('x'.repeat(10 * 1024 * 1024 + 1))
   if (text === 'wait' || text === 'noisy') {
     if (!cancelled) await new Promise(resolve => { cancel = resolve })
     return { stopReason: 'cancelled' }

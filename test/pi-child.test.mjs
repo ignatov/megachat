@@ -13,7 +13,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
 import { ChildPool } from '../src/ChildPool.mjs'
-import { serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
+import { maxAutomaticResumes, serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
 import { message, minutesOf } from '../src/messages.mjs'
 import { childEnvironment, readTool, repositoryRules } from '../src/PiChild.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
@@ -289,16 +289,16 @@ test('a pi child takes the time limit of children.timeoutMinutes at its start, a
   assert.deepEqual([run.status, run.error, run.deadlineMs], ['interrupted', message('error.limit', minutesOf(300)), 300])
 })
 
-test('a pi child ends after 20 tool rounds as failed with the reason code', { timeout: 30000 }, async t => {
+test('a pi child has no turn limit and completes after 30 tool rounds', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd } = project
   const { requests, turn } = await open(t, project, {
-    main: [call('agents_spawn', { cwd, prompt: 'Read forever.', agent: 'pi' }), fauxAssistantMessage('Started.')],
-    child: Array(30).fill(call('read', { path: 'README.md' })),
+    main: [call('agents_spawn', { cwd, prompt: 'Read a lot.', agent: 'pi' }), fauxAssistantMessage('Started.'), fauxAssistantMessage('Reported.')],
+    child: [...Array(30).fill(call('read', { path: 'README.md' })), fauxAssistantMessage('Read it all.')],
   })
   const [run] = Object.values((await turn('spawn')).runs)
-  assert.deepEqual([run.status, run.stopReason, run.error], ['failed', 'turn_limit', message('error.pi.stopped', 'turn_limit')])
-  assert.equal(requests.filter(request => request.child).length, 20)
+  assert.deepEqual([run.status, run.output], ['completed', 'Read it all.'])
+  assert.equal(requests.filter(request => request.child).length, 31)
 })
 
 test('an AGENTS.md that is a FIFO does not hold the start of a pi child, and the child gets no repository rules', { timeout: 20000, skip: process.platform === 'win32' }, async t => {
@@ -539,7 +539,10 @@ async function steerDuringRequest(t, { before = [], after = [], main = [], ...op
   const held = {}
   const opened = await open(t, project, { ...options,
     main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi' }), fauxAssistantMessage('Started.'), ...main],
-    child: [...before, () => new Promise(resolve => { held.release = resolve }), ...after],
+    child: [...before, (_request, options) => new Promise(resolve => {
+      held.release = resolve
+      options?.signal?.addEventListener('abort', () => resolve(fauxAssistantMessage('Too late.')), { once: true })
+    }), ...after],
   })
   const { service } = opened
   await service.submit('spawn', 'Work')
@@ -567,14 +570,14 @@ test('a model error after a queued steer ends the pi run at once, and its contin
   assert.ok(last.messages.includes(message('child.steer.repeat', 1)))
 })
 
-test('a turn limit after a queued steer ends the pi run at once, and its report says that the child did not get the message', { timeout: 30000 }, async t => {
-  const { service, run, release } = await steerDuringRequest(t, { deadlineMs: 5000,
-    before: Array(19).fill(call('read', { path: 'README.md' })), main: [fauxAssistantMessage('Reported.')] })
-  release(call('read', { path: 'README.md' }))
+test('a model error after a queued steer and the last automatic continuation ends the pi run, and its report says that the child did not get the message', { timeout: 30000 }, async t => {
+  const { service, run, release } = await steerDuringRequest(t, { deadlineMs: 5000, main: [fauxAssistantMessage('Reported.')] })
+  await service.state.change(state => { state.runs[run.id].resumeAttempt = maxAutomaticResumes })
+  release(fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'Bad request.' }))
   const state = await finished(service)
   const ended = state.runs[run.id]
-  assert.deepEqual([ended.status, ended.stopReason, ended.resumedBy], ['failed', 'turn_limit', undefined])
-  assert.equal(ended.error, `${message('error.pi.stopped', 'turn_limit')} ${message('error.pi.unhandledSteers', 1)}`)
+  assert.deepEqual([ended.status, ended.stopReason, ended.resumedBy], ['interrupted', 'model_error', undefined])
+  assert.equal(ended.error, `${message('error.interrupted')} ${message('error.pi.unhandledSteers', 1)}`)
   assert.equal(Object.keys(state.runs).length, 1)
   const [report] = await reports(service)
   assert.equal(report.data.results[0].error, ended.error)

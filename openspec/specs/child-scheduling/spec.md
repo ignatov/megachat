@@ -232,12 +232,12 @@ Tests: `test/integration.test.mjs`, `test/parallel.test.mjs`
 - **THEN** the run does not end while the second request waits
 
 ### Requirement: Error output of an ACP child
-An ACP child that writes more than 1 MB of error output MUST stop. Its run MUST become interrupted with no continuation.
+An ACP child that writes more than 10 MB of error output MUST stop. Its run MUST become interrupted with no continuation.
 
 Tests: `test/parallel.test.mjs`
 
-#### Scenario: A child that writes 1 MB and one byte of error output
-- **WHEN** the agent of a Claude child writes 1,048,577 bytes of error output and then waits
+#### Scenario: A child that writes 10 MB and one byte of error output
+- **WHEN** the agent of a Claude child writes 10,485,761 bytes of error output and then waits
 - **THEN** the run becomes `interrupted` with no continuation
 
 ### Requirement: Refusal code of each limit
@@ -287,8 +287,8 @@ Tests: `test/parallel.test.mjs`
 - **THEN** the error of the run names a time limit of 0.005 minutes
 
 #### Scenario: The error output
-- **WHEN** a child writes more than 1 MB of error output
-- **THEN** the error of the run starts with "The child agent wrote more than 1 MB of error output"
+- **WHEN** a child writes more than 10 MB of error output
+- **THEN** the error of the run starts with "The child agent wrote more than 10 MB of error output"
 
 ### Requirement: Codes of the limits in the client of the daemon
 The client of the daemon MUST give each refusal code of a limit to the bridge as `invalid`, as it gives each other code that is not in its list, so a bridge and a daemon of different builds keep their behavior.

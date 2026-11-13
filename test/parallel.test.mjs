@@ -240,13 +240,13 @@ test('with children.parallel 1, a task in another directory waits for the runnin
   assert.deepEqual(await dispatches(cwd.b), ['hello'])
 })
 
-test('a child that writes more than 1 MB of error output stops with the text of the output limit, without a continuation', { timeout: 30000 }, async t => {
+test('a child that writes more than 10 MB of error output stops with the text of the output limit, without a continuation', { timeout: 30000 }, async t => {
   const { cwd, service } = await open(t)
   const [noisy] = await admit(service, { cwd: cwd.a, prompt: 'noisy' })
   const state = await until(service, value => terminalStates.has(value.runs[noisy.id].status))
   assert.deepEqual([state.runs[noisy.id].status, state.runs[noisy.id].error, state.runs[noisy.id].autoResume, state.runs[noisy.id].resumedBy],
-    ['interrupted', message('error.outputLimit', 1), false, undefined])
-  assert.match(state.runs[noisy.id].error, /^The child agent wrote more than 1 MB of error output/)
+    ['interrupted', message('error.outputLimit', 10), false, undefined])
+  assert.match(state.runs[noisy.id].error, /^The child agent wrote more than 10 MB of error output/)
 })
 
 test('the deadline ends one run while another run waits for a permission, and the waiting run keeps its request', { timeout: 30000 }, async t => {

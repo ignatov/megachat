@@ -212,7 +212,7 @@ test('a run that completes puts no error output in the log and does not wait for
   assert.equal(waits.mock.callCount(), 0)
 })
 
-test('a cancel, a deadline, the limit of 1 MB and a stop of the daemon put no error output in the log and do not wait for it', { timeout: 30000 }, async t => {
+test('a cancel, a deadline, the limit of 10 MB and a stop of the daemon put no error output in the log and do not wait for it', { timeout: 30000 }, async t => {
   const { cwd, service, acp, log, waits, closeAcp, close } = await open(t, { env: { FAKE_ACP_STDERR: JSON.stringify(['debug: waiting\n']) } })
   const project = async name => {
     await mkdir(join(cwd, name))
@@ -226,9 +226,9 @@ test('a cancel, a deadline, the limit of 1 MB and a stop of the daemon put no er
   await service.state.cancel('stop', cancelled.id)
   await service.state.change(state => { state.current = null })
   assert.equal((await ended(service, cancelled.id)).status, 'cancelled')
-  // The limit of 1 MB.
+  // The limit of 10 MB.
   const noisy = await ended(service, (await admit(service, { cwd: await project('b'), prompt: 'noisy' })).id)
-  assert.equal(noisy.error, message('error.outputLimit', 1))
+  assert.equal(noisy.error, message('error.outputLimit', 10))
   // A deadline.
   acp.launch.deadlineMs = 300
   const limited = await ended(service, (await admit(service, { cwd: await project('c'), prompt: 'wait' })).id)

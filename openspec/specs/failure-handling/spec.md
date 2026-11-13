@@ -152,13 +152,13 @@ Tests: `test/failure.test.mjs`, `test/error-output.test.mjs`, `test/integration.
 - **THEN** the log gets one line "The turn <ID> of the main agent ended without an answer: kind=report reason=model_error", and no log line contains "overloaded"
 
 ### Requirement: Error output of a child run in the memory
-For each Claude or Codex child run, the daemon MUST keep the last 8,000 characters of the error output of the agent, as UTF-8 text, in its memory only. The state, the transcript and the conversation MUST NOT get this text, except the reason in the error of a run. The text MUST go at the end of the run. The limit of 1 MB of error output stays as it is (see the capability `child-scheduling`).
+For each Claude or Codex child run, the daemon MUST keep the last 8,000 characters of the error output of the agent, as UTF-8 text, in its memory only. The state, the transcript and the conversation MUST NOT get this text, except the reason in the error of a run. The text MUST go at the end of the run. The limit of 10 MB of error output applies (see the capability `child-scheduling`).
 
 Tests: `test/error-output.test.mjs`, `test/parallel.test.mjs`
 
-#### Scenario: A child that writes more than 1 MB
-- **WHEN** the agent of a Claude child writes 1,048,577 bytes of error output and then waits
-- **THEN** the run becomes `interrupted` with no continuation and the error "The child agent wrote more than 1 MB of error output", as before
+#### Scenario: A child that writes more than 10 MB
+- **WHEN** the agent of a Claude child writes 10,485,761 bytes of error output and then waits
+- **THEN** the run becomes `interrupted` with no continuation and the error "The child agent wrote more than 10 MB of error output"
 
 #### Scenario: A long error output
 - **WHEN** the agent writes the line `first line`, then 10,000 characters of error output, and exits with the code 3
@@ -178,7 +178,7 @@ Tests: `test/error-output.test.mjs`
 - **THEN** the log holds `late reason`
 
 ### Requirement: Runs that show no error output
-A run that completes, a run that the agent ends with a stop reason, a cancel, a stop for a message of the user, a deadline, the limit of 1 MB and a stop of the daemon MUST NOT put the error output in the log or in the error of the run. These runs MUST NOT wait for the end of the error output, so they end as fast as before.
+A run that completes, a run that the agent ends with a stop reason, a cancel, a stop for a message of the user, a deadline, the limit of 10 MB and a stop of the daemon MUST NOT put the error output in the log or in the error of the run. These runs MUST NOT wait for the end of the error output, so they end as fast as before.
 
 Tests: `test/error-output.test.mjs`
 
@@ -187,7 +187,7 @@ Tests: `test/error-output.test.mjs`
 - **THEN** no log line holds `debug: the session starts`, and the run has no error
 
 #### Scenario: A cancel, a deadline, the limit and a stop of the daemon
-- **WHEN** the user cancels a run, a deadline ends a run, a run writes more than 1 MB of error output, and the daemon stops during a run
+- **WHEN** the user cancels a run, a deadline ends a run, a run writes more than 10 MB of error output, and the daemon stops during a run
 - **THEN** no log line holds the error output of these runs, and the daemon does not wait for the end of their error output
 
 ### Requirement: Error output in the log

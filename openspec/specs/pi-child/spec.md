@@ -118,15 +118,15 @@ Tests: `test/pi-child.test.mjs`
 - **THEN** the main conversation gets no environment, and the pi child gets the read-only environment of its directory
 
 ### Requirement: Read and turn limits of a pi child
-`read` MUST return at most 2,000 lines or 50 KB of a text file, or one image of at most 4.5 MB, in each call. A run of a pi child MUST end after 20 tool rounds, as `failed` with the reason code.
+`read` MUST return at most 2,000 lines or 50 KB of a text file, or one image of at most 4.5 MB, in each call. A run of a pi child MUST NOT have a turn limit. Only the time limit `children.timeoutMinutes` (see the capability `child-settings`), a cancel and a daemon stop MUST end it.
 
-A pi child shares the event loop and the memory of the daemon. The turn limit, the deadline, the size of a read and the size of the stored output bound it.
+A pi child shares the event loop and the memory of the daemon. The deadline, the size of a read and the size of the stored output bound it.
 
 Tests: `test/pi-child.test.mjs`
 
-#### Scenario: A child that reads without an end
-- **WHEN** a pi child calls `read` in each answer
-- **THEN** the run ends after 20 model requests as `failed` with the stop reason `turn_limit`
+#### Scenario: A child that reads for 30 tool rounds
+- **WHEN** a pi child calls `read` in 30 answers and then answers "Read it all."
+- **THEN** the run makes 31 model requests and becomes `completed` with the output "Read it all."
 
 ### Requirement: Output of a pi run
 The output of a pi run MUST keep the text of each answer of the child within the retention limit of a child output. A pi continuation MUST keep a copy of the output of the run before it only for a restart of its dispatched run. At its end the copy MUST go, and `agents_inspect` and `agents_wait` MUST return the output one time.
@@ -232,7 +232,7 @@ Tests: `test/pi-child.test.mjs`
 - **THEN** the outcome is `injected`, the next model request of the child holds the message one time, and the run completes with one report
 
 ### Requirement: Message that Pi Durable did not place
-When the turn ends without an answer, the run MUST withdraw each message that went to the conversation of a working pi child and that Pi Durable did not place, and it MUST NOT wait for it. A continuation MUST carry that message as a possible repeat. When no continuation follows, as after the turn limit or the deadline, the error of the run MUST tell the main agent that the child did not get it, and the run MUST keep its text.
+When the turn ends without an answer, the run MUST withdraw each message that went to the conversation of a working pi child and that Pi Durable did not place, and it MUST NOT wait for it. A continuation MUST carry that message as a possible repeat. When no continuation follows, as after the last automatic continuation, the error of the run MUST tell the main agent that the child did not get it, and the run MUST keep its text.
 
 Tests: `test/pi-child.test.mjs`
 
@@ -240,9 +240,9 @@ Tests: `test/pi-child.test.mjs`
 - **WHEN** the model of a pi child fails after a message was `injected`
 - **THEN** the run becomes `resumed`, and its continuation completes with the message marked as a possible repeat
 
-#### Scenario: The turn limit after a queued message
-- **WHEN** a pi child reaches 20 tool rounds after a message was `injected`
-- **THEN** the run is `failed` with no continuation, and its error and its report say that the child did not get one message
+#### Scenario: A model error at the last automatic continuation after a queued message
+- **WHEN** the model of a pi child fails after a message was `injected`, and the run used its last automatic continuation
+- **THEN** the run is `interrupted` with no continuation, and its error and its report say that the child did not get one message
 
 ### Requirement: Message after the end of a turn of a pi child
 A message that the conversation refuses because its turn ended MUST wait, and the end of the run MUST give a follow-up in the same conversation with the message (`followUp`). The mode `interrupt`, and each other refusal, MUST abort the turn and continue in the same conversation with the message (`restarted`).

@@ -49,7 +49,7 @@ const withoutBypass = request => Array.isArray(request?.options)
 /** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
 const STEER_METHOD = '_session/steering'
 /** The limit of the error output of a child agent, in MB. Above it, Megachat stops the run. */
-const MAX_STDERR_MB = 1
+const MAX_STDERR_MB = 10
 /**
  * The longest wait for the exit of the supervisor at the end of a run. Its end of the processes of a run takes at most
  * 5 seconds: two reads of the process table of at most 2 seconds and the wait between SIGTERM and SIGKILL.
