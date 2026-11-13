@@ -390,13 +390,25 @@ three parts:
 - **Open:** the child tasks that still run or that failed, and the permission requests that wait.
 - **Money:** the USD that the key of Megachat paid for the main agent and the pi children, from `spend.json`, and apart
   from it the API-equivalent cost of your other agent sessions from [tokprof](https://github.com/ignatov/tokprof),
-  which the accounts of Claude Code, Codex and the other agents paid. Without tokprof, the report says that this part
-  is missing.
+  which the accounts of Claude Code, Codex and the other agents paid. This cost covers only the projects that Megachat
+  knows: the listed directories, and the projects of the child tasks of the period. For the rest, the report says
+  "Other work on this machine: not shown." Without tokprof, the report says that this part is missing.
 
 The daemon collects the data, and the main agent only writes the text. The commits come from `git log` with a time
 limit. tokprof comes from `PATH`, else from `~/.local/bin`, and runs as `tokprof flame --stack agent,project,origin
 --value cost` for the period, with a time limit of 2 minutes. tokprof does not read the store of the pi children of
 Megachat, so their cost is only in the first part.
+
+tokprof reads the logs of the whole machine. Megachat runs it one time, with no `--project`, and keeps only the lines
+whose project is a known project or a directory in one. The data and the prompt get no cost, no name and no sum of the
+other lines. tokprof names a session by the root of its git repository, so a session in a subdirectory of a known
+repository counts. Some limits follow from the names of tokprof:
+
+- tokprof names a session in a linked worktree, such as a lease of Branch Deck, by its main repository. So the cost of
+  a worktree of a known repository counts for that repository, and a listed worktree shows no cost. A listed
+  subdirectory of a repository also shows no cost.
+- A group of tokprof, such as `temporary folders` or `codex chats`, is not a project, so it is not shown. A state
+  directory in `/var/folders`, the place of `mktemp -d` on macOS, thus shows no cost of its workspace.
 
 The report is an automatic turn, as the report of a child result. When Air is open, the report comes as a reply. When
 Air is closed, the reply waits in the conversation, and Air shows it at the next attach. A message of yours interrupts

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import test from 'node:test'
 import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
@@ -116,13 +117,45 @@ test('with report.morning off, the timer prepares no report and waits for no tim
 
 test('the tokprof part sums the cost by agent, project and origin, and leaves out a pi line of the state directory', () => {
   const stateDirectory = '/home/user/.jetbrains/air/megachat'
-  const parsed = parseTokprof(folded(stateDirectory), { home: '/home/user', stateDirectory })
+  const known = ['/home/user/src/demo-app', '/home/user/src/demo-tool']
+  const parsed = parseTokprof(folded(stateDirectory), { home: '/home/user', stateDirectory, known })
+  // Each line is in a known project or is the pi line of the state directory, so the part has no otherWork.
   assert.deepEqual(parsed, { status: 'ok', usd: 20, agents: { claude: 15, codex: 4, pi: 1 },
     projects: [{ project: '~/src/demo-app', usd: 15 }, { project: '~/src/demo-tool', usd: 5 }],
     origins: [{ origin: 'prompt', usd: 17.5 }, { origin: 'agent:Explore', usd: 2.5 }], excludedPiChildUsd: 0.7 })
-  // The home directory in the form of tokprof names the same directory.
-  assert.equal(parseTokprof('pi;~/.jetbrains/air/megachat;prompt 300000', { home: '/home/user', stateDirectory }).excludedPiChildUsd, 0.3)
+  // The home directory in the form of tokprof names the same directory. The pi line of the state directory is not other work.
+  assert.deepEqual(parseTokprof('pi;~/.jetbrains/air/megachat;prompt 300000', { home: '/home/user', stateDirectory, known }),
+    { status: 'ok', usd: 0, agents: {}, projects: [], origins: [], excludedPiChildUsd: 0.3 })
   assert.equal(parseTokprof('', { stateDirectory }).usd, 0)
+})
+
+test('the tokprof part counts only a line in a known project or in a directory in one, by path segments', () => {
+  const lines = ['claude;~/src/demo-app;prompt 1000000', 'claude;~/src/demo-app/server;prompt 2000000', 'codex;~/src/demo-app-2;prompt 4000000',
+    'claude;temporary folders;prompt 8000000', 'codex;codex chats;prompt 16000000', 'claude;prompt 32000000'].join('\n')
+  assert.deepEqual(parseTokprof(lines, { home: '/home/user', known: ['/home/user/src/demo-app'] }), { status: 'ok', usd: 3, agents: { claude: 3 },
+    projects: [{ project: '~/src/demo-app/server', usd: 2 }, { project: '~/src/demo-app', usd: 1 }], origins: [{ origin: 'prompt', usd: 3 }],
+    excludedPiChildUsd: 0, otherWork: 'notShown' })
+  // Without a known project, no line counts.
+  assert.deepEqual(parseTokprof(lines, { home: '/home/user' }), { status: 'ok', usd: 0, agents: {}, projects: [], origins: [], excludedPiChildUsd: 0,
+    otherWork: 'notShown' })
+})
+
+test('the tokprof part counts a line of a symbolic link to a known project', async t => {
+  const home = await temporary(t)
+  const repository = join(home, 'src', 'demo-app')
+  await mkdir(repository, { recursive: true })
+  await symlink(repository, join(home, 'link-app'))
+  const parsed = parseTokprof('claude;~/link-app;prompt 1000000\nclaude;~/gone-app;prompt 2000000', { home, known: [repository] })
+  assert.deepEqual([parsed.usd, parsed.projects, parsed.otherWork], [1, [{ project: '~/link-app', usd: 1 }], 'notShown'])
+})
+
+test('private work on the machine gives no cost, no project, no agent and no sum, only the note that it is not shown', () => {
+  const lines = ['claude;~/src/demo-app;prompt 15000000', 'codex;~/src/private-app;prompt 30000000', 'codex;codex chats;prompt 2000000'].join('\n')
+  const parsed = parseTokprof(lines, { home: '/home/user', known: ['/home/user/src/demo-app'] })
+  assert.deepEqual(parsed, { status: 'ok', usd: 15, agents: { claude: 15 }, projects: [{ project: '~/src/demo-app', usd: 15 }],
+    origins: [{ origin: 'prompt', usd: 15 }], excludedPiChildUsd: 0, otherWork: 'notShown' })
+  const json = JSON.stringify(parsed)
+  for (const text of ['private-app', 'codex chats', 'codex', '32', '47']) assert.ok(!json.includes(text), text)
 })
 
 test('the tokprof command runs from PATH with a time limit, and each failure says that the part is missing', async t => {
@@ -130,12 +163,16 @@ test('the tokprof command runs from PATH with a time limit, and each failure say
   const bin = await fakeTokprof(directory)
   const argsFile = join(directory, 'args.jsonl')
   const stateDirectory = join(directory, 'state')
+  const known = [join(directory, 'src', 'demo-app'), join(directory, 'src', 'demo-tool')]
   const environment = { PATH: bin, FAKE_TOKPROF_OUTPUT: folded(stateDirectory), FAKE_TOKPROF_ARGS: argsFile }
-  const ok = await readTokprof({ since: '2026-11-13', until: '2026-11-16', environment, home: directory, stateDirectory })
+  const ok = await readTokprof({ since: '2026-11-13', until: '2026-11-16', environment, home: directory, stateDirectory, known })
   assert.equal(ok.status, 'ok')
   assert.equal(ok.usd, 20)
   const [args] = (await readFile(argsFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
   assert.deepEqual(args.slice(0, -1), ['flame', '--since', '2026-11-13', '--until', '2026-11-16', '--stack', 'agent,project,origin', '--value', 'cost', '-o'])
+  // The output file was in a private temporary directory, and the directory is gone after the read.
+  assert.match(basename(dirname(args.at(-1))), /^megachat-tokprof-/)
+  assert.equal(existsSync(dirname(args.at(-1))), false)
   assert.deepEqual(await readTokprof({ since: '2026-11-13', until: '2026-11-16', environment: { ...environment, FAKE_TOKPROF_MODE: 'fail' }, home: directory }),
     { status: 'missing', reason: 'failed' })
   assert.deepEqual(await readTokprof({ since: '2026-11-13', until: '2026-11-16', environment: { ...environment, FAKE_TOKPROF_MODE: 'sleep' }, home: directory, timeoutMs: 300 }),
@@ -149,7 +186,39 @@ test('the tokprof command runs from PATH with a time limit, and each failure say
   // Without the command on PATH, the command comes from ~/.local/bin.
   await mkdir(join(directory, '.local'))
   execFileSync('cp', ['-R', bin, join(directory, '.local', 'bin')])
-  assert.equal((await readTokprof({ since: '2026-11-13', until: '2026-11-16', environment: { PATH: empty, FAKE_TOKPROF_OUTPUT: folded(stateDirectory) }, home: directory, stateDirectory })).usd, 20)
+  assert.equal((await readTokprof({ since: '2026-11-13', until: '2026-11-16', environment: { PATH: empty, FAKE_TOKPROF_OUTPUT: folded(stateDirectory) }, home: directory,
+    stateDirectory, known })).usd, 20)
+})
+
+test('the known projects of the tokprof part are the listed directories and the projects of the child runs, with one tokprof run', async t => {
+  const directory = await temporary(t)
+  const bin = await fakeTokprof(directory)
+  const argsFile = join(directory, 'args.jsonl')
+  const src = name => join(directory, 'src', name)
+  for (const name of ['demo-app', 'demo-tool', 'demo-lib']) await mkdir(src(name), { recursive: true })
+  const spend = new DailySpend(undefined, { now: () => at('2026-11-16T09:00:00Z') }, { schema: 1, day: '2026-11-16', usd: 0, warning: 'none', days: {} })
+  // The user removed ~/src/old-app from the known repositories after a child run of the period in it.
+  const state = { workspaces: [], projects: [src('demo-app'), src('demo-tool'), src('demo-lib')], megachatWorkspace: join(directory, 'state', 'workspace'),
+    inputs: {}, permissions: {}, runs: { old: { id: 'old', status: 'completed', title: 'Old task', cwd: src('old-app'), agent: 'claude', reported: true,
+      createdAt: at('2026-11-13T10:00:00Z'), finishedAt: at('2026-11-13T11:00:00Z') } } }
+  const output = ['claude;~/src/old-app;prompt 2000000', 'claude;~/src/demo-lib;prompt 1000000', 'codex;~/src/private-app;prompt 30000000',
+    'claude;temporary folders;prompt 4000000'].join('\n')
+  const collect = (value, text) => collectReportData({ state: value, date: '2026-11-16', workday: UTC, spend, home: directory, stateDirectory: join(directory, 'state'),
+    environment: { PATH: [bin, '/usr/bin', '/bin'].join(':'), FAKE_TOKPROF_OUTPUT: text, FAKE_TOKPROF_ARGS: argsFile }, now: at('2026-11-16T09:00:00Z') })
+  const data = await collect(state, output)
+  assert.deepEqual(data.money.otherSessions, { paidBy: 'agentAccounts', costKind: 'apiEquivalent', status: 'ok', usd: 3, agents: { claude: 3 },
+    projects: [{ project: '~/src/old-app', usd: 2 }, { project: '~/src/demo-lib', usd: 1 }], origins: [{ origin: 'prompt', usd: 3 }], excludedPiChildUsd: 0,
+    otherWork: 'notShown' })
+  // The workspace and three known repositories give one run of tokprof, with no --project.
+  const runs = (await readFile(argsFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(runs.length, 1)
+  assert.ok(!runs[0].includes('--project'))
+  // Only the workspace: the lines of private work and of a group of tokprof give 0 USD, no project, no agent and no origin.
+  const alone = { ...state, projects: [], inputs: { 'user-1': { admittedAt: at('2026-11-14T08:00:00Z') } }, runs: {} }
+  const workspace = await collect(alone, 'codex;~/src/private-app;prompt 30000000\nclaude;temporary folders;prompt 4000000')
+  assert.deepEqual(workspace.money.otherSessions, { paidBy: 'agentAccounts', costKind: 'apiEquivalent', status: 'ok', usd: 0, agents: {}, projects: [],
+    origins: [], excludedPiChildUsd: 0, otherWork: 'notShown' })
+  assert.equal((await readFile(argsFile, 'utf8')).trim().split('\n').length, 2)
 })
 
 test('the data has the child runs, the permissions, the sessions and the spend of the period, and no data for a period without activity', async t => {
@@ -264,6 +333,25 @@ test('the report is one automatic turn at the start of the day, with the data in
   const state = await service.state.snapshot()
   assert.deepEqual(state.morningReport, { lastDate: '2026-11-16', pending: null, running: null })
   assert.ok(lines.some(line => line.includes('The morning report of 2026-11-16 waits for its turn.')))
+})
+
+test('the report shows the tokprof cost of a known repository only, and the prompt asks to say that other work is not shown', { timeout: 20000 }, async t => {
+  const tokprofOutput = ['claude;~/src/demo-app;prompt 15000000', 'codex;~/src/private-app;prompt 30000000', 'codex;codex chats;prompt 2000000'].join('\n')
+  const { service, requests, settled } = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, userTurns: [FRIDAY],
+    knownProjects: ['src/demo-app'], tokprofOutput })
+  await logLines(t, async () => {
+    await service.resume()
+    await service.morningReport.running
+    await settled()
+  })
+  assert.equal(requests.length, 1)
+  assert.match(requests[0].prompt, /When money\.otherSessions\.otherWork is notShown, say: Other work on this machine: not shown\./)
+  const data = reportData(requests[0])
+  assert.deepEqual(data.money.otherSessions, { paidBy: 'agentAccounts', costKind: 'apiEquivalent', status: 'ok', usd: 15, agents: { claude: 15 },
+    projects: [{ project: '~/src/demo-app', usd: 15 }], origins: [{ origin: 'prompt', usd: 15 }], excludedPiChildUsd: 0, otherWork: 'notShown' })
+  const json = JSON.stringify(data)
+  for (const text of ['private-app', 'codex chats']) assert.ok(!json.includes(text), text)
+  assert.doesNotMatch(JSON.stringify(data.money), /[^\d.](32|47)[^\d]/)
 })
 
 test('a period with spend but without a turn of the user and a child run gives no turn, and the state keeps the date', { timeout: 20000 }, async t => {

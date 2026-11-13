@@ -72,6 +72,29 @@ tools.", sent `session/cancel` after 6 seconds, and then sent "Count from 1 to 5
   reply was "One, two, three, four, five.", 28 characters, with `end_turn`. The conversation had the entry
   `air.megachat.stopped` with the marker after the `aborted` entry of the partial reply. The run cost 0.0051 USD.
 
+One manual check of the project names of tokprof ran on 2026-11-13 with tokprof 0.1.6 and synthetic Claude logs in a
+temporary home directory (`HOME`, `TMPDIR` and `TOKPROF_CACHE_DIR` in the directory of the check). The home held a git
+repository `~/src/demo-app` with a linked worktree `~/src/demo-app-wt`, and a folder `~/plain/notes` that is no
+repository. `tokprof flame --stack agent,project,origin --value cost` gave these project frames:
+
+- A session in `~/src/demo-app/server` gave `~/src/demo-app`: the root of its repository.
+- A session in `~/src/demo-app-wt/web` gave `~/src/demo-app`: the main repository of the worktree.
+- A session in `~/plain/notes/sub` gave `~/plain/notes/sub`: the folder itself.
+- On the machine of the author, the sessions in the leases of Branch Deck of a repository also had the frame of the main
+  repository. `place.rs` of tokprof gives the same rules.
+
+So the tokprof part of the morning report counts a session in a subdirectory of a known repository, and in a worktree of
+a known repository. A listed worktree and a listed subdirectory of a repository show no cost.
+
+One manual check of the data of the morning report (change `limit-report-to-known-projects`) ran on 2026-11-13 with
+tokprof 0.1.6 on `PATH`, the real logs of the machine, and `collectReportData` with a temporary state directory. The
+state listed one known repository and held one child run of the period in it. The tokprof run took 5.6 seconds.
+
+- The tokprof part named only that repository, gave no agent and no project of the other work, and had `otherWork`
+  `notShown`.
+- `tokprof flame --project <repository> --stack agent,project --value cost` for the same period gave the same cost, to
+  the cent.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.
@@ -82,3 +105,6 @@ These checks need the author by hand. Each one names its OpenSpec change.
 - `show-build-version` (task 6.2): after the first release with this change, run the install line with a temporary
   `MEGACHAT_ACP_CONFIG` and a temporary npm cache. Verify that the last line gives the release form, such as
   "Megachat 0.4.1", with no `+`.
+- `limit-report-to-known-projects` (task 5.1): start the daemon with `MEGACHAT_HOME=$(mktemp -d)`, `report.morning` on,
+  one known repository with a child run of the period, and tokprof on `PATH`. Verify that the Money part of the text of
+  the report names only that repository, gives no sum of four digits, and says "Other work on this machine: not shown."

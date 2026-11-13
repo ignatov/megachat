@@ -137,7 +137,8 @@ can run again one time with the cost of the whole machine.
 
 - A listed worktree, such as a Branch Deck lease that an IDE opened, shows no tokprof cost, and the report says that
   other work is not shown. The cost is too low, but no private name shows.
-- Nobody checked whether tokprof gives the root of the repository or the folder of the session for a session in a
-  subdirectory. If it gives the root, a listed subdirectory shows no cost.
+- tokprof gives the root of the repository for a session in a subdirectory, as a check with synthetic logs on
+  2026-11-13 showed (see `docs/manual-checks.md`). So a listed subdirectory of a repository shows no cost, and a
+  session in a subdirectory of a known repository counts.
 - A later tokprof can change the form of the project frame. The filter then shows less, not more.
 - A pending report of an earlier build can run again one time after the update with its old data.

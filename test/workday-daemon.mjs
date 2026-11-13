@@ -65,9 +65,11 @@ export const text = content => typeof content === 'string' ? content : content.f
  * A daemon with a fake model, a fake tokprof, and a fake clock that starts at the UTC time [start] for the timer and the
  * spend. `settings.json` holds [values], and `spend.json` the count of [spendToday] and the counts of [spendDays]. The
  * state gets one earlier turn of the user at each UTC time of [userTurns]. The model has prices, so each turn costs money.
+ * The state lists the directories of [knownProjects] in the home directory as known repositories, by default the two
+ * projects of [folded], so that its lines count in the tokprof part. [tokprofOutput] replaces the output of [folded].
  */
 export async function daemonFixture(t, { start, values = {}, spendDays = {}, spendToday = { day: '2026-11-01', usd: 0 }, userTurns = [], replies = [], storage,
-  directory, tokprof = 'ok', settings = true, keepAlive = { enabled: false }, accountCheck }) {
+  directory, tokprof = 'ok', tokprofOutput, knownProjects = ['src/demo-app', 'src/demo-tool'], settings = true, keepAlive = { enabled: false }, accountCheck }) {
   directory ??= await temporary(t)
   const stateDirectory = join(directory, 'state')
   const home = join(directory, 'home')
@@ -83,7 +85,7 @@ export async function daemonFixture(t, { start, values = {}, spendDays = {}, spe
   const bin = await fakeTokprof(directory)
   const argsFile = join(directory, 'tokprof-args.jsonl')
   const environment = { PATH: [...(tokprof === 'none' ? [] : [bin]), '/usr/bin', '/bin'].join(':'), FAKE_TOKPROF_MODE: tokprof,
-    FAKE_TOKPROF_OUTPUT: folded(stateDirectory), FAKE_TOKPROF_ARGS: argsFile }
+    FAKE_TOKPROF_OUTPUT: tokprofOutput ?? folded(stateDirectory), FAKE_TOKPROF_ARGS: argsFile }
   const clock = fakeClock(start)
   const fake = fauxProvider({ models: [{ id: 'priced', cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } }] })
   const requests = []
@@ -102,7 +104,10 @@ export async function daemonFixture(t, { start, values = {}, spendDays = {}, spe
     accountCheck,
   })
   await service.state.addWorkspace(project)
+  const known = knownProjects.map(name => join(home, name))
+  for (const path of known) await mkdir(path, { recursive: true })
   await service.state.change(state => {
+    for (const path of known) if (!state.projects.includes(path)) state.projects.push(path)
     for (const time of userTurns) state.inputs[`user-${time}`] = { digest: time, mainRunId: time, submissionId: 0, status: 'completed', admittedAt: at(time) }
   })
   const server = new DaemonServer(service)
@@ -113,5 +118,5 @@ export async function daemonFixture(t, { start, values = {}, spendDays = {}, spe
   const advance = ms => clock.advance(ms, () => Promise.all([service.morningReport.running, service.keepAlive?.running, service.waitCheck]))
   const reports = async () => Object.entries((await service.state.snapshot()).inputs).filter(([id]) => id.startsWith('morning:')).map(([, input]) => input)
   const settled = () => waitForState(service.state, state => !state.current && !state.morningReport.pending ? state : undefined)
-  return { service, daemon, requests, clock, advance, reports, settled, close, directory, stateDirectory, project, argsFile, fake }
+  return { service, daemon, requests, clock, advance, reports, settled, close, directory, stateDirectory, home, project, argsFile, fake }
 }

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { logEvent, logFailure } from './messages.mjs'
 import { automaticRequest, terminalStates } from './MegachatState.mjs'
-import { directoriesOf } from './ProjectDirectories.mjs'
+import { directoriesOf, directoryKey } from './ProjectDirectories.mjs'
 import { directoryOf } from './SessionLog.mjs'
 import { readTokprof } from './Tokprof.mjs'
 import { isWorkingDate, localDate, nextWorkdayStart, reportPeriod, zonedTime } from './Workday.mjs'
@@ -119,6 +119,13 @@ async function sessionsOf(store, directories, from, to) {
 }
 
 /**
+ * The real paths of the projects that Megachat knows, for the tokprof part: each listed directory, and the working
+ * directory of each child run in the data. So a child run in a project that the user removed keeps its cost.
+ */
+const knownProjects = (directories, runs) =>
+  [...new Set([...directories.map(directory => directory.cwd), ...runs.map(run => run.project)].filter(Boolean).map(directoryKey))]
+
+/**
  * The data of the morning report of [date], or `null` for a period without activity: no turn of the user and no child
  * run. The spend does not count: the turn of a report, a keep-alive request and a summary also cost money, and a report
  * must not make the next period active. The daemon collects the data, and the main agent only writes the text. The money of Megachat
@@ -152,18 +159,20 @@ export async function collectReportData({ state, date, workday, spend, sessionSt
   }
   const megachatUsd = days.reduce((sum, day) => sum + day.usd, 0)
   const piUsd = days.reduce((sum, day) => sum + day.piUsd, 0)
-  const tokprof = await readTokprof({ since: period.from, until: date, environment, home, stateDirectory, timeoutMs: tokprofTimeoutMs,
-    signal })
+  const children = {
+    done: finished.filter(run => run.status === 'completed').slice(-LIST_LIMIT).map(finishedChild),
+    failed: finished.filter(run => ['failed', 'cancelled', 'interrupted'].includes(run.status)).slice(-LIST_LIMIT).map(finishedChild),
+    running: runs.filter(run => !terminalStates.has(run.status)).slice(-LIST_LIMIT).map(child),
+  }
+  const permissionsWaiting = Object.values(state.permissions).filter(permission => permission.status === 'pending').slice(-LIST_LIMIT)
+    .map(permission => ({ ...child(state.runs[permission.runId] ?? {}), since: iso(permission.createdAt) }))
+  const tokprof = await readTokprof({ since: period.from, until: date, environment, home, stateDirectory,
+    known: knownProjects(directories, [...Object.values(children).flat(), ...permissionsWaiting]), timeoutMs: tokprofTimeoutMs, signal })
   return {
     date, period: { from: period.from, to: period.to, timezone },
     userTurns,
-    children: {
-      done: finished.filter(run => run.status === 'completed').slice(-LIST_LIMIT).map(finishedChild),
-      failed: finished.filter(run => ['failed', 'cancelled', 'interrupted'].includes(run.status)).slice(-LIST_LIMIT).map(finishedChild),
-      running: runs.filter(run => !terminalStates.has(run.status)).slice(-LIST_LIMIT).map(child),
-    },
-    permissionsWaiting: Object.values(state.permissions).filter(permission => permission.status === 'pending').slice(-LIST_LIMIT)
-      .map(permission => ({ ...child(state.runs[permission.runId] ?? {}), since: iso(permission.createdAt) })),
+    children,
+    permissionsWaiting,
     sessions: await sessionsOf(sessionStore, directories, from, to),
     commits: { projects: commits, moreProjects: Math.max(0, repositories.length - COMMIT_PROJECTS), unreadableProjects: unreadable },
     money: {
