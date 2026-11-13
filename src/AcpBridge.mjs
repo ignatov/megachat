@@ -101,6 +101,8 @@ export const HEALTH_INTERVAL_MS = 60000
 const HEALTH_TIMEOUT_MS = 2000
 /** The wait between the line about the end and the end of the connection. */
 const END_DELAY_MS = 100
+/** The interval of the check for the end of another turn, while a prompt waits for it. */
+const IDLE_CHECK_MS = 2000
 
 /**
  * Routes ACP views to one daemon conversation. Each view owns its transcript projection. [transcripts] is the directory
@@ -256,6 +258,8 @@ class AcpBridgeSession {
     this.reply = null
     this.lastReplyTask = 0
     this.closed = false
+    // The end of the wait of a prompt for another turn, while the prompt waits.
+    this.idle = null
   }
 
   /**
@@ -264,6 +268,13 @@ class AcpBridgeSession {
    * such as an automatic result report or the turn of another view.
    */
   async cancel() {
+    // A stop of a prompt that waits for another turn ends the wait, and it stops that turn: the chat shows that turn
+    // as the turn of the prompt.
+    if (this.idle) {
+      this.idle('cancelled')
+      if (this.currentRunId) await this.daemon.json('/cancel', { mainRunId: this.currentRunId })
+      return
+    }
     if (this.promptInFlight && !this.promptRunId) { this.cancelPending = true; return }
     const mainRunId = this.promptRunId ?? this.currentRunId
     if (mainRunId) await this.daemon.json('/cancel', { mainRunId })
@@ -295,11 +306,16 @@ class AcpBridgeSession {
     const text = promptText(ctx.params.prompt)
     requireCondition(!this.promptInFlight, 'busy')
     const air = ctx.params._meta?.jetbrains?.air
+    const requestId = air?.clientMessageId ?? randomUUID()
     this.promptInFlight = true
+    let receipt
     try {
-      const receipt = await this.daemon.json('/input', {
-        requestId: air?.clientMessageId ?? randomUUID(), text,
-      })
+      // A user turn that this view did not start can run: the continuation of a turn after a restart of the daemon, or
+      // the turn of another view. The daemon interrupts only an automatic turn for an input, so it refuses the input.
+      // The prompt then waits for the end of that turn and starts its own turn.
+      while (!(receipt = await this.admit(requestId, text))) {
+        if (await this.untilIdle() === 'cancelled') return { stopReason: 'cancelled' }
+      }
       this.promptRunId = receipt.mainRunId
       // A stop can arrive before the daemon admits the input. Then the turn had no ID yet.
       if (this.cancelPending) await this.cancel()
@@ -315,7 +331,45 @@ class AcpBridgeSession {
       }
       return { stopReason: settled.status === 'completed' ? 'end_turn' : 'cancelled' }
     }
+    catch (error) {
+      if (error instanceof MegachatError || this.closed) throw error
+      // The daemon stopped, for example for a restart. The daemon keeps an admitted turn and continues it after its
+      // next start, so the prompt ends with a notice and not with the error of the connection.
+      if (!receipt) throw new MegachatError('unavailable')
+      await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-notice-${receipt.mainRunId}`,
+        content: { type: 'text', text: message('error.daemonLost') } }).catch(() => {})
+      return { stopReason: 'cancelled' }
+    }
     finally { this.promptInFlight = false; this.promptRunId = null; this.cancelPending = false }
+  }
+
+  /** Admits the prompt in the daemon. Gives `null` while another turn runs. */
+  async admit(requestId, text) {
+    try { return await this.daemon.json('/input', { requestId, text }) }
+    catch (error) {
+      if (error instanceof MegachatError && error.code === 'busy') return null
+      throw error
+    }
+  }
+
+  /**
+   * Waits until the daemon has no current turn, a stop of the user, or the close of the view. A state without a
+   * current turn ends the wait. A check every [IDLE_CHECK_MS] ends it too, so a missed state cannot keep the prompt.
+   */
+  untilIdle() {
+    return new Promise(resolve => {
+      const done = result => {
+        clearTimeout(timer)
+        this.abort.signal.removeEventListener('abort', closed)
+        this.idle = null
+        resolve(result)
+      }
+      const closed = () => done('cancelled')
+      const timer = setTimeout(() => done('idle'), IDLE_CHECK_MS)
+      this.idle = done
+      this.abort.signal.addEventListener('abort', closed, { once: true })
+      if (this.closed) done('cancelled')
+    })
   }
 
   async attach(ctx, loading) {
@@ -381,7 +435,8 @@ class AcpBridgeSession {
       if (!abort.signal.aborted) {
         const code = String(error.cause?.code ?? error.code ?? error.name)
         process.stderr.write(`${message('error.connection', /^[a-zA-Z0-9_-]{1,64}$/.test(code) ? code : 'unknown')}\n`)
-        this.connection.close(error)
+        // The wait lets a prompt that lost the same daemon send its answer first.
+        setTimeout(() => this.connection.close(error), END_DELAY_MS)
       }
     })
     await ready
@@ -489,6 +544,7 @@ class AcpBridgeSession {
   /** Marks each delegated session in the state as a service session, also the session of a dropped run. */
   async tasks(state) {
     this.currentRunId = state.current?.id ?? null
+    if (!state.current) this.idle?.('idle')
     this.lastState = state
     if (this.serviceSessions) {
       for (const [address, session] of Object.entries(state.serviceSessions ?? serviceSessionsOf(state.runs))) {
