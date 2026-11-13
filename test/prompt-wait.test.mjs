@@ -12,6 +12,7 @@ import { AcpBridge } from '../src/AcpBridge.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
+import { recordVersion, updateNoteText } from '../src/MegachatUpdate.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -134,4 +135,65 @@ test('a prompt that finds no daemon fails with the text of Megachat and not with
   const viewer = await view(t, daemon, cwd)
   await server.close()
   await assert.rejects(viewer.prompt('Fix the parser', 'turn-1'), error => error.data?.details === message('error.unavailable'))
+})
+
+/**
+ * The order of events of a restart of the daemon by a child: the child ends, its result report runs, the daemon stops
+ * during the report, and the next daemon has a newer version. The view of the new bridge did not start the report.
+ */
+test('a prompt during the result report that the next daemon sends again after its restart runs its own turn after the update note', { timeout: 20000 }, async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'megachat-prompt-wait-')))
+  // The stop of the first daemon leaves its storage open, so the next daemon reads the same state.
+  const memory = new MemoryStorage()
+  const storage = new Proxy(memory, { get(target, name) {
+    if (name === 'close') return async () => {}
+    const value = Reflect.get(target, name)
+    return typeof value === 'function' ? value.bind(target) : value
+  } })
+  const open = async (version, replies) => {
+    const fake = fauxProvider()
+    const models = createModels()
+    models.setProvider(fake.provider)
+    const model = fake.getModel()
+    const requests = []
+    // A reply without text waits for the abort of its model request, as a report that runs during the stop does.
+    fake.setResponses(replies.map(reply => async (context, options) => {
+      requests.push(reply)
+      if (reply) return fauxAssistantMessage(reply)
+      await new Promise(resolve => options?.signal?.addEventListener('abort', resolve, { once: true }))
+      return fauxAssistantMessage('The report stopped.')
+    }))
+    const service = await PiMegachatService.open(storage, models, { provider: model.provider, modelId: model.id }, {},
+      { suggestions: 'off', keepAlive: { enabled: false }, reportRetryDelayMs: 20 })
+    await recordVersion(service.state, version, { fetchNotes: async () => null })
+    return { service, requests }
+  }
+  const report = state => state.current?.kind === 'report' ? state.current : undefined
+  const first = await open('0.6.1', ['Delegated.', null])
+  t.after(() => rm(cwd, { force: true, recursive: true }))
+  await first.service.state.addWorkspace(cwd)
+  const main = await first.service.state.submit('main', 'Update and restart the daemon')
+  const run = await first.service.state.admitChild('tool', { cwd, prompt: 'Update and restart the daemon' })
+  await first.service.state.transition(run.id, ['admitted'], { status: 'completed' })
+  first.service.follow(main)
+  await first.service.resume()
+  await waitForState(first.service.state, report, { timeoutMs: 10000 })
+  await until(() => first.requests.length === 2, 'The report did not start its model request.')
+  await first.service.close()
+
+  const next = await open('0.6.2', [null, 'The onboarding starts now.', 'The completed task result.'])
+  const server = new DaemonServer(next.service)
+  const daemon = new DaemonClient(await server.listen())
+  t.after(async () => { await server.close(); await next.service.close() })
+  await next.service.resume()
+  await waitForState(next.service.state, report, { timeoutMs: 10000 })
+  await until(() => next.requests.length === 1, 'The next daemon did not send the report again.')
+  // The daemon refuses no prompt here: it stops the report for the prompt of the user.
+  const viewer = await view(t, daemon, cwd)
+  assert.equal((await viewer.prompt('Start a new onboarding', 'turn-1')).stopReason, 'end_turn')
+  const texts = viewer.texts()
+  const note = texts.findIndex(text => text.startsWith(updateNoteText({ from: '0.6.1', to: '0.6.2', notes: null }).slice(0, 40)))
+  assert.ok(note >= 0, texts.join('\n'))
+  assert.ok(texts.indexOf('The onboarding starts now.') > note, texts.join('\n'))
+  assert.equal((await next.service.state.snapshot()).inputs['turn-1'].status, 'completed')
 })

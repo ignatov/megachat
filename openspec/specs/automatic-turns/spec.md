@@ -21,7 +21,7 @@ Tests: `test/state.test.mjs`, `test/integration.test.mjs`
 ### Requirement: User message during an automatic turn
 A user message MUST interrupt an automatic turn, such as the turn of the summary of the past sessions.
 
-Tests: `test/integration.test.mjs`, `test/state.test.mjs`
+Tests: `test/integration.test.mjs`, `test/state.test.mjs`, `test/prompt-wait.test.mjs`
 
 #### Scenario: A user message during the summary of the past sessions
 - **WHEN** the turn of the summary of the past sessions runs and the user sends "My task comes first"
