@@ -157,9 +157,21 @@ CLI of that day, `@agentclientprotocol/codex-acp` 2.6.0 with `@openai/codex` 0.1
   3 seconds, and the process of the app-server was `@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`.
   The Codex history through `codexAppServerLaunch()` then listed the session of that child.
 - Without `central add codex`, the base URL of Central with its key is in the command line of the Codex process.
-- With an empty `HOME`, `central add claude-code` stops at "not logged in" before it looks for Claude Code, so the
-  check could not tell whether it needs the CLI. `central agents --json` finds Claude Code only as `claude` on the
-  `PATH`, and reports `installed` apart from `configured`.
+- `central agents --json` finds Claude Code only as `claude` on the `PATH`, and reports `installed` apart from
+  `configured`.
+
+One manual check of Central ran on 2026-11-13 on a clean macOS 26.6.2 virtual machine with Central 2.5.0 and no
+Claude Code.
+
+- `central add claude-code` exited with 0 and printed "Claude Agent configured via port 19516". `central agents` showed
+  "Claude Agent  not installed · configured". The command wrote `apiKeyHelper` and `env.ANTHROPIC_BASE_URL` into
+  `~/.claude/settings.json`, and a backup `settings.json.<time>.backup`. Without a login it printed "not logged in —
+  run 'central login' first" and exited with 1.
+- The key helper is `central proxy start --ensure-updated --caller agent --return-key`. With
+  `PATH=/bin:/usr/bin:/usr/sbin:/usr/local/bin:/opt/homebrew/bin` it exited with 127 and gave no key. With
+  `~/.local/bin` on the `PATH` it exited with 0 and printed a key of 32 characters. The installer of Central does not
+  add `~/.local/bin` to the `PATH`.
+- `central status` exited with 0 also without a login. Its text then held "Auth  not connected".
 
 ## Open checks
 

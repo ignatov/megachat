@@ -51,8 +51,9 @@ The machine needs:
 - The Central command at `~/.local/bin/central`, with a login: `central login`.
 - Optional: the Central entry of Claude Code in `~/.claude/settings.json`: `central add claude-code`. A Claude child
   takes its key from it when it is there. Else a Claude child takes the key of the main agent, from `central run pi`,
-  and Central counts its requests as requests of pi. The documentation of Central lists an installed agent as a
-  requirement of `central add`, so you can need Claude Code for that command.
+  and Central counts its requests as requests of pi. `central add claude-code` works also without Claude Code. Its key
+  helper calls `central` by its bare name, so Megachat puts the directory of `~/.local/bin/central` on the `PATH` of
+  the helper and of each child.
 - Optional: Claude Code at `~/.local/bin/claude`. A Claude child uses it when it is there. Else a Claude child uses
   the Claude Code that npm installed with Megachat.
 - Optional: the Codex command, `codex`, on the `PATH`. A Codex child and the Codex history use it when it is there.

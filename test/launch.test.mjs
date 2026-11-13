@@ -325,6 +325,30 @@ test('a Claude child takes the Central entry of Claude Code first, else the conf
   assert.ok(!log.join('').includes('sk-secret-value'), log.join(''))
 })
 
+test('the key helper of Central and each child find a bare central in the directory of the Central command', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-central-path-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  // As the installer of Central does, the Central command is only in its own directory, which is not on the PATH.
+  const tools = join(directory, 'local-bin')
+  await mkdir(tools)
+  const central = join(tools, 'central')
+  await writeFile(central, '#!/bin/sh\n[ "$1 $2" = "proxy start" ] && echo helper-key-0123456789abcdef && exit 0\nexit 3\n', { mode: 0o755 })
+  const settings = join(directory, 'settings.json')
+  // The key helper that `central add claude-code` writes calls central by its bare name.
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: 'central proxy start --ensure-updated --caller agent --return-key',
+    env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test' } }))
+  assert.ok(!(process.env.PATH ?? '').split(delimiter).includes(tools))
+  const configuration = new CentralConfigurationService({ settings, central, claude: join(directory, 'missing'), environment: { PATH: '/usr/bin' } })
+  const environment = await configuration.childEnvironment()
+  assert.equal(environment.ANTHROPIC_API_KEY, 'helper-key-0123456789abcdef')
+  assert.equal((await configuration.claudeConfiguration()).source, 'settings')
+  // A Claude child, a Codex child and the app-server of the Codex history get the directory after the node.
+  assert.deepEqual(environment.PATH.split(delimiter), [dirname(process.execPath), tools, '/usr/bin'])
+  const codex = (await configuration.childLaunch('codex')).env.PATH.split(delimiter)
+  assert.deepEqual(codex.slice(1), [dirname(process.execPath), tools, '/usr/bin'])
+  assert.deepEqual(configuration.codexAppServerLaunch().env.PATH.split(delimiter).slice(1), [dirname(process.execPath), tools, '/usr/bin'])
+})
+
 test('the app-server of the Codex history starts through Central with the PATH of a Codex child', () => {
   const configuration = new CentralConfigurationService({ central: '/central', environment: { PATH: '/usr/bin' } })
   const launch = configuration.codexAppServerLaunch()

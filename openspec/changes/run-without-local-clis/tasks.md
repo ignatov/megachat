@@ -23,6 +23,11 @@ use no recursive delete.
 - [x] 1.5 Check the `Tests:` line `test/launch.test.mjs` of "Central configuration of a Claude child" of
   `claude-child`, and of the scenarios "Claude Code of the user" and "No Claude Code of the user" of `launch`.
 
+- [x] 1.6 Put the directory of the Central command first on the `PATH` of the key helper, of `central run pi` and of
+  each child (D7). Add the case "the key helper of Central and each child find a bare central in the directory of the
+  Central command" to `test/launch.test.mjs`, and name it in the `Tests:` lines of "PATH of the key helper of Claude
+  Code" of `claude-child` and "PATH of a child agent" of `launch`. Verify with `npm test`.
+
 ## 2. Codex child and Codex history without the Codex CLI
 
 - [x] 2.1 In `bin/codex`, in the branch with `MEGACHAT_CODEX_ARGS`, search the `PATH` without `bin/` for an executable

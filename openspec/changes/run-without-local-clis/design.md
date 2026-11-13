@@ -91,21 +91,17 @@ Alternatives:
 Trade-off: Central counts the requests of such a child on the route of pi (fact 3). Fact 4 shows that the route
 serves the requests of Claude Code.
 
-**Does `central add claude-code` need a Claude Code CLI?** Not known. The facts, without a run of `add` against the
-real home directory:
+**Does `central add claude-code` need a Claude Code CLI?** No. A check on a clean macOS 26.6.2 virtual machine with
+Central 2.5.0 and no Claude Code, on 2026-11-13, gave these facts:
 
-- `central add --help` names no requirement.
-- The documentation of Central (https://www.jetbrains.com/help/central-cli/) says: "JetBrains Central CLI configures
-  agents but does not install them", and lists "at least one supported agent" as a requirement. The pages about `add`
-  and `agents` do not say what `add` does when it does not find the agent.
-- `central agents --json` reports `installed` and `configured` apart. With the real home directory and a `PATH`
-  without `~/.local/bin`, Claude Code is `installed: false, configured: true`. So Central finds Claude Code only as
-  `claude` on the `PATH`.
-- The strings of the binary hold no message that refuses an agent that is not installed.
-- With an empty `HOME`, `central add claude-code` stops at "not logged in — run 'central login' first" before it
-  looks for the agent. The login cannot go into a temporary home without a copy of its credentials.
+- `central add claude-code` exits with 0 and prints "Claude Agent configured via port 19516". `central agents` then
+  shows "Claude Agent  not installed · configured".
+- It writes `apiKeyHelper` and `env.ANTHROPIC_BASE_URL` into `~/.claude/settings.json`, and a backup
+  `settings.json.<time>.backup` next to it.
+- Without a login, it prints "not logged in — run 'central login' first" and exits with 1.
 
-With the fallback, a Claude child does not need `central add claude-code`, so the answer only tells the README.
+So a machine with only Central and its login can also give Claude children the route of Claude Code. The fallback of
+D2 stays for a machine without that command.
 
 ### D3. `bin/codex`: Codex of the user first, then the Codex of the Codex ACP
 
@@ -174,6 +170,29 @@ parameter, so a test can make both fail. The check runs no binary.
 `accounts.fix.central.claude` and `accounts.fix.login.claude` become "Run "central login" in a terminal. Then run the
 check again.", as for Codex, because a Claude child no longer needs `central add claude-code`.
 
+### D7. The directory of the Central command on the `PATH`
+
+The key helper that `central add claude-code` writes is `central proxy start --ensure-updated --caller agent
+--return-key`. It calls `central` by its bare name. The check on the virtual machine showed that it exits with 127,
+and gives no key, with `PATH=/bin:/usr/bin:/usr/sbin:/usr/local/bin:/opt/homebrew/bin`. With `~/.local/bin` on the
+`PATH`, it exits with 0 and prints a key of 32 characters. The installer of Central does not add `~/.local/bin` to the
+`PATH`. It only prints a hint. The daemon gets the `PATH` of the IDE or of the terminal that started it.
+
+So `CentralConfigurationService.centralPath()` puts `dirname(this.central)`, by default `~/.local/bin`, first on the
+`PATH` of these processes:
+
+- the run of the key helper in `claudeConfiguration()`;
+- `central run pi` in `pi()`, after the `bin` directory of Megachat, because Central can call `central` itself;
+- each child, in `baseEnvironment()`, after the directory of the node: a Claude child (a hook or a tool of Claude Code
+  can call `central`), a Codex child through `central run codex`, and the app-server of the Codex history.
+
+Alternative: an absolute path in place of the bare name in the helper. Rejected: Megachat does not change the settings
+of the user, and Claude Code of the user runs the same helper outside Megachat.
+
+`central status` exits with 0 also without a login, and its text then holds "Auth  not connected". Megachat does not
+read `central status`. `install` and `agents_accounts` take the login state from the result of `central run pi` and
+of the start of each agent, not from an exit code of `central status`.
+
 ### Daemon, state and ACP
 
 - Megachat decides the binary and the key at each start of a child, as now. A run that the daemon admitted keeps its
@@ -213,7 +232,6 @@ commit.
 - Central counts the requests of a Claude child on the route of pi as pi traffic. Does Central also limit them, or
   allow other models there, than on the route of `claude-code`? A later Central can give a `claude-code` key through
   `central run claude` on a machine without the entry. Then a later change can use that source.
-- Does `central add claude-code` work on a machine without Claude Code (see D2)? The answer changes only the README.
 - Must `bin/codex` use the subcommand `cli` of an IDE-passed Codex ACP when the `PATH` has no `codex`? That makes a
   Codex child of the Air bundle work without the Codex CLI. It depends on the Codex agent that Air installs.
 - Nobody ran the fallback on Linux or on an Intel Mac. npm installs the binary of each platform.

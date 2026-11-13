@@ -20,3 +20,12 @@ Tests: `test/launch.test.mjs`
 #### Scenario: No configuration at all
 - **WHEN** the settings file of the test does not exist, and the Central command of the test exits with the code 7
 - **THEN** the launch of a Claude child fails with the code `central`, and no log line holds the output of the command
+
+### Requirement: PATH of the key helper of Claude Code
+Megachat MUST run the key helper of the settings of Claude Code, and `central run pi`, with the directory of the Central command first on the `PATH`. The key helper that `central add claude-code` writes is `central proxy start --ensure-updated --caller agent --return-key`. It calls `central` by its bare name, and the installer of Central does not put `~/.local/bin` on the `PATH`.
+
+Tests: `test/launch.test.mjs`
+
+#### Scenario: A key helper that calls a bare central
+- **WHEN** the settings of the test hold the key helper `central proxy start --ensure-updated --caller agent --return-key`, and a `central` that prints a key is only in the directory of the Central command, which is not on the `PATH` of the test
+- **THEN** the environment of a Claude child has that key, and its source is the Central entry of the settings

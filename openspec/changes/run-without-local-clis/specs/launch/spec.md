@@ -55,7 +55,7 @@ Tests: `test/launch.test.mjs`, `test/package.mjs`
 - **THEN** the Codex child answers `initialize` with a protocol version
 
 ### Requirement: PATH of a child agent
-The node that runs Megachat MUST come before the other directories on the `PATH` of its children. For Codex, the `bin` directory of Megachat comes before that node, because it holds the `codex` command that Central starts. The app-server of the Codex history MUST get the same `PATH` as a Codex child.
+The node that runs Megachat MUST come before the other directories on the `PATH` of its children, and the directory of the Central command MUST follow it, because Central calls `central` by its bare name. For Codex, the `bin` directory of Megachat comes before that node, because it holds the `codex` command that Central starts. The app-server of the Codex history MUST get the same `PATH` as a Codex child.
 
 Tests: `test/launch.test.mjs`, `test/package.mjs`
 
@@ -66,6 +66,10 @@ Tests: `test/launch.test.mjs`, `test/package.mjs`
 #### Scenario: The PATH of a Codex child
 - **WHEN** Megachat starts a Codex child through Central, and the `PATH` of Megachat is `/usr/bin`
 - **THEN** the `PATH` of the child starts with the `bin` directory of Megachat, then the directory of the node that runs Megachat, and it ends with `/usr/bin`
+
+#### Scenario: The directory of the Central command
+- **WHEN** the Central command is `local-bin/central` of the test, that directory is not on the `PATH` of the test, and the `PATH` of Megachat is `/usr/bin`
+- **THEN** the `PATH` of a Claude child is the directory of the node, `local-bin` and `/usr/bin`, and a Codex child and the app-server of the Codex history get the same entries after the `bin` directory of Megachat
 
 #### Scenario: The PATH of the app-server of the Codex history
 - **WHEN** Megachat starts the app-server of the Codex history, and the `PATH` of Megachat is `/usr/bin`

@@ -35,6 +35,8 @@ Where it shows: the result of a child task in the chat and in the task list of A
   route of Central itself. So `central add codex` is not necessary.
 - **The Codex history works without the Codex CLI of the user.** The app-server of the history uses the same `codex`
   as a Codex child.
+- **A bare `central` works in the key helper and in each child.** The key helper of `central add claude-code`,
+  `central run pi` and each child get the directory of the Central command on the `PATH`, by default `~/.local/bin`.
 - **`install` needs Central, its login, and one ready child agent.** The checks of the platform and of Central stay.
   The lines about Claude Code and Codex tell which binary and which key a child uses. With only the route of pi, the
   key line names `central add claude-code` as a hint. The exit code is 0 when the platform and Central pass and a child
@@ -47,9 +49,9 @@ Where it shows: the result of a child task in the chat and in the task list of A
 
 ## Note on `central add claude-code`
 
-It is not known whether `central add claude-code` works without a Claude Code CLI (see design.md, D2). With the
-fallback to the route of pi, a Claude child does not need that command. The command only gives Claude children the
-route of Claude Code in Central.
+`central add claude-code` works without a Claude Code CLI (see design.md, D2). Its key helper calls `central` by its
+bare name, so Megachat puts the directory of the Central command on the `PATH` of the helper and of each child
+(design.md, D7). The installer of Central does not put `~/.local/bin` on the `PATH`.
 
 ## Capabilities
 
@@ -64,8 +66,9 @@ None.
   app-server of the Codex history gets the same `PATH` as a Codex child.
 - `install`: the requirements "Checks of install" and "Last lines and exit code of install" change. Claude Code and
   Codex of the user become information. The exit code needs one ready child agent.
-- `claude-child`: a new requirement "Central configuration of a Claude child" states the source of the key and the
-  base URL. No present requirement states it.
+- `claude-child`: the new requirements "Central configuration of a Claude child" and "PATH of the key helper of Claude
+  Code" state the source of the key and the base URL, and the `PATH` of the helper. No present requirement states
+  them.
 
 ## Impact
 

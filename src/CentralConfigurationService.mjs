@@ -142,10 +142,19 @@ export class CentralConfigurationService {
     this.secrets = new KnownSecrets()
   }
 
+  /**
+   * The `PATH` of a process of Megachat with the directory of the Central command first. The key helper that
+   * `central add claude-code` writes, `central proxy start ...`, calls `central` by its bare name, and the installer of
+   * Central does not put `~/.local/bin` on the `PATH`.
+   */
+  centralPath(path = process.env.PATH) {
+    return [dirname(this.central), path].filter(Boolean).join(delimiter)
+  }
+
   async pi(signal) {
     try {
       const result = await execute(this.central, ['run', 'pi'], {
-        env: { ...process.env, PATH: `${BIN}${delimiter}${process.env.PATH ?? ''}` },
+        env: { ...process.env, PATH: `${BIN}${delimiter}${this.centralPath()}` },
         timeout: 15000, maxBuffer: 128000, signal,
       })
       const configuration = JSON.parse(result.stdout).anthropic
@@ -209,7 +218,8 @@ export class CentralConfigurationService {
       const settings = JSON.parse(await readFile(this.settings, 'utf8'))
       const baseUrl = settings.env?.ANTHROPIC_BASE_URL
       requireCondition(typeof settings.apiKeyHelper === 'string', 'central')
-      const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: 10000, maxBuffer: 64000 })
+      const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: 10000, maxBuffer: 64000,
+        env: { ...process.env, PATH: this.centralPath() } })
       const apiKey = result.stdout.trim()
       this.validate({ baseUrl, apiKey })
       this.remember({ baseUrl, apiKey })
@@ -240,12 +250,16 @@ export class CentralConfigurationService {
     }
   }
 
-  /** The node that runs Megachat comes first on `PATH`, so the `#!/usr/bin/env node` scripts of the agents find it. */
+  /**
+   * The node that runs Megachat comes first on `PATH`, so the `#!/usr/bin/env node` scripts of the agents find it. The
+   * directory of the Central command comes next, because Central and a key helper of Central call `central` by its
+   * bare name.
+   */
   baseEnvironment() {
     const environment = this.environment
     const variables = Object.fromEntries(['HOME', 'TMPDIR', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SSH_AUTH_SOCK', 'CODEX_HOME']
       .filter(name => environment[name] !== undefined).map(name => [name, environment[name]]))
-    return { ...variables, PATH: [dirname(process.execPath), environment.PATH].filter(Boolean).join(delimiter) }
+    return { ...variables, PATH: [dirname(process.execPath), this.centralPath(environment.PATH)].join(delimiter) }
   }
 
   /**
