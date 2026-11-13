@@ -274,3 +274,117 @@ test('the supervisor stops the process group of an agent that ends by itself', {
     catch (error) { if (error.code === 'ESRCH') return true; throw error }
   })
 })
+
+/** Collects the lines of the error output of this process. */
+function captureErrors(t) {
+  const lines = []
+  const write = process.stderr.write
+  process.stderr.write = function (chunk, ...rest) { lines.push(String(chunk)); return write.call(this, chunk, ...rest) }
+  t.after(() => { process.stderr.write = write })
+  return lines
+}
+
+/** A service with a faux model and its daemon server in this process. */
+async function inProcessDaemon(t) {
+  const { createModels } = await import('@earendil-works/pi-ai/models')
+  const { fauxAssistantMessage, fauxProvider } = await import('@earendil-works/pi-ai/providers/faux')
+  const { MemoryStorage } = await import('@earendil-works/pi-durable')
+  const { PiMegachatService } = await import('../src/PiMegachatService.mjs')
+  const { DaemonServer } = await import('../src/DaemonServer.mjs')
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-bridge-end-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const fake = fauxProvider()
+  fake.setResponses([() => fauxAssistantMessage('Answer.')])
+  const models = createModels()
+  models.setProvider(fake.provider)
+  const model = fake.getModel()
+  const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, {},
+    { settingsPath: join(directory, 'settings.json'), keepAlive: { enabled: false }, environment: {} })
+  await service.resume()
+  t.after(() => service.close())
+  const server = new DaemonServer(service)
+  t.after(() => server.close())
+  const daemon = new DaemonClient(await server.listen())
+  daemon.health = await daemon.json('/health')
+  return { service, server, daemon, directory }
+}
+
+const AIR = { _meta: { jetbrains: { air: { version: 1, capabilities: ['asyncTasks'] } } } }
+
+test('a bridge with a view ends its connection at the event update of its daemon, with one line', { timeout: 20000 }, async t => {
+  const { AcpBridge } = await import('../src/AcpBridge.mjs')
+  const { server, daemon, directory } = await inProcessDaemon(t)
+  const lines = captureErrors(t)
+  const connection = client({ name: 'test-air' }).onNotification('*', () => {}).connect(new AcpBridge(daemon).app())
+  t.after(() => connection.close())
+  await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: AIR })
+  await connection.agent.request(methods.agent.session.new, { cwd: directory, mcpServers: [] })
+  await server.announce('update', { from: '0.4.0', to: '0.5.0' })
+  await connection.closed
+  assert.deepEqual(lines.filter(line => line.includes('Megachat daemon stopped')),
+    ['The Megachat daemon stopped for the update from 0.4.0 to 0.5.0. The next start of Megachat installs it.\n'])
+})
+
+test('a bridge without a view ends when its daemon is gone or another daemon answers', { timeout: 20000 }, async t => {
+  const { AcpBridge } = await import('../src/AcpBridge.mjs')
+  const lines = captureErrors(t)
+  const gone = await inProcessDaemon(t)
+  const first = client({ name: 'test-air' }).connect(new AcpBridge(gone.daemon, { healthIntervalMs: 50 }).app())
+  t.after(() => first.close())
+  await first.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: AIR })
+  await delay(200)
+  await gone.server.close()
+  await first.closed
+  // A daemon with another process ID on the same connection is not the daemon of the start of the bridge.
+  const other = await inProcessDaemon(t)
+  other.daemon.health = { ...other.daemon.health, pid: other.daemon.health.pid + 1 }
+  const second = client({ name: 'test-air' }).connect(new AcpBridge(other.daemon, { healthIntervalMs: 50 }).app())
+  t.after(() => second.close())
+  await second.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: AIR })
+  await second.closed
+  assert.equal(lines.filter(line => line.includes('The Megachat daemon is gone')).length, 2)
+})
+
+/** The command lines of the processes of this user that name [text]. */
+async function processesNaming(text) {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { stdout } = await promisify(execFile)('ps', ['-x', '-o', 'command='])
+  return stdout.split('\n').filter(line => line.includes(text))
+}
+
+for (const view of [true, false]) {
+  test(`an acp ${view ? 'with a view' : 'without a view'} exits with the code 0 after the stop of its daemon, and starts no daemon`, { timeout: 30000 }, async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'megachat-bridge-stop-'))
+    t.after(async () => {
+      try { await stopDaemon(directory) }
+      finally { await rm(directory, { force: true, recursive: true }) }
+    })
+    const bridge = spawn(process.execPath, [fileURLToPath(new URL('../src/main.mjs', import.meta.url)), 'acp', directory])
+    t.after(() => bridge.kill())
+    let output = ''
+    let errors = ''
+    bridge.stdout.on('data', chunk => { output += chunk })
+    bridge.stderr.on('data', chunk => { errors += chunk })
+    const exited = once(bridge, 'exit')
+    const send = value => bridge.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`)
+    const answer = id => poll(() => output.split('\n').filter(Boolean).map(line => JSON.parse(line)).find(item => item.id === id))
+    send({ id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: AIR } })
+    await answer(1)
+    if (view) {
+      send({ id: 2, method: 'session/new', params: { cwd: directory, mcpServers: [] } })
+      assert.ok((await answer(2)).result.sessionId)
+    }
+    await (await DaemonClient.connect(directory)).json('/shutdown', {})
+    await poll(async () => (await processesNaming(`main.mjs daemon ${directory}`)).length === 0 || undefined)
+    if (!view) {
+      // The request finds no daemon. The answer is an error, and the bridge then ends.
+      send({ id: 3, method: 'session/new', params: { cwd: directory, mcpServers: [] } })
+      assert.ok((await answer(3)).error)
+    }
+    const [code] = await exited
+    assert.equal(code, 0, errors)
+    assert.deepEqual(await processesNaming(`main.mjs daemon ${directory}`), [])
+    await assert.rejects(DaemonClient.connect(directory))
+  })
+}

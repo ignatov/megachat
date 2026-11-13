@@ -24,12 +24,24 @@ export class DaemonClient {
     this.descriptor = descriptor
   }
 
+  /**
+   * Sends one request to the daemon. When no process listens on the port of the daemon, or another daemon refuses the
+   * token, the daemon of this client is gone, and [onGone] gets a call. A bridge then ends (see `AcpBridge`).
+   */
   async request(path, body, signal) {
-    const response = await fetch(`http://127.0.0.1:${this.descriptor.port}${path}`, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { authorization: `Bearer ${this.descriptor.token}`, 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body), signal,
-    })
+    let response
+    try {
+      response = await fetch(`http://127.0.0.1:${this.descriptor.port}${path}`, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { authorization: `Bearer ${this.descriptor.token}`, 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body), signal,
+      })
+    }
+    catch (error) {
+      if (error?.cause?.code === 'ECONNREFUSED') this.onGone?.()
+      throw error
+    }
+    if (response.status === 401) this.onGone?.()
     if (!response.ok) {
       const error = await response.json()
       throw new MegachatError(['busy', 'conflict', 'missing', 'stale', 'inactive', 'unauthorized', 'stopClosed'].includes(error.error)

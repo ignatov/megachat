@@ -10,6 +10,7 @@ import { rmdir } from 'node:fs/promises'
 import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
 import { ChildTextFilter, redactOwnSecrets } from './SessionText.mjs'
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
+import { baseVersion, higherVersion, updateNoteText } from './MegachatUpdate.mjs'
 
 export const terminalStates = new Set(['completed', 'cancelled', 'interrupted', 'failed', 'resumed'])
 
@@ -575,6 +576,7 @@ export class MegachatState {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
     requireCondition(typeof text === 'string' && text.length > 0 && text.length <= 100000)
     const hash = digest(text)
+    await this.writeUpdateNote()
     return this.change(async (state, tx) => {
       const old = Object.hasOwn(state.inputs, requestId) ? state.inputs[requestId] : null
       if (old) {
@@ -774,8 +776,75 @@ export class MegachatState {
     })
   }
 
+  /**
+   * Records the version [version] of the daemon at its start (see the capability `update`). The field `update` holds
+   * the version of the last daemon, the last automatic stop, the release for which a stop gave no update, and the
+   * message that waits for the next turn of the user or for the morning report. A state of an earlier build has no
+   * field: it gets the version with no message. Gives `{ notice, failed }`: the new message and the release of a stop
+   * without an update, or `null`.
+   */
+  async recordVersion(version) {
+    return this.change(state => {
+      if (!state.update) {
+        state.update = { version, stop: null, failed: null, notice: null }
+        return { notice: null, failed: null }
+      }
+      const update = state.update
+      let notice = null
+      let failed = null
+      if (higherVersion(version, update.version)) {
+        notice = { from: baseVersion(update.version), to: baseVersion(version), notes: null }
+        update.notice = notice
+        update.failed = null
+      }
+      else if (update.stop && !higherVersion(version, update.stop.from)) {
+        failed = update.stop.to
+        update.failed = failed
+      }
+      update.version = version
+      update.stop = null
+      return { notice: notice && plain(notice), failed }
+    })
+  }
+
+  /** Adds [notes] to the waiting message of [notice], when that message still waits. */
+  async updateNotes(notice, notes) {
+    return this.change(state => {
+      const waiting = state.update?.notice
+      if (waiting && waiting.from === notice.from && waiting.to === notice.to) waiting.notes = notes
+    })
+  }
+
+  /** Records the automatic stop from [from] for the release [to] before the stop. */
+  async updateStopped(from, to, now = Date.now()) {
+    return this.change(state => {
+      state.update ??= { version: from, stop: null, failed: null, notice: null }
+      state.update.stop = { from, to, at: now }
+    })
+  }
+
+  /**
+   * Writes the waiting message after an update into the conversation, directly before the admission of the input of a
+   * turn of the user or of the morning report. One commit admits one submission, so the message has its own commit
+   * before the commit of the input. The message is a note of Megachat: a fixed text without a model request. It goes
+   * out only when no turn runs, no run is live and the inbox is empty, as a note about the sessions does, so it never
+   * lands inside a run.
+   */
+  async writeUpdateNote() {
+    if (!(await this.snapshot())?.update?.notice) return
+    await this.change(async (state, tx) => {
+      const notice = state.update?.notice
+      if (!notice || state.current || (await tx.doc(LiveDoc, this.root.id)).run !== undefined
+        || (await tx.doc(InboxDoc, this.root.id)).items.length > 0) return
+      await this.root.submit(tx, { type: 'write', requestId: `update:${randomUUID()}`,
+        entry: { kind: NOTE_KIND, data: { type: 'update', from: notice.from, to: notice.to }, model: [noteMessage(updateNoteText(plain(notice)), Date.now())] } })
+      state.update.notice = null
+    })
+  }
+
   /** Starts the turn of the morning report that waits. The turn runs only when no other turn runs. */
   async nextMorningReport() {
+    await this.writeUpdateNote()
     return this.change(async (state, tx) => {
       const pending = state.morningReport?.pending
       if (state.current || !pending) return null

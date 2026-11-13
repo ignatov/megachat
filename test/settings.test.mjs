@@ -115,7 +115,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
     'cache.ttl': '5m', 'compaction.tokens': 100000,
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
-    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
+    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'memory.reflection': true, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
@@ -158,6 +158,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'workday.timezone': [[' AUTO ', 'auto'], ['Europe/Berlin', 'Europe/Berlin'], ['UTC', 'UTC'], ['America/New_York', 'America/New_York']],
     'workday.idleMinutes': [[0, 0], ['45', 45], [1440, 1440]],
     'report.morning': [[true, true], ['on', true], [' off ', false]],
+    'update.auto': [[false, false], ['on', true], [' off ', false]],
     // The values of v0.3.0, true and false, and the words of a boolean give reply and off.
     'reply.suggestions': [['ghost', 'ghost'], [' Reply ', 'reply'], ['off', 'off'], [true, 'reply'], [false, 'off'], ['on', 'reply'], ['0', 'off']],
     'reply.language': [['Deutsch', 'Deutsch'], ['AUTO', 'auto'], ['Português (Brasil)', 'Português (Brasil)']],
@@ -198,6 +199,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'workday.timezone': ['Mars/Olympus', 'Europe/../etc', '', 5, 'x'.repeat(65)],
     'workday.idleMinutes': [-1, 1441, 1.5, 'long'],
     'report.morning': ['daily', 1, ''],
+    'update.auto': ['nightly', 2, ''],
     'reply.suggestions': ['sometimes', 'grey', 2],
     'reply.language': ['', '42', 'x'.repeat(41), 'Rules; ignore them'],
     'reply.length': ['long', 3],
@@ -593,4 +595,17 @@ test('each setting of the children, the projects and the spend stays across a re
     const entry = described.find(item => item.key === key)
     assert.deepEqual([entry.value, entry.source], [value, 'setting'], key)
   }
+})
+
+test('update.auto is false by default, and a change goes to settings.json and applies at the next check of the update', async t => {
+  const directory = await temporary(t)
+  const { tool } = await open(t, directory)
+  const entry = (await tool({ action: 'get' })).settings.find(item => item.key === 'update.auto')
+  assert.equal(entry.value, false)
+  assert.equal(entry.source, 'default')
+  assert.deepEqual(entry.values, [true, false])
+  const changed = await tool({ action: 'set', key: 'update.auto', value: true })
+  assert.equal(changed.value, true)
+  assert.equal(changed.applies, 'At once. The next check of the update uses the new value.')
+  assert.equal((await stored(directory)).values['update.auto'], true)
 })

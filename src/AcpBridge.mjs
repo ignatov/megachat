@@ -96,17 +96,68 @@ function promptText(prompt) {
 
 /** The limit of the open views of one ACP connection. */
 const MAX_VIEWS = 32
+/** The interval of the check of `/health` while the bridge has no open view, and the time limit of one check. */
+export const HEALTH_INTERVAL_MS = 60000
+const HEALTH_TIMEOUT_MS = 2000
+/** The wait between the line about the end and the end of the connection. */
+const END_DELAY_MS = 100
 
 /**
  * Routes ACP views to one daemon conversation. Each view owns its transcript projection. [transcripts] is the directory
  * of the transcripts of the child runs in the state directory of the daemon. Without it, a row names no file.
  */
 export class AcpBridge {
-  constructor(daemon, { transcripts } = {}) { this.daemon = daemon; this.transcripts = transcripts; this.views = new Map() }
+  /**
+   * [daemon] is the client of the daemon of the start of the bridge. The bridge never starts another daemon: when its
+   * daemon is gone, it ends the ACP connection, so the next start of the agent goes through the entry again (see the
+   * capability `daemon`). [healthIntervalMs] replaces the interval of the check of `/health`, for a test.
+   */
+  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS } = {}) {
+    this.daemon = daemon
+    this.transcripts = transcripts
+    this.healthIntervalMs = healthIntervalMs
+    this.views = new Map()
+    daemon.onGone = () => this.end('log.daemonGone')
+  }
+
+  /**
+   * Writes the line [key] one time to the error output, and ends the ACP connection. The process then exits. The end
+   * waits [END_DELAY_MS], so a request that found no daemon first gets its error answer.
+   */
+  end(key, ...args) {
+    if (this.ended) return
+    this.ended = true
+    process.stderr.write(`${message(key, ...args)}\n`)
+    setTimeout(() => this.connection?.close(), END_DELAY_MS)
+  }
+
+  /**
+   * While the bridge has no open view, no event stream tells it that its daemon stopped. So it asks `/health`. Two
+   * failures in a row, or another process, end the connection. A port without a daemon ends it at once (see `onGone`).
+   */
+  watchHealth() {
+    let failures = 0
+    this.healthTimer = setInterval(async () => {
+      if (this.views.size > 0 || this.healthBusy || this.ended) return
+      this.healthBusy = true
+      try {
+        const health = await this.daemon.json('/health', undefined, AbortSignal.timeout(HEALTH_TIMEOUT_MS))
+        failures = this.daemon.health?.pid === undefined || health.pid === this.daemon.health.pid ? 0 : 2
+      }
+      catch { failures++ }
+      finally { this.healthBusy = false }
+      if (failures >= 2) this.end('log.daemonGone')
+    }, this.healthIntervalMs)
+    this.healthTimer.unref?.()
+  }
 
   app() {
     return agent({ name: 'air-megachat' })
-      .onConnect(connection => { this.connection = connection; connection.signal.addEventListener('abort', () => this.close(), { once: true }) })
+      .onConnect(connection => {
+        this.connection = connection
+        connection.signal.addEventListener('abort', () => this.close(), { once: true })
+        this.watchHealth()
+      })
       .onRequest(methods.agent.initialize, async ctx => {
         const air = ctx.params.clientCapabilities?._meta?.jetbrains?.air
         const capabilities = air?.version >= 1 && Array.isArray(air.capabilities) ? air.capabilities : []
@@ -163,6 +214,7 @@ export class AcpBridge {
   }
 
   close() {
+    clearInterval(this.healthTimer)
     for (const view of this.views.values()) view.close()
     this.views.clear()
   }
@@ -173,6 +225,8 @@ class AcpBridgeSession {
     this.daemon = daemon
     this.connection = connection
     this.sessionId = sessionId
+    // The bridge of the view, which ends the connection for an update.
+    this.bridge = capabilities
     this.nativeTurns = capabilities.nativeTurns
     this.serviceSessions = capabilities.serviceSessions
     this.workspaces = capabilities.workspaces
@@ -314,6 +368,12 @@ class AcpBridgeSession {
       if (event.type === 'tasks') await this.tasks(event.value)
       if (event.type === 'stream') await this.stream(event.value)
       if (event.type === 'stops') await this.stopRequests(event.value)
+      // The daemon stops itself for an update. The bridge ends, so the next start goes through the entry and npx.
+      if (event.type === 'update') {
+        const version = value => typeof value === 'string' && /^[\w.+-]{1,64}$/.test(value) ? value : '?'
+        this.bridge.end('log.update.bridge', version(event.value?.from), version(event.value?.to))
+        return
+      }
       received.add(event.type)
       if (received.has('conversation') && received.has('tasks')) resolveReady()
     }), abort.signal).then(() => { if (!abort.signal.aborted) throw new Error('Daemon stream ended') }).catch(error => {

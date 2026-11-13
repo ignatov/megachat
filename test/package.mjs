@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -15,6 +15,7 @@ import { promisify } from 'node:util'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { RELEASE_ENTRY, RELEASE_SPEC } from '../src/MegachatInstall.mjs'
+import { npxCopy } from '../src/MegachatUpdate.mjs'
 import { IDE_NPM_VARIABLES, npmPathEntry } from '../src/npmEnvironment.mjs'
 import { commandOnPath, processEnvironment } from './process-environment.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
@@ -219,6 +220,11 @@ test('the npx entry starts the highest release tag, its daemon gets no environme
 
     t.diagnostic(`the first start took ${await start(manifest.version)} s`)
     const first = await daemon()
+    // The copy of npx is the copy that the automatic update stops (see the capability `update`).
+    const copies = (await readdir(join(ide.NPM_CONFIG_CACHE, '_npx'))).map(hash => join(ide.NPM_CONFIG_CACHE, '_npx', hash, 'node_modules', 'megachat'))
+      .filter(copy => existsSync(join(copy, 'package.json')))
+    assert.equal(copies.length, 1)
+    assert.equal(npxCopy(copies[0]), true)
     const install = await execute(npx, ['-y', args[1], 'install', state], { env: ide, cwd: join(scratch, 'project') }).catch(error => error)
     assert.match(install.stdout, /The IDE starts Megachat with npx and with its own Node\.js/)
     const entry = await readFile(ide.MEGACHAT_ACP_CONFIG, 'utf8')

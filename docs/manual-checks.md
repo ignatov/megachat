@@ -113,6 +113,22 @@ left the machine.
 - With the values of the entry (time 20), the case of `test/install.test.mjs` ended after 20.1 s with the exit code 128
   and "Operation too slow".
 
+One measurement of the npx cache (change `automatic-update`, task 1.1) ran on 2026-11-13 with npm 11.19.0, Node.js
+26.7.0, a temporary npm cache and a local bare git repository, with the spec `#semver:x`. The test added the tags
+v1.1.0 to v1.4.0 one after the other, and started the entry after each tag.
+
+- Each next start ran the new tag: without a flag, with `--prefer-offline` and with `--prefer-online`.
+- The reason is in npm. `missingFromTree` of `libnpmexec/lib/index.js` asks pacote for the manifest of a spec that is
+  not of the registry at each start. It uses the `_npx` copy only when `node.package.resolved` is equal to the
+  `_resolved` of that manifest, else it installs again. `pacote/lib/git.js` resolves the range with `git ls-remote` each
+  time. The cache of that answer in `@npmcli/git/lib/revs.js` lives only in the process, for 5 minutes.
+- The key of the directory `_npx/<hash>` is a hash of the spec text only. So each release installs into the same
+  directory, and npm replaces the files in place. A running process that loads a file late gets the file of the new
+  release.
+- Without the network, the entry ended with the exit code 128 and no output, also with a full cache.
+
+So the entry of `install` stays as it is: the next start after an automatic stop installs the new release.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.
@@ -147,3 +163,9 @@ These checks need the author by hand. Each one names its OpenSpec change.
   changes, so `docs/air-contract.md` does not change.
 - `first-start-feedback` (task 5.9): record the results of 5.3 to 5.7 here and in `README.md`, part "The start in the
   IDE".
+- `automatic-update` (task 6.2): on a real IDE build with the Air support, use a copy of the npx entry, a temporary
+  state, and a repository with a new temporary tag in `MEGACHAT_RELEASE_REPOSITORY` (the entry gets the variable in
+  its `env`). Set the working day so that the conversation sleeps. Let the daemon stop itself for the update. Record
+  what Air shows at the exit of the agent, whether Air starts `npx` again at the next message or attach, whether it
+  loads the session, and whether the next reply starts with "Megachat updated from". When Air does not start the agent
+  again, file the Air side as an IJAI ticket.

@@ -20,6 +20,10 @@ export class DaemonServer {
     this.token = randomBytes(32).toString('hex')
     this.historyToken = randomBytes(32).toString('hex')
     this.history = new MegachatHistoryServer(service)
+    // The publish function of each open event stream, for an event to each view, such as the stop for an update.
+    this.publishers = new Set()
+    // The automatic update gives the notice of `/health`. A test or a daemon without the check has none.
+    this.update = undefined
     this.server = createServer((request, response) => {
       this.handle(request, response).catch(error => {
         // A refusal has a code for the client. Each other error is a fault of the daemon, and only the log shows it.
@@ -79,7 +83,12 @@ export class DaemonServer {
     }
     if (request.method === 'GET') {
       switch (url.pathname) {
-        case '/health': send({ version: 1, pid: process.pid, ...(this.build ? { build: this.build } : {}), ...(this.version ? { megachatVersion: this.version } : {}) }); return
+        case '/health': {
+          const update = this.update?.status()
+          send({ version: 1, pid: process.pid, ...(this.build ? { build: this.build } : {}), ...(this.version ? { megachatVersion: this.version } : {}),
+            ...(update ? { update } : {}) })
+          return
+        }
         case '/state': send(await this.service.state.snapshot()); return
         case '/conversation': send(await this.service.view()); return
         case '/history': {
@@ -178,6 +187,8 @@ export class DaemonServer {
           response.write(`${JSON.stringify({ type, value })}\n`, error => error ? reject(error) : resolve())
         })
       }
+      this.publishers.add(publish)
+      response.once('close', () => this.publishers.delete(publish))
       const conversation = await this.service.root.watch(BACKGROUND_CONTEXT, { min: 100, max: 200 })
       views.push(conversation)
       await publish('conversation', conversation.value)
@@ -214,6 +225,14 @@ export class DaemonServer {
       await stop()
       throw error
     }
+  }
+
+  /**
+   * Sends the event [type] with [value] on each open event stream. A client of an earlier build ignores an unknown
+   * event type. A stream that fails gets no second try.
+   */
+  async announce(type, value) {
+    await Promise.allSettled([...this.publishers].map(publish => publish(type, value)))
   }
 
   /** Writes the time to the first text of a model request to the log, one time for all the clients. */

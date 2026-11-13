@@ -21,6 +21,7 @@ import { restrictFileMask } from './fileMask.mjs'
 import { daemonBuild, megachatVersion, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
 import { install } from './MegachatInstall.mjs'
+import { ANNOUNCE_MS, listRelease, npxCopy, recordVersion, startDelay, UpdateCheck } from './MegachatUpdate.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { PiRunService } from './PiRunService.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
@@ -57,10 +58,12 @@ async function daemon() {
   let server
   let stopping
   let starting
+  let update
   // A stop in the start waits for the end of the start, so it closes each part that the start opened. The start ends at
   // its next step, and it cannot publish the connection file after the stop released the lock.
   const shutdown = () => stopping ??= (async () => {
     await starting?.catch(() => {})
+    update?.close()
     try { await server?.close() }
     finally {
       try { await children?.close(); await piChildren?.close(); await transcripts?.close() }
@@ -115,7 +118,24 @@ async function daemon() {
     proceed()
     await service.resume()
     proceed()
+    // The version of this daemon goes to the state before the first turn, so that turn gets the message of an update.
+    await recordVersion(service.state, megachatVersion())
+    proceed()
     await owner.publish(descriptor)
+    // The check of a release starts after the publish, so it does not delay the start. Only a copy of npx stops itself
+    // for an update: its next start through npx installs the release. The daemon starts no process for the update but git.
+    update = new UpdateCheck({ version: megachatVersion(), selfUpdating: npxCopy(fileURLToPath(new URL('..', import.meta.url))),
+      release: () => listRelease(), ready: now => service.updateReady(now), clock: service.workdayClock,
+      failed: async () => (await service.state.snapshot()).update?.failed ?? null, values: () => service.settings.values(),
+      stop: async (from, to) => {
+        await service.state.updateStopped(from, to)
+        await server.announce('update', { from, to })
+        await delay(ANNOUNCE_MS)
+        // The stop of the daemon closes the check, so it must not wait inside the check.
+        setImmediate(() => shutdown().catch(() => { process.exitCode = 1 }))
+      } })
+    server.update = update
+    update.start(startDelay())
   })()
   try { await starting }
   catch (error) {
@@ -242,7 +262,10 @@ try {
       const state = await client.json('/state')
       // The version of the daemon that runs, which can be older than this checkout. A daemon of an earlier build gives none.
       const version = client.health.megachatVersion
-      process.stdout.write(`${JSON.stringify({ running: true, ...(typeof version === 'string' ? { version } : {}), current: state.current,
+      // The notice of a new release. A daemon of an earlier build, or without a new release, gives none.
+      const notice = client.health.update?.notice
+      process.stdout.write(`${JSON.stringify({ running: true, ...(typeof version === 'string' ? { version } : {}),
+        ...(typeof notice === 'string' ? { update: notice } : {}), current: state.current,
         children: Object.values(state.runs).map(run => ({ id: run.id, status: run.status })) })}\n`)
       break
     }

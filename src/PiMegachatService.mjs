@@ -1,12 +1,13 @@
 import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
-import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, GenerationTask, Harness, hook, ProviderDoc } from '@earendil-works/pi-durable'
+import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, GenerationTask, Harness, hook, InboxDoc, LiveDoc, ProviderDoc } from '@earendil-works/pi-durable'
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { MegachatMemory } from './MegachatMemory.mjs'
-import { automaticKinds, findSteer, lastUserTurnEnd, MegachatState, terminalStates } from './MegachatState.mjs'
+import { automaticKinds, findSteer, lastUserTurnEnd, MegachatState, permissionOpen, terminalStates } from './MegachatState.mjs'
+import { updateTime } from './MegachatUpdate.mjs'
 import { MemoryReflection, REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_MS } from './MemoryReflection.mjs'
 import { collectReportData, logReport, MorningReport, REPORT_RECHECK_MS, reportWorkday } from './MorningReport.mjs'
 import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
@@ -788,6 +789,23 @@ export class PiMegachatService {
     this.sessionNotes.apply(notesOn(this.values))
     // A stored answer of a pass gets its writes, and a due pass waits for the idle time after the start.
     this.reflection?.resume()
+  }
+
+  /**
+   * True when the automatic update can stop the daemon at the time [now] (see the capability `update`): no turn runs, no
+   * input and no morning report waits, each child run is in a terminal state, no permission request and no stop request
+   * is open, and the time is right (see `updateTime`). The check only reads the state.
+   */
+  async updateReady(now = this.workdayClock.now()) {
+    if (this.pendingUserInputs > 0 || this.stopper.view().requests.length > 0) return false
+    const snapshot = await this.state.snapshot()
+    if (snapshot.current || snapshot.morningReport?.pending || snapshot.morningReport?.running) return false
+    if (Object.values(snapshot.runs).some(run => !terminalStates.has(run.status))) return false
+    if (Object.values(snapshot.permissions).some(permission => permissionOpen(snapshot, permission))) return false
+    const inbox = await this.harness.snapshot(InboxDoc, this.root.id, context)
+    const live = await this.harness.snapshot(LiveDoc, this.root.id, context)
+    if ((inbox?.items?.length ?? 0) > 0 || live?.run !== undefined) return false
+    return updateTime(this.settings.values(), now, this.userIdleSince)
   }
 
   /**

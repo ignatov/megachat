@@ -99,7 +99,36 @@ machine replace the daemon of each other.
 **Update.** The update is automatic. The next start of the agent after a release installs the new release, and its
 daemon replaces the daemon of the earlier release. In two runs of a test with a local repository, that start took 10.6 and 12 seconds.
 Nobody measured it against GitHub. Nobody tested what happens to an unfinished delegated task when a new release
-replaces the daemon.
+replaces the daemon. A measurement with a local repository showed that npx takes the new tag at each next start, also
+without `--prefer-online` (see `docs/manual-checks.md`).
+
+The daemon lives for days, so it looks for a new release itself. 60 seconds after its start and then every 24 hours,
+it runs `git ls-remote --tags` on `https://github.com/ignatov/megachat`, with the time limits of git of the entry and a
+time limit of 30 seconds. It takes the highest tag `v<major>.<minor>.<patch>` and ignores a pre-release. A failed
+check, for example without the network, writes one line to `daemon/daemon.log` and tries again after 1 hour. When a
+higher release is available, `status` gives the key `update`, for example "A new release is available: 0.4.0 → 0.5.0".
+
+The automatic update is opt-in. With the setting `update.auto` on (the default is off), the daemon of a copy of the install line, in a directory
+`_npx/<hash>/node_modules/megachat`, stops itself for the update when all of these are true:
+
+- No turn runs, and no message and no morning report waits for its turn.
+- No child task runs or waits, and no permission request and no stop request waits.
+- With `workday.enabled` on, the conversation sleeps: the time is outside the working hours, and the conversation was
+  idle for `workday.idleMinutes`. With `workday.enabled` off, the local time is from 01:00 to before 05:00, and your
+  last message ended 30 minutes or more before.
+
+The daemon checks these conditions every 10 minutes. The stop is the same stop as the command `stop`, so the
+conversation and each admitted message stay. Each `acp` process of the IDE then writes "The Megachat daemon stopped for
+the update" to its error output and exits with the code 0. Megachat starts no daemon and no `npx` itself: the next start
+of the agent in the IDE goes through `npx`, which installs the new release. Nobody checked yet on a real IDE build that
+the IDE starts the agent again at the next message (`docs/manual-checks.md`, open checks). When the next daemon still
+has the earlier version, it does not stop itself again for the same release.
+
+After an update, your next message or the next morning report, whichever comes first, starts with a message of
+Megachat: "Megachat updated from 0.4.0 to 0.5.0.", with the notes of each new release from GitHub. Without an answer
+of GitHub in 10 seconds, the message gives the address of the release instead. A git checkout, a copy outside `_npx`,
+and a daemon with `update.auto` off (the default) only show the new release in `status`. To get each
+release without an action, ask the agent to set `update.auto` to `true`.
 
 **Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then delete the directory `_npx/<hash>` that
 holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. `install` printed the directory of the
@@ -140,7 +169,7 @@ optional directory selects a state directory of its own, for a test or for devel
 | Command | What it does |
 |---|---|
 | `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. It also replaces a daemon with other agent commands, when this command passes agent commands. |
-| `status` | Prints the version of the running daemon, the current task and the state of each child run as JSON. The daemon of a checkout keeps its version after a pull, so `version` can be older than the checkout. A daemon of an earlier build gives no `version`. |
+| `status` | Prints the version of the running daemon, the current task and the state of each child run as JSON. The daemon of a checkout keeps its version after a pull, so `version` can be older than the checkout. A daemon of an earlier build gives no `version`. When a new release is available, the key `update` after `version` says so. |
 | `stop` | Stops the daemon. |
 | `compact` | Asks the running daemon to replace the older part of the model context with a summary. The daemon waits for the end of the current turn. The history keeps each message. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
@@ -154,7 +183,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 
 | File | Content |
 |---|---|
-| `conversation.sqlite` | The conversation, the child runs and the permission requests. |
+| `conversation.sqlite` | The conversation, the child runs and the permission requests. It also records the version of the last daemon, for the message after an update. |
 | `owner.sqlite` | The lock of the daemon. One daemon owns the directory. |
 | `search.sqlite` | The search index. The daemon builds it again from the conversation when necessary. |
 | `workspace/` | The workspace of Megachat. A task without a project works there. |
@@ -239,6 +268,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `workday.timezone` | `auto` | | The timezone of the working hours. `auto` is the timezone of the system, else an IANA name such as `Europe/Berlin`. |
 | `workday.idleMinutes` | `30` | | The idle time outside the working hours before the conversation goes to sleep, 0 to 1440 minutes. |
 | `report.morning` | `false` | | The morning report on each working day at `workday.start`. See [The morning report](#the-morning-report). |
+| `update.auto` | `false` | | Whether the daemon of a copy of the install line stops itself for a new release when no work runs, at night or while the conversation sleeps. See "Update" in [Install for a colleague](#install-for-a-colleague). |
 | `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and Tab puts it into the input; a client that does not know the key shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
@@ -677,6 +707,7 @@ The session text is data for the agent, not instructions.
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
 | `src/Workday.mjs` | The working day: the pure functions that tell whether a time is in the working hours, the next start of a working day, and the period of a report, with the timezone through `Intl`. |
 | `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |
+| `src/MegachatUpdate.mjs` | The automatic update: the check of the release tags with `git ls-remote`, the notice, the conditions and the time of the stop of a copy of npx, and the message after an update with the notes of the GitHub releases. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks, with their Stop and their transcript. |
 | `src/ChildTranscript.mjs` | The transcript of each child run, its limit, its secret filter and its removal with the run. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs`, `src/RunProcesses.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits, and at a stop or a failure of a task it ends each process that the task started. |
@@ -718,6 +749,9 @@ npm run test:package
 
 `npm test` runs each `test/*.test.mjs` file. `test/state-guard.mjs` gives each test process a temporary
 `MEGACHAT_HOME` and a temporary `MEGACHAT_ACP_CONFIG`. So a test cannot reach your conversation or your `acp.json`.
+It also sets `MEGACHAT_RELEASE_REPOSITORY` to a path that does not exist and `MEGACHAT_RELEASE_NOTES_URL` to a local
+address, so no test asks GitHub for a release. `test/update.test.mjs` uses a local git repository with tags, a local
+HTTP server for the notes, and `MEGACHAT_UPDATE_START_DELAY_MS` for a short wait of the first check.
 `npm run build` writes the bundle into `out/bundle/` with `THIRD_PARTY_NOTICES.txt` for the bundled packages. Git
 ignores `out/`. `npm run test:bundle` builds the bundle into `out/bundle/` and runs `test/bundle.test.mjs` on it.
 

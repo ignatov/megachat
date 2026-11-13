@@ -210,6 +210,23 @@ This uses the updates of the reply stream above. It is not an extension of Megac
   reply of an automatic turn of Megachat, such as a child result, comes to Air in the same way. Megachat sends no task
   of the type `turn` for a note.
 
+## The end of the agent for an update
+
+This is no extension of Megachat, and no ACP message changes. It describes what Megachat expects from Air.
+
+- With the setting `update.auto` on (the default is off), the daemon of a copy of the install line stops itself for a new release when no turn,
+  no child task and no request waits. Each `acp` process then writes one line to its error output, "The Megachat
+  daemon stopped for the update from <old> to <new>. The next start of Megachat installs it.", and exits with the code
+  0. An `acp` process without an open view exits within about 1 minute after its daemon is gone, with the line "The
+  Megachat daemon is gone".
+- An `acp` process never starts a daemon after its own start. So only the next start of the command of the entry,
+  `npx -y github:ignatov/megachat#semver:x acp`, starts a daemon, and npx installs the new release first.
+- Megachat expects Air to start the agent command again at the next attach or the next prompt, and to load the
+  persistent session (`persistentSession`) again. Nobody checked this on an IDE build yet (`docs/manual-checks.md`,
+  open checks). If Air does not start the agent again, that is a request to Air.
+- After the update, the next prompt of the user or the morning report starts with a note of Megachat, "Megachat updated
+  from <old> to <new>.", as a message of its own, as the notes about the sessions that wait.
+
 ## The permissions
 
 Megachat sends each open permission request of a child through `session/request_permission` in the main session.

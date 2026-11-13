@@ -20,3 +20,7 @@ if (!process.env[ACP_CONFIG_VARIABLE]) {
   process.env[ACP_CONFIG_VARIABLE] = join(directory, 'acp.json')
   process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
 }
+// The check of a new release and the request of the release notes must not reach GitHub. A path that does not exist
+// makes `git ls-remote` fail at once, and the port 9 of the local host gives no answer.
+process.env.MEGACHAT_RELEASE_REPOSITORY ||= join(tmpdir(), 'megachat-no-release-repository')
+process.env.MEGACHAT_RELEASE_NOTES_URL ||= 'http://127.0.0.1:9/releases'

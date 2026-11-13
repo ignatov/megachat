@@ -211,6 +211,23 @@ test('status gives the version of the running daemon after the key running', { t
   const old = await main('status', earlier)
   assert.equal(old.code, 0, old.stderr)
   assert.equal(old.stdout, '{"running":true,"current":null,"children":[]}\n')
+
+  // A daemon with the notice of a new release.
+  const notified = await mkdtemp(join(tmpdir(), 'megachat-status-update-'))
+  t.after(() => rm(notified, { force: true, recursive: true }))
+  const update = { available: '0.5.0', notice: 'A new release is available: 0.4.0 → 0.5.0' }
+  const newer = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(request.url === '/health' ? { version: 1, pid: process.pid, megachatVersion: '0.4.0', update } : { current: null, runs: {} }))
+  })
+  newer.listen(0, '127.0.0.1')
+  await once(newer, 'listening')
+  t.after(() => newer.close())
+  await mkdir(join(notified, 'daemon'))
+  await writeFile(join(notified, 'daemon', 'connection.json'), JSON.stringify({ version: 1, pid: process.pid, port: newer.address().port, token: 'a'.repeat(64) }))
+  const current = await main('status', notified)
+  assert.equal(current.code, 0, current.stderr)
+  assert.equal(current.stdout, '{"running":true,"version":"0.4.0","update":"A new release is available: 0.4.0 → 0.5.0","current":null,"children":[]}\n')
 })
 
 test('a client replaces a daemon of another build or other agent commands', () => {
