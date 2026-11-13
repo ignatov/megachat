@@ -276,20 +276,21 @@ export class UpdateCheck {
 /**
  * The record of the version at the start of the daemon (see `MegachatState.recordVersion`), and the request for the
  * notes of an update. The record comes before the publish of the connection file, so the first turn gets the message.
- * The request for the notes runs in the background, and `notes` of the result ends with it. [fetchNotes] replaces the
- * request, for a test.
+ * The request for the notes runs in the background, and `notes` of the result ends with it. The message waits for it
+ * at most for its time limit [timeoutMs] from its start. [fetchNotes] replaces the request, for a test.
  */
-export async function recordVersion(state, version, { environment = process.env, fetchNotes = fetchReleaseNotes } = {}) {
+export async function recordVersion(state, version, { environment = process.env, fetchNotes = fetchReleaseNotes, timeoutMs = NOTES_TIMEOUT_MS } = {}) {
   const result = await state.recordVersion(version)
   if (result.failed) logEvent('log.update.failed', result.failed, baseVersion(version))
   const notice = result.notice
   result.notes = !notice ? Promise.resolve() : (async () => {
     let notes
-    try { notes = await fetchNotes({ from: notice.from, to: notice.to, environment }) }
+    try { notes = await fetchNotes({ from: notice.from, to: notice.to, environment, timeoutMs }) }
     catch (error) { logFailure('log.update.notes', error, notice.to); return }
     // The daemon can stop during the request. Then the message goes out without the notes.
     try { await state.updateNotes(notice, notes) }
     catch { /* The state is closed. */ }
   })()
+  if (notice) state.waitForNotes(result.notes, Date.now() + timeoutMs)
   return result
 }

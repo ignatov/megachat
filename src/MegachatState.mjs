@@ -299,6 +299,8 @@ export class MegachatState {
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
     this.eventSuffix = suggestions === 'off' ? '' : '.suggest'
     this.promptSuggestionLifetimeMs = promptSuggestionLifetimeMs
+    // The request for the notes of the waiting message after an update, and the time at which its limit ends.
+    this.notesRequest = null
     this.workspace = workspace
     this.repositoryOptions = { stateDirectory, home, roots: projectRoots }
     this.home = home
@@ -846,10 +848,12 @@ export class MegachatState {
    * turn of the user or of the morning report. One commit admits one submission, so the message has its own commit
    * before the commit of the input. The message is a note of Megachat: a fixed text without a model request. It goes
    * out only when no turn runs, no run is live and the inbox is empty, as a note about the sessions does, so it never
-   * lands inside a run.
+   * lands inside a run. The message waits for the request of its notes first, at most until the time limit of that
+   * request ends (see `waitForNotes`).
    */
   async writeUpdateNote() {
     if (!(await this.snapshot())?.update?.notice) return
+    await this.notesArrived()
     await this.change(async (state, tx) => {
       const notice = state.update?.notice
       if (!notice || state.current || (await tx.doc(LiveDoc, this.root.id)).run !== undefined
@@ -858,6 +862,28 @@ export class MegachatState {
         entry: { kind: NOTE_KIND, data: { type: 'update', from: notice.from, to: notice.to }, model: [noteMessage(updateNoteText(plain(notice)), Date.now())] } })
       state.update.notice = null
     })
+  }
+
+  /**
+   * Makes the waiting message after an update wait for the request of its notes [request], at most until the time
+   * [deadline] (ms since the epoch). The request starts with the daemon, so the first turn waits only for the rest of
+   * its time limit.
+   */
+  waitForNotes(request, deadline) {
+    this.notesRequest = { request, deadline }
+  }
+
+  /** Ends when the request of the notes ends or its time limit ends. The request never rejects. */
+  async notesArrived() {
+    const pending = this.notesRequest
+    if (!pending) return
+    const left = pending.deadline - Date.now()
+    if (left > 0) {
+      let timer
+      await Promise.race([pending.request, new Promise(resolve => { timer = setTimeout(resolve, left) })])
+      clearTimeout(timer)
+    }
+    if (this.notesRequest === pending) this.notesRequest = null
   }
 
   /** Starts the turn of the morning report that waits. The turn runs only when no other turn runs. */

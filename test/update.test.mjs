@@ -359,6 +359,32 @@ test('the next turn of the user starts with the message after an update and the 
   assert.equal((await service.state.snapshot()).update.notice, null)
 })
 
+test('the first turn after an update waits for notes that come after its input', { timeout: 20000 }, async t => {
+  const { service, say, entries } = await open(t)
+  await recordVersion(service.state, '0.4.0')
+  // The notes come 500 ms after the start of the daemon, and the user sends the first input before that.
+  await recordVersion(service.state, '0.5.0', { fetchNotes: async () => { await delay(500); return [{ version: '0.5.0', text: '- The notes came late' }] } })
+  await say('hello', 'hello')
+  const note = (await entries()).find(entry => entry.kind === NOTE_KIND)
+  assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\n\nWhat is new in 0.5.0:\n- The notes came late')
+})
+
+test('the first turn after an update waits for the notes at most until the time limit of the request ends', { timeout: 20000 }, async t => {
+  const { service, say, entries } = await open(t)
+  await recordVersion(service.state, '0.4.0')
+  const started = Date.now()
+  // The request never ends. Its time limit is 300 ms from the start of the daemon.
+  await recordVersion(service.state, '0.5.0', { timeoutMs: 300, fetchNotes: () => new Promise(() => {}) })
+  await service.submit('hello', 'hello')
+  const waited = Date.now() - started
+  assert.ok(waited >= 250 && waited < 5000, `the input waited ${waited} ms`)
+  const items = await entries()
+  const note = items.findIndex(entry => entry.kind === NOTE_KIND)
+  assert.equal(text(items[note]), 'Megachat updated from 0.4.0 to 0.5.0.\nMegachat could not get the release notes. The notes are at https://github.com/ignatov/megachat/releases/tag/v0.5.0')
+  assert.match(text(items[note + 1]), /hello/)
+  await waitForState(service.state, state => state.current === null ? true : undefined)
+})
+
 test('the message after an update comes directly before the turn of the morning report', { timeout: 20000 }, async t => {
   const { service, entries } = await open(t)
   await recordVersion(service.state, '0.4.0')
