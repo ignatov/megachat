@@ -71,7 +71,8 @@ const iso = time => time ? new Date(time).toISOString().slice(11, 23) : null
 
 /** Starts a home with [values] and the project values [projects], and gives its environment. */
 async function setup(name, values, extra = {}, projects) {
-  const home = await makeHome(root, name, { 'keepAlive.enabled': false, ...values }, projects)
+  // The index of past sessions is on by default, and the run must not read the sessions of the user.
+  const home = await makeHome(root, name, { 'keepAlive.enabled': false, 'sessions.index': 'off', ...values }, projects)
   const env = daemonEnvironment(root, { MEGACHAT_HOME: home, ...extra })
   homes.push({ home, env })
   return { name, home, env, log: join(root, `${name}.acp.jsonl`) }

@@ -27,6 +27,14 @@ if (!process.env[ACP_CONFIG_VARIABLE]) {
   process.env.CLAUDE_CONFIG_DIR = directory
   process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
 }
+// The index of past sessions is on by default, so a daemon of a test would read the Codex and pi sessions of the user.
+// Empty session directories keep them out of each test. The Claude sessions are in the configuration directory above.
+{
+  const directory = mkdtempSync(join(tmpdir(), 'megachat-sessions-guard-'))
+  process.env.CODEX_HOME = join(directory, 'codex')
+  process.env.PI_CODING_AGENT_SESSION_DIR = join(directory, 'pi')
+  process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
+}
 // The check of a new release and the request of the release notes must not reach GitHub. A path that does not exist
 // makes `git ls-remote` fail at once, and the port 9 of the local host gives no answer.
 process.env.MEGACHAT_RELEASE_REPOSITORY ||= join(tmpdir(), 'megachat-no-release-repository')

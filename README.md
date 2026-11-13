@@ -341,7 +341,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `memory.characters` | `4000` | | The cap of the size of `memory.md` in characters, from `1000` to `20000`. Above it, the main agent cannot add an entry. |
 | `memory.reflection` | `true` | | The reflection: a background pass that adds entries to `memory.md` from the conversation. `false` stops it. See [The learned memory](#the-learned-memory). |
-| `sessions.index` | `off` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. |
+| `sessions.index` | `on` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. A `settings.json` of v0.6.3 or older after its setup keeps `off`, because that setup stored no answer `off`. |
 | `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
 | `sessions.notes` | `off` | | A short note in the chat when an agent session waits for you for a long time. It needs `sessions.index`. See [Notes about the sessions that wait](#notes-about-the-sessions-that-wait). |
 
@@ -463,7 +463,8 @@ its options as a numbered list, the current value and the default, also with the
 1. The agents: your main model with Claude Code, or with Codex on GPT-6 Astra, for example "Opus + Claude" or "Opus +
    Codex on GPT-6 Astra". The answer sets `children.agent`, and for Codex also `children.codexModel`
    `openai/gpt-6-astra`. The main model keeps its value.
-2. The index of past sessions, `sessions.index`. It is on only when you agree.
+2. The index of past sessions, `sessions.index`. It is on by default. The answer off deletes the index and the table
+   of the running sessions.
 3. The known repositories.
 
 You can skip one question or the whole setup, and the defaults then apply. Each other setting keeps its default, and
@@ -750,11 +751,14 @@ PIDs and the outcome only. The tool works on macOS only.
 With your consent, Megachat keeps an index of your past Claude Code, Codex and pi sessions. Then the main agent and
 the children find an earlier session at once, and they can read pi sessions. The same consent lets `agents_running`
 read the log of each agent session that runs on the machine: its metadata and its status, and its content only when
-you ask for it. The setup asks one time: "Index past Claude, Codex and pi sessions in your projects, and read the logs
-of the agent sessions that run on this machine to show their status? Megachat reads the content of a session only
-when you ask. Everything stays local." Say "turn on the session index" or "turn off the session index" in the chat at
-any time. Without your consent, Megachat reads no session file and keeps no index file. The search in Claude Code and
-Codex sessions then reads them live, as before.
+you ask for it. The setting `sessions.index` is on by default, so the first pass starts at the first start of the
+daemon, before the setup. The setup asks one time: "Index past Claude, Codex and pi sessions in your projects, and read
+the logs of the agent sessions that run on this machine to show their status? Megachat reads the content of a session
+only when you ask. Everything stays local." The answer off deletes the index and the table of the running sessions.
+Say "turn on the session index" or "turn off the session index" in the chat at any time. A `settings.json` of v0.6.3
+or older after its setup or after a skip keeps the index off, because that setup stored no answer off. Without your
+consent, Megachat reads no session file and keeps no index file. The search in Claude Code and Codex sessions then
+reads them live, as before.
 
 - **What is in it.** The sessions in `~/.claude/projects`, in `~/.codex/sessions` and `~/.codex/archived_sessions` (or
   the same directories in `$CODEX_HOME`), and in `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`), also the
@@ -774,9 +778,9 @@ Codex sessions then reads them live, as before.
   filter makes the index again one time.
 - **The import.** The first pass runs in the background, the projects of an IDE first and the newest sessions first.
   The chat lists it as a background task with its progress. After the first pass, the main agent tells you the count of
-  the sessions and of the projects, and the last unfinished sessions. When your message interrupts this summary, it
-  comes one more time after your turn. Then the index catches up at the start of the
-  daemon and on each change of a session file. It reads only the new lines of a file.
+  the sessions and of the projects, and the last unfinished sessions. A first pass that finds no session tells nothing.
+  When your message interrupts this summary, it comes one more time after your turn. Then the index catches up at the
+  start of the daemon and on each change of a session file. It reads only the new lines of a file.
 - **The size.** One measurement with 100,000 synthetic messages of 2 KB gave a file of 640 MB. Real text takes less
   room, but plan for some hundreds of MB. The age limit and the limit of 2 KB for each message bound the file.
 - **The live table.** The same consent covers the table of `agents_running`: for each session file on the machine, the
@@ -879,7 +883,7 @@ scenarios `failures` and `processes`, for example `failures:14.3b,14.4c`.
   and the daemon does not count that cost.
 - Each scenario gets a new state home and new throwaway projects in one new temporary directory. The run refuses a
   home outside the temporary directory. It sets `MEGACHAT_ACP_CONFIG` to a temporary file and turns off the keep-alive
-  requests. It does not turn on the index of past sessions.
+  requests. It turns off the index of past sessions.
 - The run reads the Central configuration into its memory, removes its key and its address from each text that it
   prints or keeps, and lists each file of the run that holds one of them. The scenario `permissions` starts the Claude
   adapter through `test/live/tap.mjs`, which records the mode and the model of each child. The run also reads the

@@ -772,8 +772,12 @@ test('with the consent off, agents_running reads no file and names the logs in i
   const table = fakeTable([proc(10, 2, 'claude', { startedAt })], { 10: { cwd: '/work/app' } })
   const clock = { now: () => Date.now() }
   const watchers = []
+  // The default is on, so the user stored off.
+  const settingsPath = join(home, 'state', 'settings.json')
+  await mkdir(join(home, 'state'), { recursive: true })
+  await writeFile(settingsPath, JSON.stringify({ schema: 1, onboarding: 'done', defaults: 2, values: { 'sessions.index': 'off' } }), { mode: 0o600 })
   const main = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, {}, {
-    keepAlive: { enabled: false }, sessionsPath: join(home, 'state', 'sessions.sqlite'), home, environment: {}, processTable: table, clock,
+    keepAlive: { enabled: false }, sessionsPath: join(home, 'state', 'sessions.sqlite'), settingsPath, home, environment: {}, processTable: table, clock,
     sessionIndex: { fs, clock, debounceMs: 10, watch: () => { const watcher = { close() {}, on() {} }; watchers.push(watcher); return watcher },
       catalog: { timers: fakeTimers() } },
   })

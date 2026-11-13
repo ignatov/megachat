@@ -102,7 +102,7 @@ test('a child run uses the value of the nearest project directory, else the glob
   await settings.set('children.agent', 'codex', paths.app)
   await settings.set('children.push', 'allow', paths.server)
   await settings.set('children.piModel', DEEP, paths.lib)
-  assert.deepEqual(await stored(paths.settingsPath), { schema: 1, onboarding: 'pending', values: { 'children.commit': 'ask' }, projects: {
+  assert.deepEqual(await stored(paths.settingsPath), { schema: 1, onboarding: 'pending', defaults: 2, values: { 'children.commit': 'ask' }, projects: {
     [paths.app]: { 'children.push': 'deny', 'children.agent': 'codex' }, [paths.server]: { 'children.push': 'allow' }, [paths.lib]: { 'children.piModel': DEEP } } })
   const pick = values => [values['children.agent'], values['children.commit'], values['children.push'], values['children.piModel']]
   // Each key takes its nearest project directory: server has its own push, and the agent of app.
@@ -166,7 +166,7 @@ test('the tool sets, shows and removes a project value, and refuses a setting of
   assert.deepEqual(await tool({ action: 'reset', project: paths.server }), { directory: paths.server, removed: ['children.permissionMode'] })
   assert.deepEqual(await tool({ action: 'reset', project: paths.app }), { directory: paths.app, removed: ['children.push', 'children.commit'] })
   // Without a project value, the file has the shape of v0.3.0 again.
-  assert.deepEqual(await stored(paths.settingsPath), { schema: 1, onboarding: 'pending', values: {} })
+  assert.deepEqual(await stored(paths.settingsPath), { schema: 1, onboarding: 'pending', defaults: 2, values: {} })
 })
 
 test('a stored project value that this build does not accept gives the next value, and the file keeps it', { timeout: 20000 }, async t => {

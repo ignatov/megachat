@@ -68,8 +68,9 @@ async function temporary(t) {
   return directory
 }
 
-const seed = (directory, values, onboarding = 'done') =>
-  writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding, values }), { mode: 0o600 })
+/** Writes a `settings.json` of this build. Without [defaults], it is a file of v0.6.3 or older. */
+const seed = (directory, values, onboarding = 'done', defaults = 2) =>
+  writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding, ...(defaults ? { defaults } : {}), values }), { mode: 0o600 })
 const stored = async directory => JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'))
 
 /** A service with `settings.json` in [directory] and no environment variable. Each call opens a new conversation. */
@@ -119,7 +120,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'children.timeoutMinutes': 240, 'children.showInProject': false,
-    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'memory.reflection': true, 'sessions.index': 'off', 'sessions.days': 180, 'sessions.notes': 'off',
+    'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'memory.reflection': true, 'sessions.index': 'on', 'sessions.days': 180, 'sessions.notes': 'off',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')
   // A variable that the daemon cannot read has no effect.
@@ -297,7 +298,7 @@ test('no file means a pending onboarding, and each answer goes at once to a priv
   // The first start writes no file. The first answer writes it.
   assert.deepEqual(await readdir(directory), [])
   await first.tool({ action: 'set', key: 'reply.length', value: 'detailed' })
-  assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', values: { 'reply.length': 'detailed' } })
+  assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', defaults: 2, values: { 'reply.length': 'detailed' } })
   assert.equal((await stat(join(directory, 'settings.json'))).mode & 0o777, 0o600)
   await first.tool({ action: 'set', key: 'reply.language', value: 'Deutsch' })
   await first.tool({ action: 'set', key: 'keepAlive.hours', value: 2 })
@@ -564,7 +565,9 @@ test('a file that the daemon cannot read stays under another name, and the defau
     finally { process.stderr.write.mock.restore() }
     assert.equal(store.onboarding, 'pending')
     assert.equal(store.stored('reply.length'), undefined)
-    const files = await readdir(directory)
+    // The file can hold an answer off of the user, so the new file keeps the index off.
+    assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', defaults: 2, values: { 'sessions.index': 'off' } })
+    const files = (await readdir(directory)).filter(file => file !== 'settings.json')
     assert.equal(files.length, 1)
     assert.match(files[0], /^settings\.json\.unreadable-\d{4}-\d\d-\d\dT[\d-]+Z$/)
     assert.equal(await readFile(join(directory, files[0]), 'utf8'), content)
@@ -573,6 +576,51 @@ test('a file that the daemon cannot read stays under another name, and the defau
     await store.change(data => { data.values['reply.length'] = 'normal' })
     assert.equal((await stored(directory)).values['reply.length'], 'normal')
   }
+})
+
+test('the index is on by default, and a file of v0.6.3 or older after its setup keeps it off', { timeout: 20000 }, async t => {
+  const { models } = fakeModels()
+  const index = async directory => {
+    const settings = new MegachatSettings(await SettingsStore.open(join(directory, 'settings.json')), { models, environment: {} })
+    const entry = settings.entry('sessions.index')
+    return { settings, state: [entry.value, entry.source, entry.default] }
+  }
+  // A first start, and a setup of this build that kept the default.
+  const first = await temporary(t)
+  assert.deepEqual((await index(first)).state, ['on', 'default', 'on'])
+  await seed(first, {}, 'done')
+  assert.deepEqual((await index(first)).state, ['on', 'default', 'on'])
+  // A stored value wins.
+  await seed(first, { 'sessions.index': 'off' }, 'done')
+  assert.deepEqual((await index(first)).state, ['off', 'setting', 'on'])
+  // The setup of v0.6.3 stored no answer off, so the file after the setup or after a skip keeps off.
+  for (const onboarding of ['done', 'skipped']) {
+    const directory = await temporary(t)
+    await seed(directory, { 'reply.length': 'normal' }, onboarding, 0)
+    const text = await readFile(join(directory, 'settings.json'), 'utf8')
+    const earlier = await index(directory)
+    assert.deepEqual(earlier.state, ['off', 'default', 'off'])
+    assert.equal(await readFile(join(directory, 'settings.json'), 'utf8'), text, 'The open does not change the file')
+    await earlier.settings.set('reply.language', 'Deutsch')
+    assert.deepEqual(await stored(directory), { schema: 1, onboarding, defaults: 2,
+      values: { 'reply.length': 'normal', 'sessions.index': 'off', 'reply.language': 'Deutsch' } })
+    const later = await index(directory)
+    assert.deepEqual(later.state, ['off', 'setting', 'on'])
+    // A reset gives the default of this build.
+    await later.settings.reset('sessions.index')
+    assert.deepEqual((await index(directory)).state, ['on', 'default', 'on'])
+  }
+  // A stored on of v0.6.3 stays on, and a file of v0.6.3 before its setup takes the default of this build.
+  const consent = await temporary(t)
+  await seed(consent, { 'sessions.index': 'on' }, 'done', 0)
+  assert.deepEqual((await index(consent)).state, ['on', 'setting', 'off'])
+  const pending = await temporary(t)
+  await seed(pending, {}, 'pending', 0)
+  const before = await index(pending)
+  assert.deepEqual(before.state, ['on', 'default', 'on'])
+  await before.settings.setOnboarding('done')
+  assert.deepEqual(await stored(pending), { schema: 1, onboarding: 'done', defaults: 2, values: {} })
+  assert.deepEqual((await index(pending)).state, ['on', 'default', 'on'])
 })
 
 test('a stored value that this build does not accept gives the default, and the file keeps it', { timeout: 20000 }, async t => {

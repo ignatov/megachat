@@ -378,8 +378,11 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   models.setProvider(fake.provider)
   const model = fake.getModel()
   const providers = { claude: { list: async () => ({ sessions: [], nextCursor: null }), read: async () => { throw new Error('none') }, close() {} } }
+  // The default is on, so the user stored off.
+  const settingsPath = join(home, 'state', 'settings.json')
+  await writeFile(settingsPath, JSON.stringify({ schema: 1, onboarding: 'done', defaults: 2, values: { 'sessions.index': 'off' } }), { mode: 0o600 })
   const main = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, providers, {
-    sessionsPath: path, home, environment: {}, sessionIndex: { fs, watch: watch.watch, clock: clock(), debounceMs: 10 } })
+    sessionsPath: path, settingsPath, home, environment: {}, sessionIndex: { fs, watch: watch.watch, clock: clock(), debounceMs: 10 } })
   await main.state.addWorkspace(project)
   const tasks = []
   const watcher = await main.state.watch()
@@ -393,6 +396,12 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   await assert.rejects(stat(path), { code: 'ENOENT' }, 'Megachat deletes the index file without the consent')
   assert.match(await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8'),
     /"Index past Claude, Codex and pi sessions in your projects, and read the logs of the agent sessions that run on this machine to show their status\? Megachat reads the content of a session only when you ask\. Everything stays local\."/)
+  const setup = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
+  assert.ok(setup.includes('The default is on.'))
+  assert.ok(setup.includes('off deletes the index and the table of the running sessions'))
+  assert.ok(setup.includes('Set sessions.index to on only when the user agrees.'))
+  assert.ok((await readFile(new URL('../resources/instructions-onboarding-ghost.md', import.meta.url), 'utf8'))
+    .includes('For the index of past sessions, the likely answer keeps the current value, for example "Keep the index on".'))
   await assert.rejects(tool('sessions', { cwd: project, agent: 'pi', query: 'pine' }), { message: message('error.sessionsIndexOff') })
   assert.deepEqual((await tool('sessions', { cwd: project, query: 'juniper' })).pages.map(page => page.agent), ['claude'])
   assert.deepEqual((await tool('settings', { action: 'get' })).sessionIndex, { state: 'off' })
@@ -457,6 +466,16 @@ test('the first pass imports the projects of an IDE first and the newest files f
   assert.equal(new Set(state.tasks.filter(Boolean).map(task => task.id)).size, 3, 'Each step is a task of its own')
   assert.equal(state.summaries.length, 1)
   assert.deepEqual([state.summaries[0].sessions, state.summaries[0].projects], [3, 2])
+})
+
+test('a first pass that finds no session gives no summary', async t => {
+  const directories = await fixture(t)
+  const state = fakeState({ workspaces: [directories.project] })
+  const { index } = await service(t, directories, state)
+  await index.apply(ON)
+  await index.idle()
+  assert.equal((await index.status()).state, 'ready')
+  assert.deepEqual(state.summaries, [])
 })
 
 test('a file that the import cannot read does not stop the pass, and the import reads it again after its next change', async t => {

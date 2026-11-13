@@ -29,7 +29,7 @@ async function fixture(t, { values = {}, onboarding = 'done', directory } = {}) 
   const home = directory ?? await realpath(await mkdtemp(join(tmpdir(), 'megachat-offers-')))
   if (!directory) {
     t.after(() => rm(home, { force: true, recursive: true }))
-    await writeFile(join(home, 'settings.json'), JSON.stringify({ schema: 1, onboarding, values }), { mode: 0o600 })
+    await writeFile(join(home, 'settings.json'), JSON.stringify({ schema: 1, onboarding, defaults: 2, values }), { mode: 0o600 })
   }
   const fake = fauxProvider()
   const requests = []
@@ -98,9 +98,8 @@ test('after the setup in the mode ghost, the rules show each open offer with its
   assert.ok(text.includes(RULE))
   assert.ok(text.includes('An offer of a setting is not a next step of the work.'))
   assert.ok(text.includes(PUSH))
-  for (const key of OFFERS.filter(key => key !== 'sessions.notes')) assert.match(text, new RegExp(`^${key.replace('.', '\\.')} \\(`, 'm'), key)
-  // The notes need the consent of the index first.
-  assert.doesNotMatch(text, /^sessions\.notes \(/m)
+  // The index of past sessions is on by default, so the offer of the notes is open too.
+  for (const key of OFFERS) assert.match(text, new RegExp(`^${key.replace('.', '\\.')} \\(`, 'm'), key)
 })
 
 test('a stored value, the mode off and a pending setup give no offer line', { timeout: 20000 }, async t => {
@@ -149,7 +148,7 @@ test('silence, a key out of the list and an unknown key give no offer', { timeou
 })
 
 test('the offer of the notes opens only after the consent of the index', { timeout: 20000 }, async t => {
-  const { settings, rules } = await fixture(t)
+  const { settings, rules } = await fixture(t, { values: { 'sessions.index': 'off' } })
   assert.doesNotMatch(await rules(), /^sessions\.notes \(/m)
   await settings.execute({ action: 'set', key: 'sessions.index', value: 'on' })
   assert.match(await rules(), /^sessions\.notes \(off\): The summary of the past sessions/m)

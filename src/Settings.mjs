@@ -38,6 +38,14 @@ export const DEFAULT_CLAUDE_MODEL = 'anthropic/claude-sonnet-5-5'
 /** The cache retention of pi-ai for each value of `cache.ttl`. */
 export const CACHE_RETENTION = { '1h': 'long', '5m': 'short' }
 export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
+/**
+ * The version of the defaults in `settings.json`, the key `defaults`. A file without the key is of v0.6.3 or older. In
+ * such a file with the onboarding `done` or `skipped`, a setting of [EARLIER_DEFAULTS] without a stored value keeps
+ * its earlier default, because the setup of that build stored no answer that was the current value. A file with the
+ * onboarding `pending` takes the defaults of this build.
+ */
+export const DEFAULTS = 2
+const EARLIER_DEFAULTS = { 'sessions.index': 'off' }
 /** The default agents of a new child task. A pi child cannot change code, so it is no default: the user names it. */
 export const CHILD_AGENTS = ['claude', 'codex']
 /** The time limit of a child run in minutes by default, the value of `children.timeoutMinutes`. */
@@ -276,7 +284,8 @@ export const SETTINGS = [
   // The background pass that adds entries to `memory.md` from the conversation. `false` stops it.
   { key: 'memory.reflection', default: true, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   // The consent of the user to the index of the past sessions. Without it, Megachat reads no session file for the index.
-  { key: 'sessions.index', default: 'off', applies: 'now',
+  // The default is on. A file of v0.6.3 or older after its setup keeps off (see `DEFAULTS`).
+  { key: 'sessions.index', default: 'on', applies: 'now',
     validate: value => { const on = toBoolean(value); return on === undefined ? undefined : on ? 'on' : 'off' },
     allowed: () => ({ values: ['on', 'off'] }) },
   { key: 'sessions.days', default: 180, applies: 'now',
@@ -318,7 +327,9 @@ export function environmentSetting(key, environment = process.env) {
   return environmentValue(definition, environment) ?? definition.default
 }
 
-const emptySettings = () => ({ schema: SCHEMA, onboarding: 'pending', values: {} })
+const emptySettings = () => ({ schema: SCHEMA, onboarding: 'pending', defaults: DEFAULTS, values: {} })
+/** True when [data] is a file of v0.6.3 or older after its setup, so it keeps the earlier defaults. */
+const earlierSetup = data => !Object.hasOwn(data, 'defaults') && data.onboarding !== 'pending'
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 /**
  * The project values of [data] by the real path of the project directory. The key `projects` is optional: a file of
@@ -358,7 +369,10 @@ export class SettingsStore {
     const aside = `${path}.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}`
     await rename(path, aside)
     logEvent('log.settings.unreadable', reason, basename(aside))
-    return new SettingsStore(path, emptySettings())
+    // The file can hold an answer off of the user, so the earlier defaults apply, and the new file keeps them.
+    const store = new SettingsStore(path, emptySettings())
+    await store.change(data => { Object.assign(data.values, EARLIER_DEFAULTS) })
+    return store
   }
 
   constructor(path, data) {
@@ -371,6 +385,9 @@ export class SettingsStore {
 
   stored(key) { return Object.hasOwn(this.data.values, key) ? this.data.values[key] : undefined }
 
+  /** The default of [key] for this file: the earlier default in a file of v0.6.3 or older after its setup, else none. */
+  defaultOf(key) { return earlierSetup(this.data) ? EARLIER_DEFAULTS[key] : undefined }
+
   /** Each project directory with its stored values, as `[directory, values]`, in the order of the directories. */
   projects() {
     return Object.entries(projectsOf(this.data)).filter(([, values]) => isRecord(values))
@@ -381,6 +398,9 @@ export class SettingsStore {
   change(operation) {
     const next = this.queue.then(async () => {
       const data = structuredClone(this.data)
+      // The first write of a file of v0.6.3 or older stores each earlier default that applies, so the value stays.
+      if (earlierSetup(data)) for (const [key, value] of Object.entries(EARLIER_DEFAULTS)) if (!Object.hasOwn(data.values, key)) data.values[key] = value
+      data.defaults ??= DEFAULTS
       operation(data)
       for (const key of REMOVED_KEYS) delete data.values[key]
       if (this.path) {
@@ -432,6 +452,7 @@ export class MegachatSettings {
   /** The entry of [key]. With the real path [directory] of a child run, a project value of a setting of a run applies. */
   entry(key, context = this.context(), directory) {
     const definition = definitions.get(key)
+    const fallback = this.store.defaultOf(key) ?? definition.default
     const stored = this.store.stored(key)
     const valid = stored === undefined ? undefined : definition.validate(stored, context)
     const fromEnvironment = environmentValue(definition, this.environment)
@@ -439,10 +460,10 @@ export class MegachatSettings {
     const [value, source] = Object.hasOwn(this.overrides, key) ? [this.overrides[key], 'option']
       : fromEnvironment !== undefined ? [fromEnvironment, 'environment']
         : project ? [project.value, 'project']
-          : valid !== undefined ? [valid, 'setting'] : [definition.default, 'default']
+          : valid !== undefined ? [valid, 'setting'] : [fallback, 'default']
     // A stored level that the model does not know becomes the nearest level of the model, so each request agrees.
     const effective = key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
-    return { key, value: effective, source, default: definition.default,
+    return { key, value: effective, source, default: fallback,
       ...(definition.variable ? { variable: definition.variable } : {}),
       ...(stored === undefined ? {} : { stored }),
       ...(stored !== undefined && valid === undefined ? { storedIgnored: true } : {}),

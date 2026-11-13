@@ -352,7 +352,9 @@ export class SessionIndexService {
     if (first && !signal.aborted) {
       this.firstPassAt = this.clock.now()
       await this.index.markFirstPass(this.firstPassAt)
-      if (this.announce) await this.state.sessionsIndexed(await this.#summary(passId, directories))
+      // A pass without a session has nothing to tell, so it starts no event turn. This is the usual first start.
+      const summary = this.announce ? await this.#summary(passId, directories) : undefined
+      if (summary?.sessions) await this.state.sessionsIndexed(summary)
       this.announce = false
     }
   }

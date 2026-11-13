@@ -327,7 +327,8 @@ test('a settings.json without the working-day keys opens, and the settings chang
   await tool({ action: 'set', key: 'workday.idleMinutes', value: '45' })
   assert.deepEqual(service.keepAlive.workday, { start: '09:00', end: '18:00', days: ['mon', 'wed'], timezone: 'Europe/Berlin', idleMinutes: 45 })
   assert.equal(service.keepAlive.windowMs, 3 * HOUR)
-  assert.deepEqual(JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).values, { 'keepAlive.hours': 3, 'workday.enabled': true,
+  // The file is of v0.6.3 or older after its setup, so the first write stores the earlier default of the index.
+  assert.deepEqual(JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).values, { 'keepAlive.hours': 3, 'sessions.index': 'off', 'workday.enabled': true,
     'workday.end': '18:00', 'workday.days': ['mon', 'wed'], 'workday.timezone': 'Europe/Berlin', 'workday.idleMinutes': 45 })
   // Without the keep-alive, the working day has no effect.
   await tool({ action: 'set', key: 'keepAlive.enabled', value: false })

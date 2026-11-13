@@ -24,8 +24,8 @@ In the modes `reply` and `ghost`, after the status `done` or `skipped` of the on
 Tests: `test/setting-offers.test.mjs`
 
 #### Scenario: The open offers after the setup
-- **WHEN** the mode is `ghost`, the onboarding is `done`, and no value is stored
-- **THEN** the rules hold "children.push (ask): A child result says that a push is necessary." and a line for each other key of the list but `sessions.notes`, which waits for `sessions.index`
+- **WHEN** the mode is `ghost`, the onboarding is `done`, `settings.json` holds `defaults` 2, and no value is stored
+- **THEN** the rules hold "children.push (ask): A child result says that a push is necessary." and a line for each other key of the list, also `sessions.notes`, because `sessions.index` is on by default
 
 #### Scenario: A stored value
 - **WHEN** the onboarding is `done` and `settings.json` holds `children.push` `allow`
