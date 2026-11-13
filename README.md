@@ -189,6 +189,25 @@ release without an action, ask the agent to set `update.auto` to `true`.
 holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. `install` printed the directory of the
 terminal copy in its last line.
 
+## Report a problem
+
+Open an issue at <https://github.com/ignatov/megachat/issues>. Write what you did, what you expected and what
+happened. Give the version of Megachat and the lines of the log that show the problem.
+
+- **The version.** Run this line in a terminal. The key `version` gives the version of the running daemon:
+
+  ```sh
+  npx -y "github:ignatov/megachat#semver:x" status
+  ```
+
+- **The log of the daemon.** `~/.jetbrains/air/megachat/daemon/daemon.log`.
+- **The log of the IDE.** The IDE writes the error output of the agent process to `idea.log`, with the prefix
+  `stderr:`. Help | Show Log in Finder opens its directory.
+
+The logs can hold private text: the names and the paths of your projects, your prompts, file content and the error
+output of the tasks. Read each line before you share it, and remove the private text. Never attach a full log to an
+issue.
+
 ## Install from a checkout
 
 The checkout needs the same tools. Then run:
