@@ -5,15 +5,16 @@
 Colleagues get Megachat through the npx entry of `acp.json` (issue #40). The next start of `npx` after a release
 installs the new release, and its daemon replaces the daemon of the earlier release. But the daemon lives long, and
 while it runs, nothing starts `npx` again. So a colleague can stay on an old release for days, and the daemon does not
-know about a newer release. The author wants colleagues to get each release without an action, but never during work:
-the daemon updates only when no task runs, for example at night.
+know about a newer release. The author wants a colleague who opts in to get each release without an action, but never during
+work: the daemon updates only when no task runs, for example at night. The update is opt-in: without the setting
+`update.auto=true`, the daemon only shows the notice of a new release in `status`.
 
 ## What Changes
 
 Where it shows: the output of the command `status`, a fixed message in the chat after an update, the setting
 `update.auto` of `agents_settings`, the log of the daemon, and the error output of `acp` in the log of the IDE.
 
-- **The check of a release.** At its start, and then every 24 hours, the daemon runs
+- **The check of a release.** 60 seconds after its start, and then every 24 hours, the daemon runs
   `git ls-remote --tags https://github.com/ignatov/megachat` with the time limits of git of the entry and a hard time
   limit of 30 seconds. It takes the highest tag `v<major>.<minor>.<patch>` and ignores a pre-release. It compares that
   version with its own version. A build of a checkout, such as `0.4.0+9.geb044cf`, compares by its base version
@@ -21,8 +22,8 @@ Where it shows: the output of the command `status`, a fixed message in the chat 
   after 1 hour. The user gets no message.
 - **The status.** When a higher release is available, `status` prints the key `update` after the key `version`, with the
   text "A new release is available: 0.4.0 → 0.5.0".
-- **The setting `update.auto`.** A boolean, default `true`. The setting is the approval of the user for the automatic
-  stop of the daemon. The rule `children.daemonRestart` for a child stays as it is.
+- **The setting `update.auto`.** A boolean, default `false`. The update is opt-in: the value `true` is the approval
+  of the user for the automatic stop of the daemon. With the default, the daemon only shows the notice in `status`. The rule `children.daemonRestart` for a child stays as it is.
 - **The automatic update.** With `update.auto` on, a copy of npx (the daemon runs from a directory
   `_npx/<hash>/node_modules/megachat`) and a higher release, the daemon stops itself when each of these is true:
   - no child task runs or waits for its start;
@@ -65,8 +66,6 @@ Where it shows: the output of the command `status`, a fixed message in the chat 
 - `launch`: the requirement "Version of the daemon in status" gets the key `update`.
 - `daemon`: new requirements for the end of a bridge after the stop of its daemon, and for a bridge that never starts
   a daemon after its own start.
-- `install`: only when the entry changes after the measurement of the npx cache (task 1.1). The proposal does not
-  change it now.
 
 `workday`, `morning-report` and `release` are not modified. The automatic stop reads the decision of the sleep of
 `workday`, and the message comes before the turn of the morning report without a change of its data or its prompt.
@@ -99,8 +98,8 @@ to an IJAI ticket of the author. This change files no ticket.
 - Out of scope:
   - An update during work. A newer bridge still replaces the daemon of an earlier release at each time of the day, as
     today (issue #38, risk 4). This change does not change that.
-  - The decision of the entry: `#semver:x` with or without `--prefer-online`. It waits for the measurement of the npx
-    cache (task 1.1).
+  - A change of the entry. The measurement of the npx cache (task 1.1) shows that `#semver:x` takes the new tag at
+    the next start, so `install` does not change.
   - Release notes in the package, such as a `CHANGELOG.md`. `design.md` gives the reason.
   - A message in the chat about a new release while the update waits, or with `update.auto` off.
   - Linux and Windows (issue #8).

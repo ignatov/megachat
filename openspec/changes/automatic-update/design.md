@@ -70,8 +70,9 @@ give it.
   tag do not count. The highest version is the release.
 - The own version is `megachatVersion()` of `src/MegachatBuild.mjs`. The comparison uses the part before `+`, so
   `0.4.0+9.geb044cf` compares as `0.4.0`. A release is available only when its version is higher.
-- The first check runs after the daemon published its connection file, so the check does not delay the start. Then
-  the next check runs 24 hours after the last successful check. A failure, such as no `git`, an exit code other than 0,
+- The first check runs 60 seconds after the daemon published its connection file, so the check does not delay or
+  compete with the start. The variable `MEGACHAT_UPDATE_START_DELAY_MS` replaces the wait, for a test. Then the next
+  check runs 24 hours after the last successful check. A failure, such as no `git`, an exit code other than 0,
   the time limit, or an output without a release tag, writes one line to the log of the daemon and gives a next check
   after 1 hour. The user gets no message.
 - The timers use a clock object, as `src/MorningReport.mjs` does: a test gives a fake clock. Each timer is `unref`, so
@@ -98,10 +99,11 @@ Alternatives:
 
 ### 3. The setting `update.auto`
 
-A global setting in `settings.json` (see the capability `settings`): boolean, default `true`, no variable, not a
+A global setting in `settings.json` (see the capability `settings`): boolean, default `false`, no variable, not a
 project setting. It applies at the next check of the conditions, so it gets the new text
-`settings.applies.update`: "At once. The next check of the update uses the new value." The default is `true`, because
-the author wants colleagues to update without an action. A change of `update.auto` comes from the user through the
+`settings.applies.update`: "At once. The next check of the update uses the new value." The default is `false`, because
+the author approved the update as opt-in: a stop of the daemon needs `update.auto=true` from the user. With the
+default, the daemon only shows the notice in `status`. A change of `update.auto` comes from the user through the
 main agent, as each setting does. An automatic turn cannot change it (see the requirement "No change from an automatic
 turn" of `settings`).
 
@@ -152,8 +154,10 @@ The old bridge must end, so that the next start goes through `npx`, and it must 
   today. A bridge of an earlier build ignores the unknown event and ends at the end of the stream, as in the probe.
 - **A bridge without a view.** The bridge asks `/health` of its daemon every 60 seconds while it has no open view, with
   a time limit of 2 seconds. When two requests in a row fail, or `/health` gives another `pid`, the bridge writes the
-  message `log.daemonGone` and ends the ACP connection. So it exits within about 2 minutes. A request of the client to
-  a bridge whose daemon is gone also ends the connection after its error answer.
+  message `log.daemonGone` and ends the ACP connection. A request that finds no process on the port of the daemon
+  (`ECONNREFUSED`), or that another daemon refuses with the status 401, ends the connection at once: the daemon is
+  gone for certain. So the bridge exits within about 1 minute. A request of the client to a bridge whose daemon is
+  gone gets its error answer first, because the end waits 100 ms.
 - **No start after the start.** The bridge keeps the client of its first `start()`, and it has no path that calls
   `start()` again. A test makes this a requirement: after the stop of the daemon, no daemon process runs for the
   state directory, and a request to the old bridge starts none.
@@ -200,12 +204,13 @@ The state document of `conversation.sqlite` (the root document of `MegachatState
 - `failed`: the release for which an automatic stop gave no update, or `null`.
 - `notice`: the message that waits for the next turn of the user or for the morning report, or `null`.
 
-An older state directory has no field. The migration in `MegachatState` (the block with `??=`, next to
-`morningReport`) sets `update` to `{ version: <this version>, stop: null, failed: null, notice: null }`, so the first
-daemon of this change records its version with no message. A daemon of v0.4.0 that opens the state again keeps the
-field as it is, as it keeps `sessionNotes`.
+An older state directory has no field. At the start, before the publish of the connection file, the daemon calls
+`recordVersion` of `MegachatState`. Without the field, it sets `update` to
+`{ version: <this version>, stop: null, failed: null, notice: null }`, so the first daemon of this change records its
+version with no message. A daemon of v0.4.0 that opens the state again keeps the field as it is, as it keeps
+`sessionNotes`.
 
-At each start, after the migration:
+At each later start:
 
 1. When the base version of this daemon is higher than the base version of `update.version`, the daemon gets the
    notes (decision 7), sets `notice`, and clears `failed`.
@@ -230,9 +235,11 @@ The base version decides, so a pull of a checkout with a new commit gives no mes
   ask again.
 - The message is a note of the daemon, as the notes about the waiting sessions (see the capability `session-notes`):
   an entry of the kind `air.megachat.note` with the data `{"type":"update","from":"0.4.0","to":"0.5.0"}`, and a fixed
-  text without a model request. The daemon writes it in the same transaction as the input of the next turn of the user
-  or of the turn of the morning report, directly before that input. So the chat shows the message, then the reply, and
-  the main agent sees the message in its context. The daemon then sets `notice` to `null`. A turn of a child result
+  text without a model request. The daemon writes it directly before the admission of the input of the next turn of
+  the user or of the turn of the morning report. Pi Durable admits one submission in each commit, so the message has
+  its own commit before the commit of the input, and it goes out only when no turn runs, no run is live and the inbox
+  is empty, as a note about the sessions does. So the chat shows the message, then the reply, and the main agent sees
+  the message in its context. The daemon then sets `notice` to `null`. A turn of a child result
   does not take the message, because the issue names the reply to the user and the morning report.
 
 Alternatives:
@@ -248,13 +255,14 @@ Alternatives:
 
 ### 8. The entry and the npx cache
 
-A separate measurement checks whether `#semver:x` selects the new tag at the next start of npx, or whether the npx
-cache gives the old copy, and whether `--prefer-online` changes it. Task 1.1 takes the result:
-
-- When npx selects the new tag, the entry stays, and `install` does not change.
-- When it does not, the entry gets the fix of the measurement, and a delta of `install` modifies "Entry of a copy
-  without .git" and replaces the entry of this release. Decision 6, step 2, keeps a daemon of a stale copy from a stop
-  in a loop in both cases.
+A measurement on 2026-11-13 (`docs/manual-checks.md`) with npm 11.19.0, Node.js 26.7.0, a temporary cache and a local
+repository with `#semver:x` gave this result: the next start of npx runs the new tag. Without a flag, with
+`--prefer-offline` and with `--prefer-online`, npx took each tag from v1.1.0 to v1.4.0 as the test added it. The
+reason is in npm: `missingFromTree` of `libnpmexec` asks pacote for the manifest of a spec that is not of the registry
+at each start, and it uses the `_npx` copy only when its `resolved` is the same. pacote resolves the range with
+`git ls-remote` each time, and the cache of that answer lives only in the process. So the entry stays, and `install`
+does not change. Decision 6, step 2, stays as a guard for a stale copy. Without the network, the entry ends with the
+exit code 128 and no output, also with a full cache, as the README says.
 
 ### ACP messages and `_meta` keys
 
@@ -272,7 +280,13 @@ cache gives the old copy, and whether `--prefer-online` changes it. Task 1.1 tak
 - [The user works at night with no turn for 30 minutes] → The stop can come then. The next prompt goes through the
   next start. With `workday.enabled` on, the rule is the sleep of the conversation, so a user who works late keeps the
   daemon while turns come.
-- [npx gives the old copy] → Decision 6 stops the loop after one stop. Task 1.1 measures it.
+- [npx gives the old copy] → The measurement of decision 8 shows that it does not. Decision 6 still stops a loop after
+  one stop.
+- [npx replaces the copy in place] → The key of the directory `_npx/<hash>` is a hash of the spec only, so each
+  release installs into the same directory, and npm replaces the files in place. A process of the earlier release that
+  loads a file late then gets the file of the new release. The automatic stop comes before the next start of npx, so
+  it does not cause this. But a newer bridge that starts while an old daemon and its children run changes their files.
+  That is risk 4 of issue #38, and it is out of scope.
 - [A newer bridge replaces the daemon during the day] → The behavior of today. It is out of scope.
 - [The GitHub API has a limit of 60 requests per hour] → The daemon asks one time for each update.
 - [The text of the notes comes from GitHub] → It is the text that the author released, and the note is a message of
@@ -280,13 +294,13 @@ cache gives the old copy, and whether `--prefer-online` changes it. Task 1.1 tak
 
 ## Migration Plan
 
-The first daemon of this change records its version with no message. `update.auto` has the default `true`, so the
-next release after this change updates each colleague who runs a copy of npx. A colleague who runs a release before
+The first daemon of this change records its version with no message. `update.auto` has the default `false`, so the
+next release after this change updates only a colleague who runs a copy of npx and set `update.auto` to `true`. Each
+other colleague sees the notice in `status`. A colleague who runs a release before
 this change gets this change through the replacement by a newer bridge, as today. A rollback is a revert: an earlier
 daemon ignores the field `update`, and it keeps the key `update.auto` in `settings.json` without a use (see the
 requirement "Content of the settings file" of `settings`).
 
 ## Open Questions
 
-- Task 1.1: the result of the measurement of the npx cache.
 - Task 6.2: what Air does after the exit of the agent process.
