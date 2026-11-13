@@ -54,6 +54,8 @@ const workdayClock = {
  * of the main agent.
  */
 const MAIN_EXTENSION = 'air.megachat'
+/** The kinds of the entries that start a turn of the main agent: an input of the user, or an event of Megachat. */
+const TURN_START_KINDS = new Set(['pi.user', 'air.megachat.event'])
 /**
  * The tools that only record a part of a reply, with the actions of each tool, or `null` for each action. A round of
  * these tools after the full reply text ends the turn, see `PiMegachatService.replyEnd`.
@@ -632,29 +634,45 @@ export class PiMegachatService {
   }
 
   /**
-   * Ends the turn after a model message that holds the full reply text and a call of `agents_suggest` or
-   * `agents_feedback`, in the mode `ghost`. Without the end, the model writes one more short text after the tool
-   * results. Each model request is a message of its own in the chat, and Air puts each message of a turn before the
-   * last one into a closed block "Worked for". So only the short text stays open. The chat does not show the tool calls
-   * of the main agent, so one message is the full answer of the turn.
+   * Keeps the reply of the main agent in one message, in the mode `ghost`. Each model request is a message of its own in
+   * the chat, and Air puts each message of a turn before the last one into a closed block "Worked for". The chat does
+   * not show the tool calls of the main agent, so one message is the full answer of the turn.
    *
-   * Pi Durable ends the run only when each result of the round asks for it. So a round with another tool, such as
+   * A model message that holds the full reply text and a call of `agents_suggest` or `agents_feedback` ends the turn.
+   * Without the end, the model writes one more short text after the tool results, and only that text stays open. Pi
+   * Durable ends the run only when each result of the round asks for it. So a round with another tool, such as
    * `agents_spawn`, or with a failed call, continues: the model then reads the results. Only the tools of
    * [REPLY_RECORD_TOOLS] ask for it. In the mode `reply`, the proposal follows the result of `agents_suggest` in the
-   * reply text, so the turn continues. A message without text, such as a call of `agents_suggest` before the reply,
-   * also continues, so the model writes the reply in the next request.
+   * reply text, so this hook changes nothing there.
+   *
+   * A call of `agents_suggest` before each reply text of the turn continues the turn, and its result tells the model to
+   * write the full reply now. Without that note, the model can write only a short line that refers to a text, such as a
+   * setup question, that the user never saw.
    */
   async replyEnd(call, outcome, api, hookContext) {
     if (this.suggestions !== 'ghost' || call.parent || outcome.isError || !REPLY_RECORD_TOOLS.has(call.name)) return undefined
     const actions = REPLY_RECORD_TOOLS.get(call.name)
     if (actions && !actions.has(call.arguments?.action)) return undefined
+    // The assistant messages of the turn, the newest first. The turn starts at its input, or after a compaction.
     const page = await api.entries({ order: 'descending' }, 50, undefined, hookContext)
-    const answer = page.items.flatMap(entry => entry.model ?? []).find(model => model.role === 'assistant'
-      && Array.isArray(model.content) && model.content.some(block => block.type === 'toolCall' && block.id === call.id))
-    // In the mode ghost, agents_feedback records only a silence or a resume, so it also ends the work of the turn.
-    const ends = block => block.type === 'toolCall' && (block.name === 'agents_suggest' || block.name === 'agents_feedback')
-    if (!answer || !replyText(answer).trim() || !answer.content.some(ends)) return undefined
-    return { ...outcome, control: { ...outcome.control, terminate: true } }
+    const models = []
+    for (const entry of page.items) {
+      if (TURN_START_KINDS.has(entry.kind) || entry.head !== undefined) break
+      models.push(...(entry.model ?? []).filter(model => model.role === 'assistant' && Array.isArray(model.content)))
+    }
+    const answer = models.find(model => model.content.some(block => block.type === 'toolCall' && block.id === call.id))
+    if (!answer) return undefined
+    if (replyText(answer).trim()) {
+      // In the mode ghost, agents_feedback records only a silence or a resume, so it also ends the work of the turn.
+      const ends = block => block.type === 'toolCall' && (block.name === 'agents_suggest' || block.name === 'agents_feedback')
+      return answer.content.some(ends) ? { ...outcome, control: { ...outcome.control, terminate: true } } : undefined
+    }
+    if (call.name !== 'agents_suggest' || models.some(model => replyText(model).trim())) return undefined
+    let value
+    try { value = JSON.parse(outcome.output?.[0]?.text) }
+    catch { return undefined }
+    const note = message(this.settings.onboarding === 'pending' ? 'suggest.ghost.reply.setup' : 'suggest.ghost.reply')
+    return { ...outcome, output: result({ ...value, reply: note }).output }
   }
 
   /**

@@ -219,8 +219,9 @@ test('in the mode ghost, a finished turn sends one prompt suggestion after the l
   assert.match(requests[0], /When the user asks for a next step, such as \\"what next\?\\", answer in the reply text\./)
   assert.match(requests[0], /You can also give a suggestion after that answer\./)
   assert.doesNotMatch(requests[0], /Show the proposal only when the tool returns allowed=true/)
+  // The call came before each reply text of the turn, so the result also asks for the full reply. The setup is pending.
   assert.deepEqual(toolResult(requests[1], 'agents_suggest'), { allowed: true, suggestion: stored.text, declines: 0, silenced: false,
-    note: message('suggest.ghost.note') })
+    note: message('suggest.ghost.note'), reply: message('suggest.ghost.reply.setup') })
 })
 
 test('in the mode ghost, each client gets the update without a capability, and no client gets the proposal in the reply', { timeout: 20000 }, async t => {
@@ -552,4 +553,30 @@ test('in the mode reply, a reply with agents_suggest after its text continues, s
   turn(replyWith('The parser reads each line now.', fauxToolCall('agents_suggest', { proposal: 'Run the tests?' })), fauxAssistantMessage('Run the tests?'))
   await viewer.prompt('Fix the parser')
   assert.equal(requests.length, 2)
+})
+
+test('in the mode ghost, agents_suggest before each reply text tells the model to write the full reply, so the turn has one message', { timeout: 20000 }, async t => {
+  const { cwd, daemon, service, requests, turn } = await ghostFixture(t)
+  const viewer = await view(t, daemon, cwd)
+  const settings = action => fauxAssistantMessage(fauxToolCall('agents_settings', action), { stopReason: 'toolUse' })
+  // The order of a real setup turn: the setup starts, the agent reads the settings, and it calls agents_suggest first.
+  turn(settings({ action: 'onboarding', status: 'pending' }), settings({ action: 'get' }),
+    fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal: 'Opus + Claude' }), { stopReason: 'toolUse' }), fauxAssistantMessage(QUESTION))
+  assert.equal((await viewer.prompt('Start a new setup')).stopReason, 'end_turn')
+  assert.equal(service.settings.onboarding, 'pending')
+  assert.equal(requests.length, 4)
+  assert.equal(toolResult(requests[3], 'agents_suggest').reply, message('suggest.ghost.reply.setup'))
+  assert.match(message('suggest.ghost.reply.setup'), /Write the full reply now, in one message without a tool call\. A setup question holds its full text with the numbered options/)
+  assert.equal(messageIds(viewer.updates).length, 1)
+  assert.equal(viewer.updates.filter(event => event.update.sessionUpdate === 'agent_message_chunk').map(event => event.update.content.text).join(''), QUESTION)
+  assert.deepEqual(viewer.suggestions(), ['Opus + Claude'])
+  // After the setup, the note names no setup question. A reply text earlier in the turn gets no note.
+  turn(settings({ action: 'onboarding', status: 'skipped' }), fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal: 'Run the tests' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('The parser reads each line now.'))
+  await viewer.prompt('Skip the setup')
+  assert.equal(toolResult(requests.at(-1), 'agents_suggest').reply, message('suggest.ghost.reply'))
+  turn(replyWith('I read the list of the tasks.', fauxToolCall('agents_list', {})),
+    fauxAssistantMessage(fauxToolCall('agents_suggest', { proposal: 'Run the tests' }), { stopReason: 'toolUse' }), fauxAssistantMessage('Two tasks run.'))
+  await viewer.prompt('What runs?')
+  assert.equal(toolResult(requests.at(-1), 'agents_suggest').reply, undefined)
 })

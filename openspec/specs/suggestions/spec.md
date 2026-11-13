@@ -127,6 +127,19 @@ Tests: `test/suggestions.test.mjs`
 - **WHEN** the mode is `reply`, and the main agent writes reply text and calls `agents_suggest` in the same message
 - **THEN** the turn makes a second model request
 
+### Requirement: Reply after a suggestion without reply text in the mode ghost
+In the mode `ghost`, when the main agent calls `agents_suggest` before each reply text of the turn, the tool result MUST tell the agent that the user saw no reply text, and that it must write the full reply now in one message without a tool call. While the setup is pending, the result MUST also ask for the full setup question with its numbered options, the current value and the default. A reply text earlier in the turn MUST give no such note.
+
+Tests: `test/suggestions.test.mjs`
+
+#### Scenario: A setup turn that calls agents_suggest first
+- **WHEN** the setup is pending, and the main agent sets the status `pending`, reads the settings and calls `agents_suggest` with "Opus + Claude" before each reply text
+- **THEN** the tool result holds the note `suggest.ghost.reply.setup`, the next reply is the only message of the turn, and the view gets the prompt suggestion "Opus + Claude"
+
+#### Scenario: A reply text earlier in the turn
+- **WHEN** the main agent writes a text with a call of `agents_list`, and then calls `agents_suggest` in a message without text
+- **THEN** the tool result has no note about the reply
+
 ### Requirement: Turns without a prompt suggestion
 A turn that admits a child task is a delegation acknowledgment. It MUST get no prompt suggestion, also when the main agent admits the child after the proposal. A turn that the user stopped or that failed MUST keep no prompt suggestion.
 

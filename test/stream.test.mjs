@@ -372,3 +372,31 @@ test('a stream joins the text that arrives faster than its interval, and keeps a
   await clock.advance(60)
   assert.equal(joined(), `${text}😀 one`)
 })
+
+test('a streamed reply with agents_suggest after its text ends its turn as a final answer, and the next prompt runs', { timeout: 30000 }, async t => {
+  const { cwd, service, daemon } = await fixture(t, [
+    fauxAssistantMessage([fauxText(LONG), fauxToolCall('agents_suggest', { proposal: 'Run the tests' })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage(SHORT), fauxAssistantMessage('The second reply.')])
+  const viewer = await attach(t, daemon, cwd)
+  const other = await attach(t, daemon, cwd)
+  const first = viewer.prompt('Hello')
+  // The prompt of another view during the turn waits for the end of the turn, and then it gets its own turn.
+  await until(() => viewer.chunks().length > 0, 'no chunk of the first reply')
+  const waiting = other.prompt('Next')
+  assert.equal((await first).stopReason, 'end_turn')
+  // The turn made one model request: the reply is one message of the stream, without a text after the call.
+  assert.deepEqual(messages(viewer.chunks()), [LONG])
+  assert.match(viewer.chunks()[0].id, /^megachat-reply-\d+-1$/)
+  assert.equal((await waiting).stopReason, 'end_turn')
+  assert.deepEqual(messages(other.chunks()), [LONG, SHORT])
+  // The state of the daemon is as after a final answer: no current turn, and each input is completed.
+  const state = await service.state.snapshot()
+  assert.equal(state.current, null)
+  assert.deepEqual(Object.values(state.inputs).map(input => input.status), ['completed', 'completed'])
+  assert.deepEqual(await assistantTexts(service), [LONG, SHORT])
+  // A replay shows the reply one time, and the prompt of a later turn runs.
+  const later = await attach(t, daemon, cwd)
+  assert.deepEqual(messages(later.chunks()), [LONG, SHORT])
+  assert.equal((await later.prompt('Again')).stopReason, 'end_turn')
+  assert.deepEqual((await assistantTexts(service)).at(-1), 'The second reply.')
+})
