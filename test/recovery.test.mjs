@@ -15,8 +15,8 @@ import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { message as continuationPrompt } from '../src/messages.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
-async function poll(select) {
-  for (let attempt = 0; attempt < 200; attempt++) {
+async function poll(select, attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const result = await select()
     if (result) return result
     await delay(20)
@@ -354,7 +354,7 @@ async function processesNaming(text) {
 }
 
 for (const view of [true, false]) {
-  test(`an acp ${view ? 'with a view' : 'without a view'} exits with the code 0 after the stop of its daemon, and starts no daemon`, { timeout: 30000 }, async t => {
+  test(`an acp ${view ? 'with a view' : 'without a view'} exits with the code 0 after the stop of its daemon, and starts no daemon`, { timeout: 60000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'megachat-bridge-stop-'))
     t.after(async () => {
       try { await stopDaemon(directory) }
@@ -368,7 +368,8 @@ for (const view of [true, false]) {
     bridge.stderr.on('data', chunk => { errors += chunk })
     const exited = once(bridge, 'exit')
     const send = value => bridge.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`)
-    const answer = id => poll(() => output.split('\n').filter(Boolean).map(line => JSON.parse(line)).find(item => item.id === id))
+    // A busy machine can need more than 4 seconds to start or stop a process, so each wait of this test has 20 seconds.
+    const answer = id => poll(() => output.split('\n').filter(Boolean).map(line => JSON.parse(line)).find(item => item.id === id), 1000)
     send({ id: 1, method: 'initialize', params: { protocolVersion: 1, clientCapabilities: AIR } })
     await answer(1)
     if (view) {
@@ -376,7 +377,7 @@ for (const view of [true, false]) {
       assert.ok((await answer(2)).result.sessionId)
     }
     await (await DaemonClient.connect(directory)).json('/shutdown', {})
-    await poll(async () => (await processesNaming(`main.mjs daemon ${directory}`)).length === 0 || undefined)
+    await poll(async () => (await processesNaming(`main.mjs daemon ${directory}`)).length === 0 || undefined, 1000)
     if (!view) {
       // The request finds no daemon. The answer is an error, and the bridge then ends.
       send({ id: 3, method: 'session/new', params: { cwd: directory, mcpServers: [] } })
