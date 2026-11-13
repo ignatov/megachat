@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -85,10 +86,19 @@ test('the release builds the bundle before the tests, and makes the tag only aft
   assert.deepEqual(steps.map(([command, args]) => [command, ...args].slice(0, 3).join(' ')),
     ['npm run build', 'npm test', 'npm run test:package', 'git tag --annotate', 'git push origin', 'gh release create'])
   assert.equal(steps.at(-1)[2], '- The first behavior\n')
+  // The asset of the setup script is the last argument of gh release create, and the file is in the checkout.
+  assert.equal(steps.at(-1)[1].at(-1), 'setup.sh')
+  assert.ok(existsSync(fileURLToPath(new URL('../setup.sh', import.meta.url))))
 })
 
 test('the release command of this repository names the install line of the documents', async () => {
   const read = path => readFile(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
   const line = 'npx -y "github:ignatov/megachat#semver:x" install'
-  for (const path of ['../README.md', '../openspec/specs/install/spec.md', '../release.mjs']) assert.ok((await read(path)).includes(line), path)
+  for (const path of ['../README.md', '../openspec/specs/install/spec.md', '../release.mjs', '../setup.sh']) assert.ok((await read(path)).includes(line), path)
+})
+
+test('the release command and the setup script name the setup line of the documents', async () => {
+  const read = path => readFile(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
+  const line = 'curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash'
+  for (const path of ['../README.md', '../release.mjs', '../setup.sh']) assert.ok((await read(path)).includes(line), path)
 })

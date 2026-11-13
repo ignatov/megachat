@@ -132,7 +132,11 @@ Tests: `test/setup.test.mjs`
 
 #### Scenario: Two runs
 - **WHEN** the script ran on an empty machine with the exit code 0, and it runs a second time
-- **THEN** the second run runs only the checks and the install line, `acp.json` and `~/.claude/settings.json` stay the same, and the exit code is 0
+- **THEN** the second run runs no installer of Central, no `central login` and no `central add claude-code`, `acp.json` and `~/.claude/settings.json` stay the same, and the exit code is 0
+
+#### Scenario: A second run on a machine with Node.js
+- **WHEN** `node --version` gives `v22.19.0`, and Central, its login, its entry of Claude Code and `acp.json` are in place
+- **THEN** each of two runs runs only the checks and the install line, no file changes, and the exit code is 0
 
 ### Requirement: No secret in the output of the setup
 The script MUST NOT show the output of `central status` or of `central add claude-code`, because the base URL of Central holds a key.

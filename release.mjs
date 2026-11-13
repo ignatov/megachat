@@ -10,6 +10,11 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 const execute = promisify(execFile)
+/**
+ * The setup script of a colleague, a path from the root of the checkout. Its asset name is `setup.sh`:
+ * `curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash`.
+ */
+export const SETUP_SCRIPT = 'setup.sh'
 
 /** The parts of a release version `1.2.3`, else `undefined`. The install line does not select a pre-release. */
 function versionParts(version) {
@@ -60,7 +65,8 @@ async function run(command, args, root, input) {
 
 /**
  * The commands of the release [plan], in their order, as `[command, args, input]`. The build comes before the tests:
- * `npm test` tests the bundle in `out/bundle/`, and that bundle can come from an earlier version.
+ * `npm test` tests the bundle in `out/bundle/`, and that bundle can come from an earlier version. The GitHub release
+ * gets [SETUP_SCRIPT] as an asset, so `releases/latest/download/setup.sh` gives the setup script of the last release.
  */
 export function releaseSteps(plan) {
   return [
@@ -69,7 +75,7 @@ export function releaseSteps(plan) {
     ['npm', ['run', 'test:package']],
     ['git', ['tag', '--annotate', plan.tag, '--message', `Megachat ${plan.version}`]],
     ['git', ['push', 'origin', plan.tag]],
-    ['gh', ['release', 'create', plan.tag, '--verify-tag', '--title', `Megachat ${plan.version}`, '--notes-file', '-'], plan.notes],
+    ['gh', ['release', 'create', plan.tag, '--verify-tag', '--title', `Megachat ${plan.version}`, '--notes-file', '-', SETUP_SCRIPT], plan.notes],
   ]
 }
 

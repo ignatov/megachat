@@ -8,7 +8,44 @@ All model traffic goes through JetBrains Central.
 
 ## Install for a colleague
 
-Run this line once in a terminal, then open Megachat in the IDE:
+On a Mac, run this line in a terminal:
+
+```sh
+curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash
+```
+
+1. Run the line.
+2. Log in when Central asks. The line starts `central login` in the terminal.
+3. In the IDE, select Megachat in the agent list of Air. The IDE reads the change of `~/.jetbrains/acp.json` itself,
+   so it needs no restart.
+
+The IDE needs a build with the Air support for Megachat (see "The machine needs" below). The first start of Megachat
+in the IDE takes about 30 to 100 seconds, and each start needs the network.
+
+`setup.sh` is an asset of each GitHub release, so the address gives the script of the last release. The script prints
+one line for each step, and stops with a message at the first step that fails:
+
+1. It stops on a platform other than macOS.
+2. When `git --version` fails, it starts the install of the Command Line Tools with `xcode-select --install`, and
+   stops. Install them in the dialog of macOS, then run the line again.
+3. When `node` on the `PATH` is 22.19 or later, the script uses it. Else it downloads Node.js 24.22.3 from
+   `nodejs.org` into a new temporary directory, checks the archive with `SHASUMS256.txt`, and uses that Node.js only
+   for the install line. It uses no `sudo` and no Homebrew, and it does not remove the directory.
+4. When `~/.local/bin/central` is missing, it runs the installer of Central:
+   `curl -fsSL https://central-cli.labs.jb.gg/install.sh | bash`.
+5. When Central has no login, it runs `central login`.
+6. When `~/.claude/settings.json` has no Central entry, it runs `central add claude-code`. When that fails, a Claude
+   child uses the pi route of Central.
+7. When `~/.jetbrains/acp.json` is empty, it writes `{}` to it, because the install line refuses an empty file.
+8. It runs the install line of the next section. The exit code of the install line is the exit code of the script.
+
+The script changes no shell file, and it shows no output of Central that can hold a key. A second run on a ready
+machine changes nothing. The script runs no `central add codex` (see "The machine needs").
+
+### Install without the setup line
+
+When the setup line cannot run, install what "The machine needs" lists. Then run this line once in a terminal, and
+select Megachat in the agent list of Air:
 
 ```sh
 npx -y "github:ignatov/megachat#semver:x" install
@@ -61,6 +98,8 @@ The machine needs:
   `central add codex` is not necessary. Without it, Central puts the route in the command line of Codex, where each
   local user can read the key of Central, and a Codex child runs without the plugin of Central.
 - macOS. Nobody tested Megachat on another platform.
+
+### The start, the update and the removal
 
 **The start in the IDE.** These numbers come from the npm 11.19.1 of the IDE on one Mac, with an empty npm cache of a
 test and the release 0.2.0 on GitHub:
@@ -770,6 +809,7 @@ The session text is data for the agent, not instructions.
 | `src/messages.mjs`, `resources/Megachat.properties` | The user-visible strings, the errors, and the log lines about a failure. |
 | `build.mjs` | The bundle in `out/bundle/`. |
 | `release.mjs` | The release of the version in `package.json`: the tag and the GitHub release. |
+| `setup.sh` | The setup script of a colleague, an asset of each GitHub release. It runs the install line. |
 
 ## Tests
 
@@ -784,6 +824,8 @@ npm run test:package
 It also sets `MEGACHAT_RELEASE_REPOSITORY` to a path that does not exist and `MEGACHAT_RELEASE_NOTES_URL` to a local
 address, so no test asks GitHub for a release. `test/update.test.mjs` uses a local git repository with tags, a local
 HTTP server for the notes, and `MEGACHAT_UPDATE_START_DELAY_MS` for a short wait of the first check.
+`test/setup.test.mjs` runs `setup.sh` with a temporary `HOME`, fake commands on the `PATH` and a file of the test in
+`MEGACHAT_SETUP_TTY` as the terminal. So it reaches no network, no real Central and no real `npx`.
 `npm run build` writes the bundle into `out/bundle/` with `THIRD_PARTY_NOTICES.txt` for the bundled packages. Git
 ignores `out/`. `npm run test:bundle` builds the bundle into `out/bundle/` and runs `test/bundle.test.mjs` on it.
 
@@ -858,8 +900,9 @@ To make a release:
 `origin/main`, and a version that is not higher than the last release. Then it runs `npm run build`, `npm test` and
 `npm run test:package`. The build comes first, because `npm test` tests the bundle in `out/bundle/`, and that bundle
 can come from an earlier version. Then it makes the tag, pushes it, and makes the GitHub release with `gh`. The
-notes of the release are the subjects of the commits since the last release. `npm run release -- --dry-run` prints
-the release and changes nothing.
+notes of the release are the subjects of the commits since the last release. The release gets `setup.sh` of the
+release commit as an asset, so `releases/latest/download/setup.sh` gives the setup script of the last release.
+`npm run release -- --dry-run` prints the release and changes nothing.
 
 A copy of the install line comes from a release tag and has no `.git`, so it gives the release form of the version,
 such as `0.4.0`. A copy without `.git` from another place, such as `npm pack`, also gives that form. The build and the
