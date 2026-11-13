@@ -38,7 +38,8 @@ const validData = data => data !== null && typeof data === 'object' && data.sche
 
 /**
  * The spend of the main agent on the local day, in the file `spend.json` of the state directory, so a restart keeps it.
- * The warning goes from `none` to `pending` when the spend passes the limit, and to `shown` after the turn that had it.
+ * The warning goes from `none` to `pending` when the spend passes the limit, and to `shown` after the turn that had it
+ * gave reply text.
  * So the user gets one warning on each day. Without a path, the count stays in memory, for a test.
  * `piUsd` is the part of `usd` that the pi children spent. `days` keeps the counts of the last [KEPT_DAYS] earlier days
  * for the morning report. A file of an earlier build has neither, and an earlier build keeps the count of the day.
@@ -116,7 +117,7 @@ export class DailySpend {
     return notice && notice.day === localDay(this.clock.now()) ? notice : undefined
   }
 
-  /** The turn with the warning of [day] ended, so the warning does not come again on that day. */
+  /** The turn with the warning of [day] gave reply text, so the warning does not come again on that day. */
   shown(day) {
     const data = this.today()
     if (data.day !== day || data.warning !== 'pending') return

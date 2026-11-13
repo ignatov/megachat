@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import test from 'node:test'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxProvider, fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
@@ -11,6 +12,7 @@ import { DaemonServer } from '../src/DaemonServer.mjs'
 import { DailySpend, localDay, requestCost } from '../src/DailySpend.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
+import { partialReply } from '../src/ReplyStream.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
 const HOUR = 3600000
@@ -76,9 +78,13 @@ test('the cost comes from the provider, else from the prices of the model data',
   assert.equal(requestCost(undefined, model), 0)
 })
 
-/** A fake provider with prices, so each request has a cost. Each request records its system prompt and its kind. */
-function fakeModels() {
-  const fake = fauxProvider({ models: [{ id: 'priced', reasoning: true, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } }] })
+/**
+ * A fake provider with prices, so each request has a cost. Each request records its system prompt and its kind.
+ * [answer] gives the answer to a turn request by its index, and [tokensPerSecond] makes a slow stream.
+ */
+function fakeModels({ answer, tokensPerSecond } = {}) {
+  const fake = fauxProvider({ models: [{ id: 'priced', reasoning: true, cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } }],
+    ...(tokensPerSecond ? { tokensPerSecond, tokenSize: { min: 1, max: 1 } } : {}) })
   const requests = []
   fake.setResponses(Array(200).fill(async (context, options) => {
     const summary = context.messages.some(item => item.role === 'system' && text(item.content).startsWith('You summarize'))
@@ -87,7 +93,9 @@ function fakeModels() {
       if (item.role !== 'system' || !item.sections) continue
       for (const [key, value] of Object.entries(item.sections)) value === null ? sections.delete(key) : sections.set(key, value)
     }
-    requests.push({ kind: summary ? 'summary' : options.maxTokens === 1 ? 'ping' : 'turn', system: [...sections.values()].join('\n') })
+    const kind = summary ? 'summary' : options.maxTokens === 1 ? 'ping' : 'turn'
+    requests.push({ kind, system: [...sections.values()].join('\n') })
+    if (kind === 'turn' && answer) return answer(requests.filter(item => item.kind === 'turn').length - 1)
     return fauxAssistantMessage(summary ? 'SUMMARY' : 'Answer.')
   }))
   const models = createModels()
@@ -95,8 +103,8 @@ function fakeModels() {
   return { models, requests }
 }
 
-async function open(t, directory, clock, options = {}) {
-  const { models, requests } = fakeModels()
+async function open(t, directory, clock, { fake, ...options } = {}) {
+  const { models, requests } = fakeModels(fake)
   const service = await PiMegachatService.open(new MemoryStorage(), models, undefined, undefined, {
     settingsPath: join(directory, 'settings.json'), spendPath: join(directory, 'spend.json'), clock, environment: {},
     keepAlive: { minTokens: 1000, enabled: false }, ...options })
@@ -147,6 +155,33 @@ test('the main agent warns one time each day when the spend of its requests pass
   await say('fifth', 'A question.')
   assert.match(requests.at(-1).system, WARNING)
   assert.equal((await tool({ action: 'get' })).spend.day, localDay(clock.now()))
+})
+
+test('a stopped turn with reply text counts as the warning of the day, and a turn that failed before any text does not', { timeout: 30000 }, async t => {
+  const directory = await temporary(t)
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done',
+    values: { 'coordinator.model': 'faux/priced', 'budget.dailyUsd': 0.000001 } }), { mode: 0o600 })
+  const long = Array.from({ length: 200 }, (_, index) => `word${index}`).join(' ')
+  const answers = [fauxAssistantMessage('Answer.'), fauxAssistantMessage('', { stopReason: 'error', errorMessage: 'The provider is overloaded.' }),
+    fauxAssistantMessage(long)]
+  const { service, requests, say } = await open(t, directory, fakeClock(),
+    { fake: { tokensPerSecond: 1000, answer: index => answers[index] ?? fauxAssistantMessage('Answer.') } })
+  await say('first', 'A question.')
+  // The model fails before any reply text, so the user did not see the warning, and the next turn has it again.
+  await say('failed', 'A question.')
+  assert.match(requests.at(-1).system, WARNING)
+  assert.equal(service.spend.report(0.000001).warningPending, true)
+  // The user stops the turn after its first reply text. The chat showed that text, so the warning counts as shown.
+  const receipt = await service.submit('stopped', 'A question.')
+  for (let attempt = 0; !partialReply(await service.view())?.text && attempt < 500; attempt++) await sleep(10)
+  assert.ok(partialReply(await service.view())?.text, 'no reply text arrived')
+  assert.match(requests.at(-1).system, WARNING)
+  assert.equal(await service.cancel(receipt.mainRunId), true)
+  await waitForState(service.state, state => state.current === null ? true : undefined)
+  assert.equal((await service.state.snapshot()).inputs.stopped.status, 'cancelled')
+  assert.deepEqual([service.spend.report(0.000001).warned, service.spend.report(0.000001).warningPending], [true, false])
+  await say('next', 'A question.')
+  assert.doesNotMatch(requests.at(-1).system, WARNING)
 })
 
 test('a warning that waits at the midnight is not shown on the next day, and the next day gets its own warning', { timeout: 30000 }, async t => {

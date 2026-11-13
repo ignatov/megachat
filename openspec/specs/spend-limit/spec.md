@@ -49,9 +49,7 @@ Tests: `test/spend.test.mjs`
 - **THEN** the count of the new day is 0 USD
 
 ### Requirement: Spend warning
-When the count passes the limit, the rules of the next turn MUST hold one line with the spend and the limit, which asks for one short warning. The line MUST go away after a completed turn that had it. The user MUST get at most one warning on each day. Megachat MUST NOT stop the work.
-
-A warning that waits at the local midnight MUST NOT go into a turn of the next day, and it MUST NOT mark the warning of the next day as shown.
+When the count passes the limit, the rules of the next turn MUST hold one line with the spend and the limit, which asks for one short warning. The line MUST go away after a turn that had it and gave reply text, also when the user stopped that turn. A turn that failed before any reply text MUST keep the line for the next turn. The user MUST get at most one warning on each day. Megachat MUST NOT stop the work.
 
 Tests: `test/spend.test.mjs`
 
@@ -59,12 +57,21 @@ Tests: `test/spend.test.mjs`
 - **WHEN** the limit is 0.000001 USD and the user sends three prompts
 - **THEN** the rules of the second turn hold the line with the limit of 0.000001 USD, and the rules of the first turn and of the third turn do not hold it
 
+#### Scenario: A turn that failed before any reply text, and a stopped turn
+- **WHEN** the limit is 0.000001 USD, the first turn passes it, the model fails before any reply text in the second turn, and the user stops the third turn after its first reply text
+- **THEN** the rules of the second and of the third turn hold the line, the rules of the fourth turn do not hold it, and `warned` is `true` after the third turn
+
+### Requirement: Spend warning at the midnight
+A warning that waits at the local midnight MUST NOT go into a turn of the next day, and it MUST NOT mark the warning of the next day as shown.
+
+Tests: `test/spend.test.mjs`
+
 #### Scenario: A warning that waits at the midnight
 - **WHEN** a late turn passes the limit and the local midnight comes before the next turn
 - **THEN** the first turn of the next day has no warning, and the turn after it has the warning of the new day
 
 ### Requirement: Spend in agents_settings get
-`agents_settings get` MUST give the spend of the day, the limit, whether the warning went out in a completed turn (`warned`), whether a warning waits (`warningPending`), and a note that the Claude and Codex children are not in the count.
+`agents_settings get` MUST give the spend of the day, the limit, whether the warning went out in a turn with reply text (`warned`), whether a warning waits (`warningPending`), and a note that the Claude and Codex children are not in the count.
 
 Tests: `test/spend.test.mjs`
 

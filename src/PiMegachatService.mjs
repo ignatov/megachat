@@ -891,17 +891,20 @@ export class PiMegachatService {
     let status
     let reason
     let failure
+    let inputEntry
     try {
       const submission = await this.harness.submission(receipt.continuationId ?? receipt.submissionId, context)
       const settled = await submission.wait(context)
       status = settled.status === 'done' ? 'completed' : 'interrupted'
       if (settled.status !== 'done') reason = settled.reason
+      inputEntry = settled.entry
     }
     catch (error) { this.lifetime.signal.throwIfAborted(); status = 'interrupted'; failure = error }
     if (status === 'interrupted') await this.logFailedTurn(receipt.mainRunId, reason, failure)
-    // The turn had the warning about the spend in its rules. A failed turn keeps it for the next turn. A warning of an
-    // earlier day changes no record of today, and the new settings drop it.
-    if (this.notice && status === 'completed') {
+    // The turn had the warning about the spend in its rules. A turn that gave reply text showed the warning, also when
+    // the user stopped it or the model failed after the first text. A turn that failed before any reply text keeps the
+    // warning for the next turn. A warning of an earlier day changes no record of today, and the new settings drop it.
+    if (this.notice && (status === 'completed' || await this.replyTextAfter(inputEntry))) {
       this.spend.shown(this.notice.day)
       this.settingsPending = true
     }
@@ -914,6 +917,21 @@ export class PiMegachatService {
     this.search?.catchUp().catch(() => {
       if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.search')}\n`)
     })
+  }
+
+  /**
+   * Tells whether the model wrote reply text after the input entry [entryId]. A turn holds the state until its end, so
+   * these entries belong to the turn. A stopped reply and a reply that failed in the middle keep their partial text as
+   * an entry, and the chat showed that text.
+   */
+  async replyTextAfter(entryId) {
+    if (!Number.isSafeInteger(entryId)) return false
+    try {
+      const page = await this.root.entries({ order: 'descending', minEntryId: entryId + 1 }, 50, undefined, context)
+      return page.items.some(entry => (entry.model ?? []).some(model => model.role === 'assistant' && Array.isArray(model.content)
+        && model.content.some(block => block.type === 'text' && block.text.trim() !== '')))
+    }
+    catch { return false }
   }
 
   /**
