@@ -18,8 +18,8 @@ export const KEEPALIVE_VARIABLE = 'MEGACHAT_KEEPALIVE'
 export const KEEPALIVE_HOURS_VARIABLE = 'MEGACHAT_KEEPALIVE_HOURS'
 export const DEFAULT_KEEPALIVE_HOURS = 6
 /**
- * The mode of the next-step suggestions: `off`, `reply` or `ghost`. The values `0` and `1` of earlier builds give `off`
- * and `reply`.
+ * The mode of the next-step suggestions: `off`, `reply` or `ghost`, the default. The values `0` and `1` of earlier builds
+ * give `off` and `reply`.
  */
 export const SUGGESTIONS_VARIABLE = 'MEGACHAT_SUGGESTIONS'
 /**
@@ -211,7 +211,7 @@ export const SETTINGS = [
   { key: 'report.morning', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   // The approval of the user for the automatic stop of a copy of npx for a new release (see `MegachatUpdate.mjs`).
   { key: 'update.auto', default: false, applies: 'update', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
-  { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: 'off', applies: 'nextTurn',
+  { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: 'ghost', applies: 'nextTurn',
     fromEnvironment: text => text === '1' ? 'reply' : text === '0' ? 'off' : choice(SUGGESTION_MODES)(text.toLowerCase()),
     validate: suggestionMode, allowed: () => ({ values: SUGGESTION_MODES }) },
   { key: 'reply.language', default: 'auto', applies: 'nextTurn',

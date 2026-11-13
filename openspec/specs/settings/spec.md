@@ -157,11 +157,11 @@ Tests: `test/settings.test.mjs`
 
 #### Scenario: The defaults of the reply
 - **WHEN** no variable is set and no value is stored
-- **THEN** `reply.suggestions` is `off`, `reply.language` is `auto`, `reply.length` is `short` and `reply.quoteRequest` is `false`
+- **THEN** `reply.suggestions` is `ghost`, `reply.language` is `auto`, `reply.length` is `short` and `reply.quoteRequest` is `false`
 
 #### Scenario: The variable of the suggestions
-- **WHEN** `MEGACHAT_SUGGESTIONS` is `ghost`
-- **THEN** `reply.suggestions` is `ghost`
+- **WHEN** `MEGACHAT_SUGGESTIONS` is `0` and no value is stored
+- **THEN** `reply.suggestions` is `off`
 
 #### Scenario: The defaults of the memory
 - **WHEN** no value is stored

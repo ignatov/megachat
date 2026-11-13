@@ -106,10 +106,18 @@ function settingsRules(values, onboarding, rules, notice, projects = []) {
     message('instructions.codex', values['children.codexModel']),
     message('instructions.projects', PROJECT_SETTINGS.join(', ')),
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
-    onboarding === 'pending' ? rules.onboarding.trimEnd() : message('instructions.settings'),
+    onboarding === 'pending' ? onboardingRules(values, rules) : message('instructions.settings'),
     message('instructions.notes', notesOn(values) ? 'on' : 'off'),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')
+}
+
+/**
+ * The setup rules of a pending onboarding. In the mode `ghost`, the added setup rules follow them, so the main agent
+ * gives the likely answer of each setup question as a prompt suggestion.
+ */
+function onboardingRules(values, rules) {
+  return [rules.onboarding.trimEnd(), ...(values['reply.suggestions'] === 'ghost' ? [rules.onboardingGhost.trimEnd()] : [])].join('\n')
 }
 
 /**
@@ -188,7 +196,8 @@ export class PiMegachatService {
     // The rules of the user come from the file at the start of the daemon only.
     const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
       ghost: await resource('instructions-suggestions-ghost.md'),
-      onboarding: await resource('instructions-onboarding.md'), user: await readUserInstructions(userInstructionsPath) }
+      onboarding: await resource('instructions-onboarding.md'), onboardingGhost: await resource('instructions-onboarding-ghost.md'),
+      user: await readUserInstructions(userInstructionsPath) }
     const live = { harness: harnessSettings(values, models) }
     const registry = createRegistry()
     const harness = await Harness.open(storage, {
@@ -390,7 +399,7 @@ export class PiMegachatService {
     if (args.action === 'onboarding') {
       changed = await this.settings.setOnboarding(args.status)
       // A new setup starts in the same turn, so the agent gets the setup rules now and not only in the next turn.
-      if (args.status === 'pending') changed.rules = this.rules.onboarding.trim()
+      if (args.status === 'pending') changed.rules = onboardingRules(this.values, this.rules).trim()
     }
     else if (args.action === 'set') {
       requireCondition(args.value !== undefined, 'settingValue')

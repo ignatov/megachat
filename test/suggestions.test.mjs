@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import test from 'node:test'
 import { client, methods } from '@agentclientprotocol/sdk/unstable'
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
@@ -14,6 +15,7 @@ import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
+import { SETTINGS } from '../src/Settings.mjs'
 import { suggestionsMode } from '../src/Suggestions.mjs'
 import { waitForState } from '../src/waitForState.mjs'
 
@@ -45,9 +47,11 @@ const toolNames = service => service.extension().tools.map(tool => tool.name)
 const SUGGESTION_RULE = /After useful work ends|agents_suggest|agents_feedback|offer one/
 
 test('MEGACHAT_SUGGESTIONS selects the mode: 0 and 1 of earlier builds give off and reply, and ghost gives ghost', () => {
-  assert.equal(suggestionsMode({}), 'off')
+  // Without the variable, the mode is the default ghost.
+  assert.equal(suggestionsMode({}), 'ghost')
   assert.equal(suggestionsMode({ MEGACHAT_SUGGESTIONS: '0' }), 'off')
-  assert.equal(suggestionsMode({ MEGACHAT_SUGGESTIONS: 'true' }), 'off')
+  // A value that the daemon cannot read has no effect, so the default applies.
+  assert.equal(suggestionsMode({ MEGACHAT_SUGGESTIONS: 'true' }), 'ghost')
   assert.equal(suggestionsMode({ MEGACHAT_SUGGESTIONS: ' 1 ' }), 'reply')
   assert.equal(suggestionsMode({ MEGACHAT_SUGGESTIONS: 'ghost' }), 'ghost')
   assert.equal(suggestionsMode({ MEGACHAT_SUGGESTIONS: 'off' }), 'off')
@@ -61,8 +65,8 @@ test('the bundled rules hold no suggestion rule', async () => {
   assert.match(rules, /Do not show tool names, run IDs, or process details/)
 })
 
-test('by default the main agent has no suggestion tool and no suggestion rule', { timeout: 10000 }, async t => {
-  const { service, requests, sessionsEvent } = await fixture(t)
+test('in the mode off the main agent has no suggestion tool and no suggestion rule', { timeout: 10000 }, async t => {
+  const { service, requests, sessionsEvent } = await fixture(t, { suggestions: 'off' })
   assert.ok(toolNames(service).includes('agents_spawn'))
   assert.ok(!toolNames(service).includes('agents_suggest'))
   assert.ok(!toolNames(service).includes('agents_feedback'))
@@ -79,6 +83,34 @@ test('by default the main agent has no suggestion tool and no suggestion rule', 
   // The stored suggestion state stays, and the state still reads and writes it.
   assert.equal((await service.state.snapshot()).initiative.silenced, false)
   assert.equal((await service.state.proposal('stored', 'Next')).allowed, true)
+})
+
+test('without a stored value and without the variable, the mode is ghost with its tools, its rules and the added setup rules', { timeout: 10000 }, async t => {
+  const { service, requests, sessionsEvent } = await fixture(t, { environment: {} })
+  assert.equal(service.suggestions, 'ghost')
+  assert.ok(toolNames(service).includes('agents_suggest'))
+  assert.ok(toolNames(service).includes('agents_feedback'))
+  await sessionsEvent()
+  assert.match(requests[0], /Do not propose a next step in the reply text unless the user asks for one\./)
+  assert.doesNotMatch(requests[0], /Do not propose a next step unless/)
+  // A first start has no settings.json, so the setup is pending, and the mode ghost adds its setup rules.
+  assert.match(requests[0], /The setup of Megachat is pending\./)
+  assert.match(requests[0], /While a setup question waits for an answer, give the likely answer as a prompt suggestion\./)
+})
+
+test('in the mode reply, a pending setup has no added setup rules', { timeout: 10000 }, async t => {
+  const { requests, sessionsEvent } = await fixture(t, { suggestions: 'reply' })
+  await sessionsEvent()
+  assert.match(requests[0], /The setup of Megachat is pending\./)
+  assert.doesNotMatch(requests[0], /While a setup question waits for an answer/)
+})
+
+test('the added setup rules ask for the likely answer and name no setting key', async () => {
+  const rules = await readFile(new URL('../resources/instructions-onboarding-ghost.md', import.meta.url), 'utf8')
+  assert.match(rules, /call agents_suggest one time with the likely answer/)
+  assert.match(rules, /Keep the current values/)
+  const keys = new Set(SETTINGS.map(setting => setting.key))
+  assert.deepEqual((rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g) ?? []).filter(word => keys.has(word)), [])
 })
 
 test('with the suggestions on, the tools, the rules and the event prompt come back', { timeout: 10000 }, async t => {
@@ -177,8 +209,11 @@ test('in the mode ghost, a finished turn sends one prompt suggestion after the l
   assert.ok(viewer.updates.findLastIndex(event => event.update.sessionUpdate === 'agent_message_chunk') < index)
   // The reply text has no proposal: the rules ask for none, and the tool result tells the agent that the input shows it.
   assert.ok(!viewer.updates.some(event => event.update.content?.text?.includes('Run the tests')))
-  assert.match(requests[0], /Do not propose a next step in the reply text\./)
+  assert.match(requests[0], /Do not propose a next step in the reply text unless the user asks for one\./)
   assert.match(requests[0], /Write the suggestion as a prompt of the user/)
+  // A next step that the user asks for goes into the reply text, and a suggestion can follow.
+  assert.match(requests[0], /When the user asks for a next step, such as \\"what next\?\\", answer in the reply text\./)
+  assert.match(requests[0], /You can also give a suggestion after that answer\./)
   assert.doesNotMatch(requests[0], /Show the proposal only when the tool returns allowed=true/)
   assert.deepEqual(toolResult(requests[1], 'agents_suggest'), { allowed: true, suggestion: stored.text, declines: 0, silenced: false,
     note: message('suggest.ghost.note') })
@@ -411,4 +446,41 @@ test('a change of the mode in the turn of the suggestion sends no suggestion, an
   await ghost.close()
   const reply = await ghostFixture(t, { settingsPath: await settingsFile(t, 'reply'), storage: await openNodeSqliteStorage(database) })
   assert.equal((await reply.service.state.snapshot()).initiative.promptSuggestion, null)
+})
+
+test('in the mode ghost, a setup question gets the likely answer as a prompt suggestion, and the end of the setup ends the added setup rules', { timeout: 20000 }, async t => {
+  const { cwd, daemon, service, requests, turn } = await ghostFixture(t)
+  const viewer = await view(t, daemon, cwd)
+  turn(suggest('Keep the current values'), fauxAssistantMessage('Which agent runs a new child task? The current value is claude.'))
+  await viewer.prompt('Start the setup')
+  assert.match(requests[0], /While a setup question waits for an answer, give the likely answer as a prompt suggestion\./)
+  assert.deepEqual(viewer.suggestions(), ['Keep the current values'])
+  assert.ok(!viewer.updates.some(event => event.update.sessionUpdate === 'agent_message_chunk' && event.update.content?.text?.includes('Keep the current values')))
+  const onboarding = status => fauxAssistantMessage(fauxToolCall('agents_settings', { action: 'onboarding', status }), { stopReason: 'toolUse' })
+  turn(onboarding('done'), fauxAssistantMessage('The setup is done.'))
+  await viewer.prompt('Yes')
+  turn(fauxAssistantMessage('Hello.'))
+  await viewer.prompt('Hello')
+  // The history keeps the earlier section, so the check reads the section of the next request.
+  const agent = await service.root.agent(BACKGROUND_CONTEXT)
+  const section = agent.sections.find(item => item.key === 'settings').render()
+  assert.match(section, /Read or change a setting of Megachat with agents_settings only when the user asks\./)
+  assert.doesNotMatch(section, /While a setup question waits for an answer/)
+  // A new setup gets the setup rules and the added setup rules in the tool result, so it can start in the same turn.
+  turn(onboarding('pending'), fauxAssistantMessage('Which model does the main agent use?'))
+  await viewer.prompt('Run the setup again')
+  const pending = toolResult(requests.at(-1), 'agents_settings')
+  assert.match(pending.rules, /The setup of Megachat is pending\./)
+  assert.match(pending.rules, /While a setup question waits for an answer/)
+})
+
+test('in the mode ghost, a setup question after a request for silence gets no prompt suggestion', { timeout: 20000 }, async t => {
+  const { cwd, daemon, requests, turn } = await ghostFixture(t)
+  const viewer = await view(t, daemon, cwd)
+  turn(fauxAssistantMessage(fauxToolCall('agents_feedback', { decision: 'silence' }), { stopReason: 'toolUse' }), fauxAssistantMessage('I will stop.'))
+  await viewer.prompt('Stop the suggestions')
+  turn(suggest('Keep the current values'), fauxAssistantMessage('Which agent runs a new child task? The current value is claude.'))
+  await viewer.prompt('Start the setup')
+  assert.equal(toolResult(requests.at(-1), 'agents_suggest').allowed, false)
+  assert.deepEqual(viewer.suggestions(), [])
 })

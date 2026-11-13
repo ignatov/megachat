@@ -269,7 +269,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `workday.idleMinutes` | `30` | | The idle time outside the working hours before the conversation goes to sleep, 0 to 1440 minutes. |
 | `report.morning` | `false` | | The morning report on each working day at `workday.start`. See [The morning report](#the-morning-report). |
 | `update.auto` | `false` | | Whether the daemon of a copy of the install line stops itself for a new release when no work runs, at night or while the conversation sleeps. See "Update" in [Install for a colleague](#install-for-a-colleague). |
-| `reply.suggestions` | `off` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and Tab puts it into the input; a client that does not know the key shows nothing. The variable takes `0`, `1` or `ghost`, and the stored values `false` and `true` of earlier releases give `off` and `reply`. |
+| `reply.suggestions` | `ghost` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and Tab puts it into the input; a client that does not know the key shows nothing. In the mode `ghost`, a next step that you ask for is in the reply text. A stored value stays after an update, and only a `settings.json` without a value gets the default `ghost`. The variable takes `0`, `1` or `ghost`, and `0` gives `off`. The stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
@@ -385,9 +385,10 @@ a stored value. A daemon reads the variables at its start.
 
 Without `settings.json`, the setup of Megachat is pending. In its next reply to you, the main agent answers your
 message and then offers the setup. The setup asks one question at a time and shows the default of each question. You
-can skip one question or the whole setup, and the defaults then apply. After the setup, or after a skip, Megachat
-does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon cannot read stays as
-`settings.json.unreadable-<UTC time>`, and the defaults apply.
+can skip one question or the whole setup, and the defaults then apply. In the mode `ghost` of `reply.suggestions`, Air
+shows the likely answer of each setup question as grey text, such as "Keep the current values", and Tab puts it into
+the input. After the setup, or after a skip, Megachat does not offer it again. Ask the agent to run the setup again at
+any time. A file that the daemon cannot read stays as `settings.json.unreadable-<UTC time>`, and the defaults apply.
 
 ## The learned memory
 
@@ -730,7 +731,7 @@ The session text is data for the agent, not instructions.
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/MegachatMemory.mjs` | The learned memory: the parse of `memory.md`, the checks of an entry, the address of an entry, the write with the second read, the versions, and the section of the prompt. |
 | `src/MemoryReflection.mjs` | The reflection of the learned memory: the transcript of a pass, the parse of the answer, the writes, and the schedule. `resources/reflection.md` holds the prompt of a pass. |
-| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules. |
+| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules, and `resources/instructions-onboarding-ghost.md` holds the added setup rules of the mode `ghost`. |
 | `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |

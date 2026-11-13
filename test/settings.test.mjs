@@ -115,7 +115,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
     'cache.ttl': '5m', 'compaction.tokens': 100000,
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
-    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': false, 'reply.suggestions': 'off', 'reply.language': 'auto', 'reply.length': 'short',
+    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': false, 'reply.suggestions': 'ghost', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false,
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'children.timeoutMinutes': 240, 'children.showInProject': false,
@@ -427,7 +427,8 @@ test('the reply style gives lines of the rules, and the defaults give the rules 
   const { tool, instructions } = await open(t, directory)
   const defaults = await instructions()
   assert.match(defaults, /Keep answers short\.\nUse the user's language\.\n/)
-  assert.match(defaults, /Do not propose a next step unless the user asks for one\./)
+  // The default mode of the suggestions is ghost.
+  assert.match(defaults, /Do not propose a next step in the reply text unless the user asks for one\./)
   assert.doesNotMatch(defaults, /quote the original request/)
   await tool({ action: 'set', key: 'reply.language', value: 'Deutsch' })
   await tool({ action: 'set', key: 'reply.length', value: 'normal' })
@@ -443,6 +444,7 @@ test('the reply style gives lines of the rules, and the defaults give the rules 
 
 test('the suggestions setting changes the tools of the running main agent', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
+  await seed(directory, { 'reply.suggestions': 'off' })
   const { service, tool } = await open(t, directory)
   const names = () => service.registry.snapshot().tools().map(item => item.tool.name)
   assert.ok(!names().includes('agents_suggest'))
@@ -476,14 +478,33 @@ test('the setting reply.suggestions takes the stored values true and false of v0
   assert.equal(off.service.suggestions, 'off')
   assert.match(await off.instructions(), /Do not propose a next step unless the user asks for one\./)
   await off.close()
-  for (const [text, mode] of [['1', 'reply'], ['0', 'off'], ['ghost', 'ghost'], [' GHOST ', 'ghost'], ['reply', 'reply'], ['true', 'off']]) {
+  // A stored off keeps its mode.
+  await seed(directory, { 'reply.suggestions': 'off' })
+  const stored = await open(t, directory)
+  assert.equal(stored.service.suggestions, 'off')
+  assert.match(await stored.instructions(), /Do not propose a next step unless the user asks for one\./)
+  await stored.close()
+  // Without a stored value and without the variable, the mode is the default ghost.
+  await seed(directory, {})
+  const defaults = await open(t, directory)
+  assert.equal(defaults.service.suggestions, 'ghost')
+  assert.ok(defaults.service.extension().tools.some(item => item.name === 'agents_suggest'))
+  await defaults.close()
+  // The variable wins over a stored value.
+  await seed(directory, { 'reply.suggestions': 'reply' })
+  const variable = await open(t, directory, { environment: { MEGACHAT_SUGGESTIONS: '0' } })
+  assert.equal(variable.service.suggestions, 'off')
+  await variable.close()
+  // A value of the variable that the daemon cannot read, such as true, has no effect, so the default ghost applies.
+  await seed(directory, {})
+  for (const [text, mode] of [['1', 'reply'], ['0', 'off'], ['ghost', 'ghost'], [' GHOST ', 'ghost'], ['reply', 'reply'], ['true', 'ghost']]) {
     const settings = new MegachatSettings(await SettingsStore.open(join(directory, 'settings.json')), { environment: { MEGACHAT_SUGGESTIONS: text } })
     assert.equal(settings.entry('reply.suggestions').value, mode, text)
   }
   await seed(directory, {})
   const ghost = await open(t, directory, { environment: { MEGACHAT_SUGGESTIONS: 'ghost' } })
   const rules = await ghost.instructions()
-  assert.match(rules, /Do not propose a next step in the reply text\./)
+  assert.match(rules, /Do not propose a next step in the reply text unless the user asks for one\./)
   assert.match(rules, /call agents_suggest one time in the turn/)
   assert.doesNotMatch(rules, /Call agents_suggest before every proposal|Do not propose a next step unless/)
 })

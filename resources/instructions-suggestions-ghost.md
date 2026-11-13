@@ -1,5 +1,6 @@
 After useful work ends, you may give the user one next step as a prompt suggestion. The prompt input of the user shows it as grey text after the turn. The user can put it into the input with one key, or ignore it.
-Do not propose a next step in the reply text. Do not mention the suggestion in the reply.
+Do not propose a next step in the reply text unless the user asks for one. Do not mention the suggestion in the reply.
+When the user asks for a next step, such as "what next?", answer in the reply text. You can also give a suggestion after that answer.
 To give a suggestion, call agents_suggest one time in the turn, after the work of the turn. A second call in the same turn gets allowed=false.
 Write the suggestion as a prompt of the user: "Run the tests", not "I can run the tests". Use the language of the user. Write one line of at most 80 characters.
 If no next step is clearly useful, call nothing.

@@ -2,12 +2,14 @@ import { environmentSetting } from './Settings.mjs'
 
 /**
  * The setting `reply.suggestions` or `MEGACHAT_SUGGESTIONS` selects the mode of the next-step suggestions:
- * - `off`, the default: the agent offers a next step only when the user asks for one.
+ * - `off`: the agent offers a next step only when the user asks for one.
  * - `reply`: the agent gets the suggestion rules and the tools `agents_suggest` and `agents_feedback`, and it writes the
  *   proposal into the reply text.
- * - `ghost`: the agent gets the rules of `resources/instructions-suggestions-ghost.md` and the same tools. The proposal
- *   is not in the reply text. The bridge sends it as a prompt suggestion to each client. Air shows it as grey text in
- *   its empty prompt input, and a client that does not know the key ignores it.
+ * - `ghost`, the default: the agent gets the rules of `resources/instructions-suggestions-ghost.md` and the same tools.
+ *   A proposal of the agent is not in the reply text. The bridge sends it as a prompt suggestion to each client. Air
+ *   shows it as grey text in its empty prompt input, and a client that does not know the key ignores it. A next step
+ *   that the user asks for is in the reply text. While the onboarding is pending, the agent also gets the rules of
+ *   `resources/instructions-onboarding-ghost.md`.
  * The stored suggestion state stays in each mode. Only the prompt suggestion of the mode `ghost` ends when the mode changes.
  */
 export { SUGGESTION_MODES, SUGGESTIONS_VARIABLE } from './Settings.mjs'

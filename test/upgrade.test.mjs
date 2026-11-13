@@ -367,7 +367,7 @@ test('a settings.json of v0.3.0 with reply.suggestions true or false opens with 
       assert.equal(service.suggestions, mode)
       assert.equal(service.extension().tools.some(tool => tool.name === 'agents_suggest'), mode === 'reply')
       assert.deepEqual(service.settings.entry('reply.suggestions'), { key: 'reply.suggestions', value: mode, source: 'setting',
-        default: 'off', variable: 'MEGACHAT_SUGGESTIONS', stored })
+        default: 'ghost', variable: 'MEGACHAT_SUGGESTIONS', stored })
       // The state of v0.2.0 keeps its proposal of the mode reply, and it has no prompt suggestion.
       const { initiative } = await service.state.snapshot()
       assert.equal(initiative.suggestion, 'Add a test for the parser.')

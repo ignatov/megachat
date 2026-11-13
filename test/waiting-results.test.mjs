@@ -31,7 +31,8 @@ function finish(service, id, cwd, time) {
 const reported = (service, id) => waitForState(service.state, state => state.runs[id].reported && !state.current ? state : undefined)
 /** Lets the state watch and the event pump run. A turn that they start shows in the requests of the model. */
 const settle = () => new Promise(resolve => setTimeout(resolve, 100))
-const isResult = request => request.prompt.startsWith(message('event.children'))
+/** A turn of child results. The prompt has the text of the mode of the suggestions, with or without a next step. */
+const isResult = request => [message('event.children'), message('event.children.suggest')].some(text => request.prompt.startsWith(text))
 
 test('the conversation sleeps outside the working hours after the idle time, and the keep-alive and the results share this decision', () => {
   assert.equal(isSleeping(WORKDAY, at('2026-11-11T23:00:00Z'), at('2026-11-11T22:00:00Z')), true)
@@ -199,7 +200,7 @@ test('with the morning report, the waiting results come first, and the report ma
     await waitForState(service.state, state => Object.keys(state.inputs).some(id => id.startsWith('morning:')) && !state.current
       && !state.morningReport.pending ? true : undefined)
   })
-  assert.deepEqual(requests.map(request => request.prompt.startsWith(message('event.children')) ? 'result' : request.prompt.startsWith(message('event.morning')) ? 'report' : 'other'),
+  assert.deepEqual(requests.map(request => isResult(request) ? 'result' : request.prompt.startsWith(message('event.morning')) ? 'report' : 'other'),
     ['result', 'report'])
   const data = JSON.parse(requests[1].prompt.slice(requests[1].prompt.indexOf('\n') + 1))
   assert.deepEqual(data.children.done, [{ title: 'Task sunday', project, agent: 'claude', status: 'completed', separateResult: true }])
