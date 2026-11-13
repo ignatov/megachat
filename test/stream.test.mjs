@@ -208,11 +208,13 @@ const SHORT = 'A short reply. It has about one hundred characters, so the model 
  */
 async function fakeAnthropic(t) {
   const requests = []
+  const headers = []
   const server = createServer(async (request, response) => {
     const chunks = []
     for await (const chunk of request) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     requests.push(body)
+    headers.push(request.headers)
     response.writeHead(200, { 'content-type': 'text/event-stream' })
     const send = (type, data) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
     const text = index => ({ index: 1, delta: { type: 'text_delta', text: SHORT.slice(index, index + 4) } })
@@ -237,8 +239,31 @@ async function fakeAnthropic(t) {
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)) })
-  return { requests, baseUrl: `http://127.0.0.1:${server.address().port}/wire/test` }
+  return { requests, headers, baseUrl: `http://127.0.0.1:${server.address().port}/wire/test` }
 }
+
+test('a model request through Central has no fallback models, so the proxy accepts Claude Fable 5.2 and Fable 5', { timeout: 20000 }, async t => {
+  // A run through Central on 2026-11-13 with Claude Fable 5.2 failed in each turn with the HTTP status 400: "Anthropic
+  // proxy does not support fallback field". pi-ai adds the field to each model with fallback models in the registry.
+  const anthropic = await fakeAnthropic(t)
+  const configuration = new CentralConfigurationService({ environment: {} })
+  configuration.pi = async () => ({ baseUrl: anthropic.baseUrl, apiKey: 'test-key' })
+  const models = configuration.models()
+  const withFallbacks = models.getModels('anthropic').filter(model => model.compat?.allowedFallbackModels?.length > 0)
+  assert.ok(['claude-fable-5-2', 'claude-fable-5'].every(id => withFallbacks.some(model => model.id === id)), 'The registry has fallback models')
+  for (const model of withFallbacks) {
+    const answer = await models.completeSimple(model, { messages: [{ role: 'user', content: 'Hello', timestamp: Date.now() }] },
+      { reasoning: 'low' })
+    assert.equal(answer.stopReason, 'stop', `${model.id}: ${answer.errorMessage}`)
+  }
+  assert.equal(anthropic.requests.length, withFallbacks.length)
+  for (const body of anthropic.requests) assert.equal(body.fallbacks, undefined, body.model)
+  for (const headers of anthropic.headers) assert.doesNotMatch(headers['anthropic-beta'] ?? '', /server-side-fallback/)
+  // The registry keeps the fallback models and the prices.
+  const fable = models.getModel('anthropic', 'claude-fable-5-2')
+  assert.equal(fable.compat.allowedFallbackModels[0].model, 'claude-opus-5')
+  assert.equal(fable.cost.input, 8)
+})
 
 test('a short reply that starts with thinking arrives in parts, because the model sends thinking blocks without text', { timeout: 20000 }, async t => {
   const anthropic = await fakeAnthropic(t)

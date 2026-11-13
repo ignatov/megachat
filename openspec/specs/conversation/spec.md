@@ -13,13 +13,17 @@ The main conversation MUST use the native ACP chat. Megachat MUST retain the con
 - **THEN** the native ACP chat shows the same main conversation
 
 ### Requirement: Main model
-By default, the main agent MUST use Claude Opus 5.5 through Central with the reasoning level `low`. The setting `coordinator.model` MAY select another model of the model registry, and `coordinator.thinking` another level. Changing the main model MUST keep the existing conversation.
+By default, the main agent MUST use Claude Opus 5.5 through Central with the reasoning level `low`. The setting `coordinator.model` MAY select another model of the model registry, and `coordinator.thinking` another level. Changing the main model MUST keep the existing conversation. A model request through Central MUST NOT have fallback models, because the Central proxy refuses them.
 
-Tests: `test/state.test.mjs`
+Tests: `test/state.test.mjs`, `test/stream.test.mjs`
 
 #### Scenario: A reopened conversation gets the default model
 - **WHEN** the conversation opened with the model `claude-sonnet-5-5`, and it opens again without a selected model
 - **THEN** the main agent uses `claude-opus-5-5`, and the conversation keeps its ID and the workspace `/workspace`
+
+#### Scenario: A model with fallback models in the registry
+- **WHEN** the main agent uses `claude-fable-5-2` or another model with fallback models in the registry
+- **THEN** each model request through Central has no field `fallbacks` and no beta `server-side-fallback-2026-07-01`, and the registry keeps the prices of the model
 
 ### Requirement: Persistence known to the agent
 The agent MUST know that its conversation persists through an IDE or daemon restart.

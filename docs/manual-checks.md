@@ -129,6 +129,15 @@ v1.1.0 to v1.4.0 one after the other, and started the entry after each tag.
 
 So the entry of `install` stays as it is: the next start after an automatic stop installs the new release.
 
+One manual check of the fallback models ran on 2026-11-13 against Claude Fable 5.2 through Central, with the reasoning
+level `low` and a temporary state directory. Before the fix, each turn with `claude-fable-5-2` failed in about 0.4 s with
+the HTTP status 400 and the error "Anthropic proxy does not support fallback field". The check sent one request "Reply
+with OK" through `CentralConfigurationService.models()`.
+
+- The request body had no field `fallbacks`, and the header `anthropic-beta` had no `server-side-fallback-2026-07-01`.
+- The response ended with the stop reason `stop` and the text "OK", after 4.8 s, with 14 input tokens and 4 output
+  tokens.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.

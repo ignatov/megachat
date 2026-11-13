@@ -65,6 +65,18 @@ const logFailedRequests = (fetch = globalThis.fetch, signal) => async (input, in
   return response
 }
 
+/**
+ * Gives a model without the fallback models of the registry. The Central proxy refuses a request with the field
+ * `fallbacks` (HTTP status 400). pi-ai adds that field and the beta `server-side-fallback-2026-07-01` to each request
+ * of a model with `compat.allowedFallbackModels`, for example Claude Fable 5.2 and Fable 5. The registry keeps the
+ * model as it is, so the list and the prices of the models stay the same.
+ */
+const withoutFallbacks = model => {
+  if (!model?.compat?.allowedFallbackModels) return model
+  const { allowedFallbackModels, ...compat } = model.compat
+  return { ...model, compat }
+}
+
 export class CentralConfigurationService {
   constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'),
     settings = join(homedir(), '.claude/settings.json'), environment = process.env } = {}) {
@@ -130,8 +142,8 @@ export class CentralConfigurationService {
         const { baseUrl, apiKey } = await this.pi(signal)
         return { auth: { baseUrl, apiKey }, source: 'JetBrains Central' }
       } } },
-      stream: (model, context, options) => provider.stream(model, context, omitted(options)),
-      streamSimple: (model, context, options) => provider.streamSimple(model, context, omitted(options)),
+      stream: (model, context, options) => provider.stream(withoutFallbacks(model), context, omitted(options)),
+      streamSimple: (model, context, options) => provider.streamSimple(withoutFallbacks(model), context, omitted(options)),
     })
     return models
   }
