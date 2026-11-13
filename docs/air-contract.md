@@ -41,7 +41,9 @@ Megachat reads the list of Air only when `version` is 1 or more.
 Megachat sends `_session/service/record` once for each attach, for each address in the `serviceSessions` map of the
 daemon state. The daemon adds an address when a delegated run gets its provider session, and it keeps the address
 after it drops the run. A run that continues an existing session of the user is not a service session: that session
-stays in the session list. The record on each attach lets a second product, or a new Air state, hide the earlier
+stays in the session list. A new child session in a directory where `children.showInProject` is `true` is not a
+service session either. Megachat records no address of it, so Air shows it in the session list of its project. Air
+keeps the service origin of a session that Megachat recorded before, so the setting does not show that session. The record on each attach lets a second product, or a new Air state, hide the earlier
 delegated sessions too.
 
 Megachat sends the records one after the other, before the view is ready. The map keeps at most 5,000 addresses, so

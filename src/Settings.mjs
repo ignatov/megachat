@@ -249,6 +249,9 @@ export const SETTINGS = [
       return /^\d{1,4}$/.test(text) && Number(text) <= 1440 ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 0, maximum: 1440 }) },
+  // true leaves a new Claude or Codex child session in the session list of its project in Air: no service record.
+  { key: 'children.showInProject', default: false, applies: 'nextChild', project: true, validate: toBoolean,
+    allowed: () => ({ values: [true, false] }) },
   { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
     // The value must be a path that each create can use: an absolute path after the expansion of `~`, as the create
     // expands it on this platform.

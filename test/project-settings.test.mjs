@@ -86,7 +86,7 @@ const rulesOf = values => [message('child.rules'), message(`child.rule.commit.${
 
 test('only the settings of a child run can have a project value', () => {
   assert.deepEqual(PROJECT_SETTINGS, ['children.agent', 'children.piModel', 'children.claudeModel', 'children.codexModel',
-    'children.permissionMode', 'children.commit', 'children.push', 'children.daemonRestart', 'children.timeoutMinutes'])
+    'children.permissionMode', 'children.commit', 'children.push', 'children.daemonRestart', 'children.timeoutMinutes', 'children.showInProject'])
   assert.ok(SETTINGS.filter(setting => !PROJECT_SETTINGS.includes(setting.key)).every(setting => !setting.key.startsWith('children.')
     || setting.key === 'children.parallel'))
 })

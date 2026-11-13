@@ -538,7 +538,7 @@ export class PiMegachatService {
       tool('spawn', obj({ cwd: str(), prompt: str(), agent: opt(str()), title: opt(str({ maxLength: 60 })) }), async (args, api) => {
         const cwd = await this.state.directory(args.cwd)
         return result(await this.state.admitChild(`tool:${api.taskId}:spawn`, { ...args, cwd },
-          { defaultAgent: this.settings.values(cwd)['children.agent'] }))
+          { defaultAgent: this.settings.values(cwd)['children.agent'], showInProject: this.settings.values(cwd)['children.showInProject'] }))
       }),
       tool('resume', obj({ cwd: str(), agent: str(), sessionId: str(), prompt: str(), title: opt(str({ maxLength: 60 })) }), async (args, api) => {
         await this.sessions.read(args)

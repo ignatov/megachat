@@ -6,7 +6,7 @@ The chat shows the conversation of the main agent and a list of the unfinished c
 ## Requirements
 
 ### Requirement: Service sessions of delegated children
-New delegated sessions MUST be service sessions when the client supports their registration. The ordinary session list MUST hide these sessions. The daemon MUST retain their histories. Continuing an existing user session MUST preserve its visibility in the ordinary session list. Reconnection MUST mark earlier delegated sessions too.
+New delegated sessions MUST be service sessions when the client supports their registration, except a session in a directory where `children.showInProject` is `true`. The ordinary session list MUST hide these sessions. The daemon MUST retain their histories. Continuing an existing user session MUST preserve its visibility in the ordinary session list. Reconnection MUST mark earlier delegated sessions too.
 
 Tests: `test/integration.test.mjs`
 
@@ -21,6 +21,10 @@ Tests: `test/integration.test.mjs`
 #### Scenario: A reconnection and a client without the support
 - **WHEN** a second view with the support attaches after a Claude child ended, and a third view without the support attaches
 - **THEN** the second view gets the registration of the session of the child again, and the third view gets no registration
+
+#### Scenario: A project with children.showInProject
+- **WHEN** `children.showInProject` is `true` for the directory of a new Codex child, and two views with the support attach
+- **THEN** the run has `serviceSession` false, the state holds no address of it, and no view gets a registration
 
 ### Requirement: Addresses of delegated sessions
 The daemon MUST keep the address of a delegated session after it drops the runs of that session. At 5,000 addresses, it MUST drop the oldest addresses until 4,000 stay.

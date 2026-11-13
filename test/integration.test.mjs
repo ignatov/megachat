@@ -100,6 +100,25 @@ test('a Codex child requests permission and registers its service session', { ti
   assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: false })
 })
 
+test('a child in a project with children.showInProject registers no service session', { timeout: 10000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t, 'done', 'codex')
+  await service.settings.set('children.showInProject', true, cwd)
+  const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, {
+    sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Use Codex' }],
+  })
+  const state = await finishChildren(service)
+  const run = Object.values(state.runs)[0]
+  assert.equal(run.status, 'completed')
+  assert.ok(run.providerSessionId)
+  assert.equal(run.serviceSession, false)
+  assert.deepEqual(state.serviceSessions, {})
+  const later = await attach(daemon, cwd, { native: true, serviceSessions: true, loading: true, sessionId: viewer.sessionId })
+  t.after(() => later.connection.close())
+  assert.deepEqual([...viewer.registrations, ...later.registrations], [])
+})
+
 test('an explicit Codex resume preserves the user session and supports cancellation', { timeout: 10000 }, async t => {
   const { daemon, cwd, fake, service, launchedAgents } = await fixture(t)
   fake.setResponses([

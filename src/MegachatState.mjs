@@ -980,7 +980,7 @@ export class MegachatState {
    * Admits a child run. A new task without a named agent gets [defaultAgent], the setting `children.agent`. The digest
    * holds only [args], so a repeated request still finds its run after a change of the setting.
    */
-  async admitChild(requestId, args, { defaultAgent = 'claude' } = {}) {
+  async admitChild(requestId, args, { defaultAgent = 'claude', showInProject = false } = {}) {
     requireCondition(typeof args.prompt === 'string' && args.prompt.length > 0 && args.prompt.length <= 64000)
     requireCondition(args.title === undefined || typeof args.title === 'string' && args.title.trim().length > 0 && args.title.length <= 60)
     const hash = digest(args)
@@ -1020,8 +1020,9 @@ export class MegachatState {
         requestId, digest: hash, prompt: args.prompt, cwd: args.cwd, status: 'admitted',
         ...(args.title === undefined ? {} : { title: args.title.trim() }),
         providerSessionId,
-        // A pi child has no session file of Claude Code or Codex, so Air has no session of it to hide.
-        serviceSession: agent === 'pi' ? false : previous?.serviceSession ?? !args.providerSessionId,
+        // A pi child has no session file of Claude Code or Codex, so Air has no session of it to hide. With
+        // `children.showInProject`, a new session stays in the session list of its project. A next run keeps the choice.
+        serviceSession: agent === 'pi' ? false : previous?.serviceSession ?? (!args.providerSessionId && !showInProject),
         generation: null, pid: null, output: '', truncated: false,
         cancelRequested: false, createdAt: Date.now(), closed: false,
       }
