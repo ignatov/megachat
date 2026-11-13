@@ -131,9 +131,9 @@ Tests: `test/failure.test.mjs`
 - **THEN** the service fails with the code `ENOSPC`, and the log gets a line "Pi Durable reported storage_failed: name=Error code=ENOSPC"
 
 ### Requirement: Log of a failure
-The log of the daemon MUST name each failure of a child run, of a request, of an automatic turn, and of the Central configuration. A log line about an error MUST NOT contain the message of that error, because the message can hold a credential. A failed Claude or Codex child run is the exception: its log entry holds the filtered answer of the agent and the filtered end of its error output (see the capability `secrets`).
+The log of the daemon MUST name each failure of a child run, of a request, of a turn, and of the Central configuration. A log line about an error MUST NOT contain the message of that error, because it can hold a credential. A failed Claude or Codex child run is the exception: its log entry holds the filtered answer of the agent and the filtered end of its error output (see the capability `secrets`).
 
-Tests: `test/failure.test.mjs`, `test/error-output.test.mjs`
+Tests: `test/failure.test.mjs`, `test/error-output.test.mjs`, `test/integration.test.mjs`
 
 #### Scenario: A failed Central command
 - **WHEN** the Central command prints "apiKey sk-secret-value" and exits with the code 7
@@ -142,6 +142,14 @@ Tests: `test/failure.test.mjs`, `test/error-output.test.mjs`
 #### Scenario: The description of an error
 - **WHEN** an error with the message "The key is sk-secret-value", the code `ENOENT` and the signal `SIGTERM` goes to the log
 - **THEN** the log text starts with "name=Error code=ENOENT signal=SIGTERM", and it does not contain "sk-secret-value"
+
+#### Scenario: A reply through a Central that refuses the connection
+- **WHEN** the configuration of Central gives a local address where nothing listens, and the user sends "Hello"
+- **THEN** the log gets the lines "A model request through Central got no response: name=TypeError cause.name=Error cause.code=ECONNREFUSED" and "The turn <ID> of the main agent ended without an answer: kind=user reason=model_error", and no log line contains the key, the address or the error text of the provider
+
+#### Scenario: A result report that fails on a model error
+- **WHEN** the model fails on a result report with the error text "The provider is overloaded."
+- **THEN** the log gets one line "The turn <ID> of the main agent ended without an answer: kind=report reason=model_error", and no log line contains "overloaded"
 
 ### Requirement: Error output of a child run in the memory
 For each Claude or Codex child run, the daemon MUST keep the last 8,000 characters of the error output of the agent, as UTF-8 text, in its memory only. The state, the transcript and the conversation MUST NOT get this text, except the reason in the error of a run. The text MUST go at the end of the run. The limit of 1 MB of error output stays as it is (see the capability `child-scheduling`).

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
-import { logFailure, MegachatError, requireCondition } from './messages.mjs'
+import { logEvent, logFailure, MegachatError, requireCondition } from './messages.mjs'
 import { KnownSecrets } from './SessionText.mjs'
 import { DEFAULT_CLAUDE_MODEL, modelRef } from './Settings.mjs'
 
@@ -46,6 +46,23 @@ export function agentCommand(value) {
 const omitThinkingText = onPayload => async (params, model) => {
   const payload = (await onPayload?.(params, model)) ?? params
   return payload.thinking?.display === undefined ? payload : { ...payload, thinking: { ...payload.thinking, display: 'omitted' } }
+}
+
+/**
+ * Writes a log line for each model request through Central that fails: a request without a response, or a response
+ * with an HTTP error status. The provider turns the error into a text that the user does not see, and that text can
+ * hold the address of Central. So the line has only the name and the code of the error, or the status. A stop of the
+ * request by its caller, such as a cancel of the user, is no failure.
+ */
+const logFailedRequests = (fetch = globalThis.fetch, signal) => async (input, init) => {
+  let response
+  try { response = await fetch(input, init) }
+  catch (error) {
+    if (!signal?.aborted) logFailure('log.model', error)
+    throw error
+  }
+  if (!response.ok) logEvent('log.model.status', response.status)
+  return response
 }
 
 export class CentralConfigurationService {
@@ -105,7 +122,8 @@ export class CentralConfigurationService {
   models() {
     const models = createModels()
     const provider = anthropicProvider()
-    const omitted = options => ({ ...options, onPayload: omitThinkingText(options?.onPayload) })
+    const omitted = options => ({ ...options, onPayload: omitThinkingText(options?.onPayload),
+      fetch: logFailedRequests(options?.fetch, options?.signal) })
     models.setProvider({
       ...provider,
       auth: { apiKey: { name: 'JetBrains Central', resolve: async ({ signal }) => {

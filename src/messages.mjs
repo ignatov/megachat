@@ -32,15 +32,19 @@ export function minutesOf(ms) {
  * Describes an error for the log of the daemon without its message. The message of an error can hold a secret: the
  * error of a failed command holds its output, and the error of a JSON parse quotes its input. So the description has
  * only the name, the code, the signal, the fixed text of an SQLite error, and the code locations of the stack.
- * The text of a `MegachatError` comes from the resources, so it is safe.
+ * The text of a `MegachatError` comes from the resources, so it is safe. An error with a cause, such as the error of a
+ * failed `fetch`, also gets the name and the code of its deepest cause, because only the cause has the code.
  */
 export function describeError(error) {
   if (error instanceof MegachatError) return `${error.code}: ${error.message}`
   if (error === null || typeof error !== 'object') return typeof error
   const short = value => (typeof value === 'string' || typeof value === 'number') && /^[\w.:-]{1,64}$/.test(String(value)) ? String(value) : undefined
+  let cause
+  for (let next = error.cause, depth = 0; next !== null && typeof next === 'object' && depth < 5; next = next.cause, depth++) cause = next
   const fields = [
     ['name', short(error.name)], ['code', short(error.code)], ['signal', short(error.signal)],
     ['sqlite', short(error.code)?.startsWith('ERR_SQLITE') && typeof error.errstr === 'string' ? error.errstr.slice(0, 100) : undefined],
+    ['cause.name', short(cause?.name)], ['cause.code', short(cause?.code)],
   ].filter(([, value]) => value !== undefined).map(([name, value]) => `${name}=${value}`)
   const frames = typeof error.stack === 'string'
     ? error.stack.split('\n').filter(line => /^\s+at /.test(line)).slice(0, 6).map(line => line.trim()) : []

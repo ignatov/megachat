@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -9,6 +10,7 @@ import { MemoryStorage } from '@earendil-works/pi-durable'
 import { CentralConfigurationService } from '../src/CentralConfigurationService.mjs'
 import { describeError, MegachatError } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
+import { waitForState } from '../src/waitForState.mjs'
 
 /** Collects what the code under test writes to the standard error. */
 function logged(t) {
@@ -27,6 +29,10 @@ test('the description of an error for the log has no message of the error', () =
   assert.ok(!describeError(Object.assign(new Error('x'), { code: 'sk secret value' })).includes('secret'))
   assert.equal(describeError(new MegachatError('central')), 'central: Central did not supply a valid local provider configuration.')
   assert.equal(describeError('sk-secret-value'), 'string')
+  // A failed fetch has the code only in its cause.
+  const fetchError = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9'), { code: 'ECONNREFUSED' }) })
+  assert.match(describeError(fetchError), /^name=TypeError cause\.name=Error cause\.code=ECONNREFUSED \| at /)
+  assert.ok(!describeError(fetchError).includes('127.0.0.1'))
   assert.match(describeError(Object.assign(new Error('x'), { code: 'ERR_SQLITE_ERROR', errstr: 'database or disk is full' })),
     /sqlite=database or disk is full/)
 })
@@ -45,6 +51,32 @@ test('a failed Central command gets a log line without its output', { skip: proc
   assert.ok(lines.every(line => !line.includes('sk-secret-value')), lines.join(''))
   assert.match(lines[0], /Central gave no configuration to the main agent: name=Error code=7/)
   assert.match(lines[1], /code=ENOENT/)
+})
+
+test('a reply through a Central that refuses the connection gets log lines without the error text', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-central-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  // A free port that nothing listens on, as a Central whose local proxy is down.
+  const server = createServer()
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  await new Promise(resolve => server.close(resolve))
+  const central = join(directory, 'central')
+  await writeFile(central, `#!/bin/sh\necho '{"anthropic":{"baseUrl":"http://127.0.0.1:${port}/wire/sk-secret-value","apiKey":"sk-secret-value"}}'\n`)
+  await chmod(central, 0o700)
+  const service = await PiMegachatService.open(new MemoryStorage(), new CentralConfigurationService({ central }).models(),
+    { provider: 'anthropic', modelId: 'claude-opus-5-5' }, {}, { keepAlive: { enabled: false } })
+  t.after(() => service.close().catch(() => {}))
+  await service.resume()
+  const lines = logged(t)
+  await service.submit('hello', 'Hello')
+  await waitForState(service.state, state => state.inputs.hello?.status !== 'running' && !state.current ? state : undefined, { timeoutMs: 15000 })
+  t.mock.restoreAll()
+  assert.equal((await service.state.snapshot()).inputs.hello.status, 'interrupted')
+  const log = lines.join('')
+  assert.match(log, /A model request through Central got no response: name=TypeError cause\.name=Error cause\.code=ECONNREFUSED/)
+  assert.match(log, /The turn [\w-]+ of the main agent ended without an answer: kind=user reason=model_error\n/)
+  for (const text of ['sk-secret-value', `127.0.0.1:${port}`, 'Connection error', 'fetch failed']) assert.ok(!log.includes(text), log)
 })
 
 test('a storage error tells the owner of the main agent and gets a log line', { timeout: 10000 }, async t => {

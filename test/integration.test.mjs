@@ -807,12 +807,18 @@ test('a result report that fails on a model error is sent once more', { timeout:
     modelError(),
     fauxAssistantMessage('The completed task result.'),
   ])
+  const lines = []
+  t.mock.method(process.stderr, 'write', text => { lines.push(String(text)); return true })
   await service.submit('work', 'Work')
   const state = await waitForState(service.state, settledReports(2))
+  t.mock.restoreAll()
   const reports = Object.values(state.inputs).filter(input => input.resultRunIds)
   assert.deepEqual(reports.map(report => [report.status, report.reason]), [['interrupted', 'model_error'], ['completed', undefined]])
   assert.deepEqual(reports[1].resultRunIds, reports[0].resultRunIds)
   assert.ok(!JSON.stringify(state.inputs).includes('overloaded'))
+  // The log names the failed automatic turn with its kind and reason code, without the error text of the provider.
+  assert.equal(lines.filter(line => /The turn [\w-]+ of the main agent ended without an answer: kind=report reason=model_error\n/.test(line)).length, 1, lines.join(''))
+  assert.ok(!lines.join('').includes('overloaded'), lines.join(''))
   assert.equal(Object.values(state.runs)[0].reported, true)
   const history = await service.history()
   assert.equal(history.entries.filter(entry => entry.text === 'The completed task result.').length, 1)
@@ -850,10 +856,15 @@ test('a reply that fails on a model error tells the user that the model did not 
   fake.setResponses([modelError()])
   const viewer = await attach(daemon, cwd, { native: true })
   t.after(() => viewer.connection.close())
+  const lines = []
+  t.mock.method(process.stderr, 'write', text => { lines.push(String(text)); return true })
   const reply = await viewer.connection.agent.request(methods.agent.session.prompt, {
     sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Hello' }],
   })
+  t.mock.restoreAll()
   assert.equal(reply.stopReason, 'cancelled')
+  assert.ok(lines.some(line => /The turn [\w-]+ of the main agent ended without an answer: kind=user reason=model_error\n/.test(line)), lines.join(''))
+  assert.ok(!lines.join('').includes('overloaded'), lines.join(''))
   const texts = viewer.updates.map(event => event.update.content?.text)
   assert.ok(texts.includes(message('error.model')))
   assert.ok(!texts.includes(message('error.interrupted')))

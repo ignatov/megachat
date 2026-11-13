@@ -890,13 +890,15 @@ export class PiMegachatService {
   async finish(receipt) {
     let status
     let reason
+    let failure
     try {
       const submission = await this.harness.submission(receipt.continuationId ?? receipt.submissionId, context)
       const settled = await submission.wait(context)
       status = settled.status === 'done' ? 'completed' : 'interrupted'
       if (settled.status !== 'done') reason = settled.reason
     }
-    catch { this.lifetime.signal.throwIfAborted(); status = 'interrupted' }
+    catch (error) { this.lifetime.signal.throwIfAborted(); status = 'interrupted'; failure = error }
+    if (status === 'interrupted') await this.logFailedTurn(receipt.mainRunId, reason, failure)
     // The turn had the warning about the spend in its rules. A failed turn keeps it for the next turn. A warning of an
     // earlier day changes no record of today, and the new settings drop it.
     if (this.notice && status === 'completed') {
@@ -912,6 +914,21 @@ export class PiMegachatService {
     this.search?.catchUp().catch(() => {
       if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.search')}\n`)
     })
+  }
+
+  /**
+   * Writes a log line for a turn that ended without an answer: a reply to the user or an automatic turn, with its kind
+   * and the reason code of Pi Durable. The line never holds the error text of the provider, because that text can hold
+   * a credential. A stop, by a cancel of the user or by a message that interrupts an automatic turn, is no failure.
+   */
+  async logFailedTurn(mainRunId, reason, failure) {
+    if (reason === 'aborted' || reason === 'reset') return
+    const current = await this.state.snapshot().then(snapshot => snapshot.current, () => undefined)
+    if (current?.id === mainRunId && current.cancelling) return
+    const kind = current?.id === mainRunId ? current.kind : 'unknown'
+    const code = typeof reason === 'string' && /^[\w.:-]{1,64}$/.test(reason) ? reason : 'unknown'
+    if (failure === undefined) logEvent('log.turn', mainRunId, kind, code)
+    else logFailure('log.turn.failed', failure, mainRunId, kind)
   }
 
   /** Cancels the current turn. With [expectedRunId], it cancels only that turn, and tells whether it did. */
