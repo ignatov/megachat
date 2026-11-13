@@ -106,6 +106,27 @@ Tests: `test/suggestions.test.mjs`
 - **WHEN** the main agent calls `agents_suggest` with "Run the tests" and then with "Commit the change" in the same turn
 - **THEN** the second call gets `allowed=false`, and the prompt suggestion stays "Run the tests"
 
+### Requirement: End of the turn after the reply in the mode ghost
+In the mode `ghost`, a model message of the main agent with reply text and a call of `agents_suggest` or `agents_feedback` MUST end the turn when each of its calls succeeds and is `agents_suggest`, `agents_feedback`, or `agents_settings` with the action `set` or `reset`. Then Air shows the reply as one open message, not in a closed block "Worked for". The rules MUST ask for the call after the full reply text.
+
+Tests: `test/suggestions.test.mjs`
+
+#### Scenario: A setup question with its suggestion
+- **WHEN** the mode is `ghost`, and the main agent writes a setup question and calls `agents_suggest` with "Opus + Claude" in the same message
+- **THEN** the turn makes one model request and ends with `end_turn`, the view gets the reply as chunks of one message ID, and then the prompt suggestion "Opus + Claude"
+
+#### Scenario: An answer, a question and a suggestion in one message
+- **WHEN** the mode is `ghost`, and the main agent writes a setup question, calls `agents_settings(action="set")` with a valid value and calls `agents_suggest`, in one message
+- **THEN** the turn makes one model request
+
+#### Scenario: A message that the model must continue
+- **WHEN** the mode is `ghost`, and the message of the reply text and `agents_suggest` also calls `agents_list`, or a call of `agents_settings` fails or reads the settings
+- **THEN** the turn makes a second model request
+
+#### Scenario: The mode reply
+- **WHEN** the mode is `reply`, and the main agent writes reply text and calls `agents_suggest` in the same message
+- **THEN** the turn makes a second model request
+
 ### Requirement: Turns without a prompt suggestion
 A turn that admits a child task is a delegation acknowledgment. It MUST get no prompt suggestion, also when the main agent admits the child after the proposal. A turn that the user stopped or that failed MUST keep no prompt suggestion.
 

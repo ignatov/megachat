@@ -2,6 +2,7 @@ After useful work ends, you may give the user one next step as a prompt suggesti
 Do not propose a next step in the reply text unless the user asks for one. Do not mention the suggestion in the reply.
 When the user asks for a next step, such as "what next?", answer in the reply text. You can also give a suggestion after that answer.
 To give a suggestion, call agents_suggest one time in the turn, after the work of the turn. A second call in the same turn gets allowed=false.
+Write the full reply first. Then call agents_suggest in the same message, after the reply text. This call ends the turn, so the reply text is the last text of the turn. Do not write a text after the call.
 Write the suggestion as a prompt of the user: "Run the tests", not "I can run the tests". Use the language of the user. Write one line of at most 80 characters.
 If no next step is clearly useful, call nothing.
 Do not give a suggestion in a delegation acknowledgment.

@@ -7,7 +7,7 @@ import test from 'node:test'
 import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
-import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
+import { fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
 import { AcpBridge } from '../src/AcpBridge.mjs'
@@ -488,4 +488,68 @@ test('in the mode ghost, a setup question after a request for silence gets no pr
   await viewer.prompt('Start the setup')
   assert.equal(toolResult(requests.at(-1), 'agents_suggest').allowed, false)
   assert.deepEqual(viewer.suggestions(), [])
+})
+
+/** The message IDs of the reply chunks of [updates], in order, each ID one time. */
+const messageIds = updates => [...new Set(updates.filter(event => event.update.sessionUpdate === 'agent_message_chunk')
+  .map(event => event.update.messageId))]
+const QUESTION = 'Question 1 of 3. Which pair of agents?\n1. Opus + Claude\n2. Opus + Codex\nNow it is Opus + Claude.'
+/** A model message with the reply text [text] and the tool calls [calls]. */
+const replyWith = (text, ...calls) => fauxAssistantMessage([fauxText(text), ...calls], { stopReason: 'toolUse' })
+
+test('in the mode ghost, a reply with agents_suggest after its text ends the turn, so Air gets the reply as one message and folds nothing', { timeout: 20000 }, async t => {
+  const { cwd, daemon, requests, turn } = await ghostFixture(t)
+  const viewer = await view(t, daemon, cwd)
+  // Without the end, the model writes one more short text after the tool result. Air folds each message of a turn
+  // before the last one into a closed block "Worked for".
+  turn(replyWith(QUESTION, fauxToolCall('agents_suggest', { proposal: 'Opus + Claude' })), fauxAssistantMessage('Which pair do you choose?'))
+  const answer = await viewer.prompt('Start the setup')
+  assert.equal(answer.stopReason, 'end_turn')
+  assert.equal(requests.length, 1)
+  assert.equal(messageIds(viewer.updates).length, 1)
+  const chunks = viewer.updates.filter(event => event.update.sessionUpdate === 'agent_message_chunk')
+  assert.equal(chunks.map(event => event.update.content.text).join(''), QUESTION)
+  // The grey text does not depend on the order of the call: it goes out after the last reply chunk of the turn.
+  assert.deepEqual(viewer.suggestions(), ['Opus + Claude'])
+  assert.ok(viewer.updates.findIndex(event => ghostPayload(event)) > viewer.updates.indexOf(chunks.at(-1)))
+  // The next turn starts as usual, and its model request holds the reply and the result of the call.
+  turn(fauxAssistantMessage('Opus + Claude stays.'))
+  assert.equal((await viewer.prompt('Opus + Claude')).stopReason, 'end_turn')
+  const roles = JSON.parse(requests.at(-1)).messages.map(model => model.role)
+  assert.deepEqual(roles.slice(-4), ['user', 'assistant', 'toolResult', 'user'])
+  assert.equal(toolResult(requests.at(-1), 'agents_suggest').allowed, true)
+  assert.match(requests[0], /Then call agents_suggest in the same message, after the reply text\. This call ends the turn/)
+})
+
+test('in the mode ghost, only a round of the record tools after the reply text ends the turn', { timeout: 20000 }, async t => {
+  const { cwd, daemon, requests, turn } = await ghostFixture(t)
+  const viewer = await view(t, daemon, cwd)
+  const suggest = fauxToolCall('agents_suggest', { proposal: 'Keep the current values' })
+  const cases = [
+    // The answer of the user and the suggestion in the message of the next question.
+    { name: 'set', ends: true, first: replyWith(QUESTION, fauxToolCall('agents_settings', { action: 'set', key: 'children.push', value: 'ask' }), suggest) },
+    { name: 'silence', ends: true, first: replyWith('I stop the suggestions.', fauxToolCall('agents_feedback', { decision: 'silence' })) },
+    // The model must read the result of another tool, and of a failed call.
+    { name: 'list', ends: false, first: replyWith(QUESTION, fauxToolCall('agents_list', {}), suggest) },
+    { name: 'failed', ends: false, first: replyWith(QUESTION, fauxToolCall('agents_settings', { action: 'set', key: 'no.such.key', value: 'on' }), suggest) },
+    { name: 'read', ends: false, first: replyWith(QUESTION, fauxToolCall('agents_settings', { action: 'get' }), suggest) },
+    // A call before the reply text: the model writes the reply in the next request, so the chat still gets one message.
+    { name: 'before', ends: false, first: fauxAssistantMessage(suggest, { stopReason: 'toolUse' }) },
+  ]
+  for (const item of cases) {
+    const before = requests.length
+    const shown = viewer.updates.length
+    turn(item.first, fauxAssistantMessage('The last text.'))
+    assert.equal((await viewer.prompt(`Turn ${item.name}`)).stopReason, 'end_turn', item.name)
+    assert.equal(requests.length - before, item.ends ? 1 : 2, item.name)
+    if (item.name === 'before') assert.equal(messageIds(viewer.updates.slice(shown)).length, 1)
+  }
+})
+
+test('in the mode reply, a reply with agents_suggest after its text continues, so the proposal can follow the result', { timeout: 20000 }, async t => {
+  const { cwd, daemon, requests, turn } = await ghostFixture(t, { mode: 'reply' })
+  const viewer = await view(t, daemon, cwd)
+  turn(replyWith('The parser reads each line now.', fauxToolCall('agents_suggest', { proposal: 'Run the tests?' })), fauxAssistantMessage('Run the tests?'))
+  await viewer.prompt('Fix the parser')
+  assert.equal(requests.length, 2)
 })

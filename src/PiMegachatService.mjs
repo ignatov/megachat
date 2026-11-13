@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
-import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, GenerationTask, Harness, hook, InboxDoc, LiveDoc, ProviderDoc } from '@earendil-works/pi-durable'
+import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, GenerationTask, Harness, hook, InboxDoc, LiveDoc, ProviderDoc, ToolTask } from '@earendil-works/pi-durable'
 import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-schema'
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
@@ -16,7 +16,7 @@ import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
-import { STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from './ReplyStream.mjs'
+import { replyText, STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
@@ -54,6 +54,11 @@ const workdayClock = {
  * of the main agent.
  */
 const MAIN_EXTENSION = 'air.megachat'
+/**
+ * The tools that only record a part of a reply, with the actions of each tool, or `null` for each action. A round of
+ * these tools after the full reply text ends the turn, see `PiMegachatService.replyEnd`.
+ */
+const REPLY_RECORD_TOOLS = new Map([['agents_suggest', null], ['agents_feedback', null], ['agents_settings', new Set(['set', 'reset'])]])
 
 /** The limit of a summary from the environment alone, without the stored settings. */
 export function compactTokens(environment = process.env) {
@@ -528,6 +533,7 @@ export class PiMegachatService {
       // Each reply of the model, also a reply with tool calls, is one request that costs money.
       hook(GenerationTask, { afterResponse: (answer, api) => this.countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
       hook(CompactionTask, { beforeCompact: (compaction, api, hookContext) => this.summarize(compaction, api, hookContext) }),
+      hook(ToolTask, { afterTool: (call, outcome, api, hookContext) => this.replyEnd(call, outcome, api, hookContext) }),
     ], tools: [
       tool('list', obj({}), async () => {
         const state = await this.state.snapshot()
@@ -623,6 +629,32 @@ export class PiMegachatService {
         text: opt(str({ maxLength: 4000 })), match: opt(str({ maxLength: 4000 })), topic: opt(str({ maxLength: 1000 })) }),
       async (args, api) => result(await this.memoryTool(`tool:${api.taskId}:memory`, args)))] : []),
     ] })
+  }
+
+  /**
+   * Ends the turn after a model message that holds the full reply text and a call of `agents_suggest` or
+   * `agents_feedback`, in the mode `ghost`. Without the end, the model writes one more short text after the tool
+   * results. Each model request is a message of its own in the chat, and Air puts each message of a turn before the
+   * last one into a closed block "Worked for". So only the short text stays open. The chat does not show the tool calls
+   * of the main agent, so one message is the full answer of the turn.
+   *
+   * Pi Durable ends the run only when each result of the round asks for it. So a round with another tool, such as
+   * `agents_spawn`, or with a failed call, continues: the model then reads the results. Only the tools of
+   * [REPLY_RECORD_TOOLS] ask for it. In the mode `reply`, the proposal follows the result of `agents_suggest` in the
+   * reply text, so the turn continues. A message without text, such as a call of `agents_suggest` before the reply,
+   * also continues, so the model writes the reply in the next request.
+   */
+  async replyEnd(call, outcome, api, hookContext) {
+    if (this.suggestions !== 'ghost' || call.parent || outcome.isError || !REPLY_RECORD_TOOLS.has(call.name)) return undefined
+    const actions = REPLY_RECORD_TOOLS.get(call.name)
+    if (actions && !actions.has(call.arguments?.action)) return undefined
+    const page = await api.entries({ order: 'descending' }, 50, undefined, hookContext)
+    const answer = page.items.flatMap(entry => entry.model ?? []).find(model => model.role === 'assistant'
+      && Array.isArray(model.content) && model.content.some(block => block.type === 'toolCall' && block.id === call.id))
+    // In the mode ghost, agents_feedback records only a silence or a resume, so it also ends the work of the turn.
+    const ends = block => block.type === 'toolCall' && (block.name === 'agents_suggest' || block.name === 'agents_feedback')
+    if (!answer || !replyText(answer).trim() || !answer.content.some(ends)) return undefined
+    return { ...outcome, control: { ...outcome.control, terminate: true } }
   }
 
   /**
