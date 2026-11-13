@@ -434,8 +434,8 @@ Each environment variable still works, and it wins over the stored value. The ag
 a stored value. A daemon reads the variables at its start.
 
 Without `settings.json`, the setup of Megachat is pending. In its next reply to you, the main agent answers your
-message and then offers the setup. The setup asks three questions, one at a time, and shows the current value and the
-default of each:
+message and then offers the setup. The setup asks three questions, one at a time. Each reply holds the full question,
+its options as a numbered list, the current value and the default, also with the short answer length:
 
 1. The agents: your main model with Claude Code, or with Codex on GPT-6 Astra, for example "Opus + Claude" or "Opus +
    Codex on GPT-6 Astra". The answer sets `children.agent`, and for Codex also `children.codexModel`

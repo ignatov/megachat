@@ -286,6 +286,19 @@ Tests: `test/settings.test.mjs`
 - **WHEN** a test reads `resources/instructions-onboarding.md`
 - **THEN** it holds "tell the user that each setting can change later in the chat"
 
+### Requirement: Full setup question
+Each setup reply that asks a question MUST hold it in full in the reply text: its options as a numbered list, the current value and the default. The answer length and a prompt suggestion MUST NOT shorten or replace it. The reply to the acceptance MUST ask question 1 in full. The rules MUST forbid a reference to a question above, and they MUST win over a setup text of an earlier build.
+
+Tests: `test/settings.test.mjs`, `test/suggestions.test.mjs`
+
+#### Scenario: The rules of a full question
+- **WHEN** a test reads `resources/instructions-onboarding.md`
+- **THEN** it holds "ask question 1 in full in the same reply", "its options as a short numbered list, the current value and the default", "The rule of the answer length does not shorten a setup question." and "Do not refer to a question above or to an earlier setup in the conversation."
+
+#### Scenario: The grey text adds only the likely answer
+- **WHEN** a test reads `resources/instructions-onboarding-ghost.md`
+- **THEN** it holds "The reply text still holds the full question with its numbered options, the current value and the default." and "Do not move the question or its options into the suggestion."
+
 ### Requirement: End of the onboarding
 After the status `done` or `skipped`, the setup rules MUST NOT come back by themselves, also after a restart. The rules MUST then say that the agent changes a setting or runs the setup again when the user asks, and that it offers a setting only as the offer rules say.
 

@@ -616,6 +616,20 @@ test('the setup asks three questions: the pair of agents, the index and the repo
   assert.match(rules, /tell the user that each setting can change later in the chat/)
 })
 
+test('each setup question is in full in the reply, with numbered options, and no rule lets the agent shorten it or point to an earlier question', async () => {
+  const rules = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
+  assert.match(rules, /When the user accepts, [^\n]*ask question 1 in full in the same reply\./)
+  assert.match(rules, /Write each question in full in the reply text: the question, its options as a short numbered list, the current value and the default/)
+  assert.match(rules, /A prompt suggestion or another short text never replaces the question or its options\./)
+  assert.match(rules, /The rule of the answer length does not shorten a setup question\./)
+  assert.match(rules, /Do not refer to a question above or to an earlier setup in the conversation\. Ask each question again in full\./)
+  assert.match(rules, /These setup rules win over a setup text of an earlier build in the conversation\./)
+  // Each of the three questions gives its options as a numbered list.
+  assert.match(rules, /^1\. The agents\.[^\n]*as a numbered list: 1\. the main model \+ Claude, 2\. the main model \+ Codex on GPT-6 Astra/m)
+  assert.match(rules, /^2\. The index of past sessions\.[^\n]*as a numbered list: 1\. on, 2\. off\./m)
+  assert.match(rules, /^3\. The known repositories:[^\n]*a short numbered list/m)
+})
+
 test('the answers of the pair with Codex change only the children, and the main model stays', { timeout: 20000 }, async t => {
   const directory = await temporary(t)
   await seed(directory, { 'coordinator.model': DEEP }, 'pending')
