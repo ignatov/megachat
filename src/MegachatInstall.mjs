@@ -5,7 +5,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { CentralConfigurationService } from './CentralConfigurationService.mjs'
-import { VERSION } from './MegachatBuild.mjs'
+import { megachatVersion } from './MegachatBuild.mjs'
 import { message } from './messages.mjs'
 import { npmPathEntry } from './npmEnvironment.mjs'
 import { gitCheckout } from './sourceBuildId.mjs'
@@ -155,10 +155,10 @@ export async function install({ environment = process.env, platform = process.pl
     default: print(message('install.unreadable', path)); print(pasted(entry))
   }
   const placed = ['created', 'added', 'replaced', 'same'].includes(result.status)
-  if (checkout) print(message('install.copy', root, VERSION))
+  if (checkout) print(message('install.copy', root, megachatVersion()))
   else {
     if (placed) print(message('install.ide'))
-    print(message('install.release', root, VERSION))
+    print(message('install.release', root, megachatVersion()))
   }
   return passed && placed ? 0 : 1
 }

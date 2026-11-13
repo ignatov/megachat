@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -7,6 +7,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
+import { megachatVersion } from '../src/MegachatBuild.mjs'
 import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -166,7 +167,7 @@ test('install in a git checkout writes the entry that starts the checkout once, 
   for (const line of [macOS ? 'The platform is macOS.' : `Nobody tested Megachat on ${process.platform}.`,
     'Central gives a valid configuration.', `Claude Code is at ${join(home, '.local', 'bin', 'claude')}, and it uses Central.`,
     `Codex is at ${join(tools, 'codex')}.`, `Megachat created ${path} with the entry Megachat.`,
-    `Megachat ${manifest.version} runs from ${dirname(dirname(launcher))}.`]) {
+    `Megachat ${megachatVersion()} runs from ${dirname(dirname(launcher))}.`]) {
     assert.ok(first.stdout.includes(line), `${line}\n${first.stdout}`)
   }
   const expected = { agent_servers: { Megachat: { command: join(nodes, 'node'), args: [launcher, 'acp'] } } }
@@ -226,6 +227,31 @@ async function releaseCopy(directory) {
   await symlink(join(root, 'node_modules'), join(copy, 'node_modules'))
   return copy
 }
+
+test('install in a checkout after the release tag gives the version with the count of commits and the commit', { timeout: 60000 }, async t => {
+  const directory = await temporary(t)
+  const { home, tools, nodes } = await fakeMachine(directory)
+  const copy = await releaseCopy(directory)
+  const git = (...args) => execFileSync('git', ['-C', copy, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgSign=false',
+    '-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim()
+  await writeFile(join(copy, 'package.json'), `${JSON.stringify({ ...manifest, version: '0.3.0' }, null, 2)}\n`)
+  git('init', '-q')
+  git('add', 'package.json', 'bin', 'src', 'resources')
+  git('commit', '-q', '-m', 'Megachat has the version 0.3.0')
+  git('tag', 'v0.3.0')
+  for (const text of ['First', 'Second']) {
+    await writeFile(join(copy, 'notes.txt'), `${text}\n`)
+    git('add', 'notes.txt')
+    git('commit', '-q', '-m', text)
+  }
+  const commit = git('rev-parse', '--short=7', 'HEAD')
+  const path = join(directory, 'acp.json')
+  const result = await run(['install', join(directory, 'state')], { HOME: home, PATH: [nodes, tools, '/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: path },
+    [], join(copy, 'bin', 'megachat.mjs'))
+  assert.equal(result.code, process.platform === 'darwin' ? 0 : 1, result.stdout + result.stderr)
+  assert.match(commit, /^[0-9a-f]{7}$/)
+  assert.equal(result.stdout.trimEnd().split('\n').at(-1), `Megachat 0.3.0+2.g${commit} runs from ${copy}.`)
+})
 
 test('install in a copy without .git writes the npx entry of the last release, and replaces the earlier entry', { timeout: 60000 }, async t => {
   const directory = await temporary(t)

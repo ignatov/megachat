@@ -3,7 +3,7 @@ import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk'
 import { fileMaskEnvironment } from './fileMask.mjs'
-import { VERSION } from './MegachatBuild.mjs'
+import { megachatVersion } from './MegachatBuild.mjs'
 import { MegachatError, message } from './messages.mjs'
 import { CHILD_AGENTS } from './Settings.mjs'
 
@@ -43,7 +43,7 @@ async function checkAgent(configuration, agent, { cwd, timeoutMs, launch: overri
     const timeout = new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), timeoutMs) })
     const check = (async () => {
       await connection.agent.request(methods.agent.initialize, {
-        protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: VERSION }, clientCapabilities: {},
+        protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: megachatVersion() }, clientCapabilities: {},
       })
       step = 'session'
       // The check has no project, so Claude loads no settings file. A child loads the project settings.

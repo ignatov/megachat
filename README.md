@@ -105,6 +105,13 @@ Node.js, not the entry with `npx`. The entry has absolute paths. Keep the name `
 A checkout has the build `dev`, so a pull does not replace a running daemon. Run `node src/main.mjs stop` to start the
 new code at the next attach.
 
+A checkout that is not exactly at a release tag adds the commit to its version as SemVer build metadata. For example,
+`0.4.0+3.g1a2b3c4` is 3 commits after the tag `v0.4.0`, at the commit `1a2b3c4`. `0.5.0+g1a2b3c4` tells that the tag
+`v0.5.0` of the version is not in the history yet. `.dirty` at the end tells that a tracked file has a change, and
+`0.4.0+dev` tells that git failed or gave no answer in 2 seconds. A checkout at the tag with no change gives `0.4.0`.
+The IDE gets this version in `agentInfo`, and the last line of `install` gives it. The build stays `dev`. `npm run
+build` writes the version of the checkout into the bundle.
+
 ## Commands
 
 Run each command as `node bin/megachat.mjs <command> [<directory>]`, or as `node src/main.mjs` in a checkout. The
@@ -113,7 +120,7 @@ optional directory selects a state directory of its own, for a test or for devel
 | Command | What it does |
 |---|---|
 | `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. It also replaces a daemon with other agent commands, when this command passes agent commands. |
-| `status` | Prints the current task and the state of each child run as JSON. |
+| `status` | Prints the version of the running daemon, the current task and the state of each child run as JSON. The daemon of a checkout keeps its version after a pull, so `version` can be older than the checkout. A daemon of an earlier build gives no `version`. |
 | `stop` | Stops the daemon. |
 | `compact` | Asks the running daemon to replace the older part of the model context with a summary. The daemon waits for the end of the current turn. The history keeps each message. |
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
@@ -647,7 +654,7 @@ The session text is data for the agent, not instructions.
 | `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
 | `src/ReplyStream.mjs` | The stream of the partial reply of the main agent from the daemon to each client. |
-| `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version and the build ID. |
+| `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version of the build, from `git describe` in a checkout, and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
@@ -755,6 +762,11 @@ To make a release:
 can come from an earlier version. Then it makes the tag, pushes it, and makes the GitHub release with `gh`. The
 notes of the release are the subjects of the commits since the last release. `npm run release -- --dry-run` prints
 the release and changes nothing.
+
+A copy of the install line comes from a release tag and has no `.git`, so it gives the release form of the version,
+such as `0.4.0`. A copy without `.git` from another place, such as `npm pack`, also gives that form. The build and the
+tests of `npm run release` run before the tag, so they see the form `<version>+g<commit>`. No copy of that run is
+published.
 
 ## License
 

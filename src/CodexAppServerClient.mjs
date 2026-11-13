@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { VERSION } from './MegachatBuild.mjs'
+import { megachatVersion } from './MegachatBuild.mjs'
 import { MegachatError } from './messages.mjs'
 
 /** Reads stored Codex sessions without resuming a thread or starting a model turn. */
@@ -7,7 +7,7 @@ export class CodexAppServerClient {
   static async open({ command = 'codex', args = ['app-server', '--listen', 'stdio://'], env = process.env } = {}) {
     const client = new CodexAppServerClient(spawn(command, args, { env, stdio: ['pipe', 'pipe', 'ignore'] }))
     try {
-      await client.request('initialize', { clientInfo: { name: 'air_megachat', title: 'Megachat', version: VERSION } })
+      await client.request('initialize', { clientInfo: { name: 'air_megachat', title: 'Megachat', version: megachatVersion() } })
       client.child.stdin.write(`${JSON.stringify({ method: 'initialized', params: {} })}\n`)
       return client
     }

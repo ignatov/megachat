@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
+import { buildVersion } from './src/sourceBuildId.mjs'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const output = join(root, 'out', 'bundle')
@@ -73,6 +74,8 @@ async function notices(metafile) {
 }
 
 const id = await buildId()
+// The bundle has no `.git`, so it gets the version of this checkout at the time of the build.
+const version = buildVersion(root)
 await rm(output, { recursive: true, force: true })
 await mkdir(output, { recursive: true })
 const result = await build({
@@ -85,7 +88,7 @@ const result = await build({
   format: 'esm',
   target: ['node22'],
   external,
-  define: { MEGACHAT_BUILD_ID: JSON.stringify(id) },
+  define: { MEGACHAT_BUILD_ID: JSON.stringify(id), MEGACHAT_VERSION: JSON.stringify(version) },
   // Bundled CommonJS packages call `require` for Node built-ins. esbuild keeps the `#!/usr/bin/env node` line of
   // `src/main.mjs` as line 1 of `dist/megachat.mjs`, and the banner follows it.
   banner: { js: "import { createRequire as __megachatCreateRequire } from 'node:module'; const require = __megachatCreateRequire(import.meta.url);" },
@@ -105,4 +108,4 @@ const { packages, text } = await notices(result.metafile)
 await writeFile(join(output, 'THIRD_PARTY_NOTICES.txt'), text)
 await writeFile(join(output, 'build-id.txt'), `${id}\n`)
 if (!existsSync(join(output, 'dist', 'megachat.mjs'))) throw new Error('The bundle is missing')
-console.log(`[megachat] Built ${id} into ${relative(root, output)} with ${packages.length} bundled packages`)
+console.log(`[megachat] Built ${id} (version ${version}) into ${relative(root, output)} with ${packages.length} bundled packages`)

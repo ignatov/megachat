@@ -60,22 +60,22 @@ this machine (`pacote/lib/git.js`, `pacote/lib/dir.js`, `@npmcli/git/lib/spawn.j
 `<version>[+[<count>.]g<commit>[.dirty]]`, or `<version>+dev`. The commit has 7 hexadecimal digits, or more when git
 needs more for a unique name.
 
-- npm semver 7 on this machine: `valid("0.3.0+64.g1d5ef77")` is `0.3.0`, `satisfies(..., "x")` is true, and the
-  comparison with `0.3.0` is 0. `valid("0.3.0-64-g1d5ef77")` is a pre-release that sorts before `0.3.0`, and
-  `satisfies(..., "x")` is false. `0.4.0-dev+1d5ef77` is also a pre-release that the range `x` refuses.
+- npm semver 7 on this machine: `valid("0.4.0+3.g1a2b3c4")` is `0.4.0`, `satisfies(..., "x")` is true, and the
+  comparison with `0.4.0` is 0. `valid("0.4.0-3-g1a2b3c4")` is a pre-release that sorts before `0.4.0`, and
+  `satisfies(..., "x")` is false. `0.5.0-dev+1a2b3c4` is also a pre-release that the range `x` refuses.
 - ACP defines `agentInfo.version` as a string to show or to log. Air does not parse it.
 - The base is always the version of `package.json`, not the name of the nearest tag. `git describe --match
-  v<version>` counts only from the tag of that version. So after the commit that sets `0.4.0`, the version is
-  `0.4.0+g<commit>`, and it does not claim a count from `v0.3.0`.
+  v<version>` counts only from the tag of that version. So after the commit that sets `0.5.0`, the version is
+  `0.5.0+g<commit>`, and it does not claim a count from `v0.4.0`.
 
-Alternatives: the form of `git describe` (wrong order in SemVer); a version `0.4.0-dev` in `package.json` after each
+Alternatives: the form of `git describe` (wrong order in SemVer); a version `0.5.0-dev` in `package.json` after each
 release (needs a commit and a push in `release.mjs`, and two builds of `main` still report the same version).
 
 ### 2. One git command, at the first use, with a time limit
 
 `git -C <root> describe --tags --long --always --dirty --abbrev=7 --match v<version>`, with a time limit of 2 seconds,
 no input, no error output, and an environment without `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`. The output is
-`v0.3.0-64-g1d5ef77[-dirty]` when the tag is in the history, else `1d5ef77[-dirty]`. A count of 0 without `-dirty` gives
+`v0.4.0-3-g1a2b3c4[-dirty]` when the tag is in the history, else `1a2b3c4[-dirty]`. A count of 0 without `-dirty` gives
 the release form. An exit code other than 0, a time-out or another output gives `<version>+dev`.
 
 The command took 60 ms on the loaded machine of the author (10 runs). So Megachat runs it only in a git checkout, one

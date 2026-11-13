@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
+import { megachatVersion } from '../src/MegachatBuild.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
 const bundle = fileURLToPath(new URL('../out/bundle/dist/megachat.mjs', import.meta.url))
@@ -45,7 +46,12 @@ test('the bundle answers ACP initialize and its daemon reports the build', { ski
   assert.equal(response.id, 1)
   assert.equal(response.error, undefined, JSON.stringify(response.error))
   assert.equal(typeof response.result.protocolVersion, 'number')
-  assert.equal(response.result.agentInfo.version, manifest.version)
+  // `npm run test:bundle` builds the bundle first, so the bundle gives the version of this checkout. In `npm test`, the
+  // bundle can come from an earlier commit or an earlier change of a file, so the test checks the version of
+  // `package.json` and the form of the build metadata.
+  const { version } = response.result.agentInfo
+  if (process.env.npm_lifecycle_event === 'test:bundle') assert.equal(version, megachatVersion())
+  else assert.match(version, new RegExp(`^${manifest.version.replaceAll('.', '\\.')}(\\+(dev|(\\d+\\.)?g[0-9a-f]{7,}(\\.dirty)?))?$`))
   const descriptor = JSON.parse(await readFile(join(directory, 'state', 'daemon', 'connection.json'), 'utf8'))
   const build = (await readFile(new URL('../out/bundle/build-id.txt', import.meta.url), 'utf8')).trim()
   assert.ok(descriptor.build.startsWith(`${build}+`), descriptor.build)

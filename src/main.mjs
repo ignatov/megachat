@@ -18,7 +18,7 @@ import { DaemonClient } from './DaemonClient.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
 import { restrictFileMask } from './fileMask.mjs'
-import { daemonBuild, needsReplacement } from './MegachatBuild.mjs'
+import { daemonBuild, megachatVersion, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
 import { install } from './MegachatInstall.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
@@ -95,7 +95,7 @@ async function daemon() {
       setTimeout(() => process.exit(1), 10000).unref()
       return shutdown()
     }).catch(() => {})
-    server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build })
+    server = new DaemonServer(service, () => shutdown().catch(() => { process.exitCode = 1 }), { build, version: megachatVersion() })
     const descriptor = await server.listen()
     proceed()
     // The daemon runs at most `children.parallel` children at a time, ACP and pi together, and one child in a checkout.
@@ -238,8 +238,12 @@ try {
     case 'daemon': await daemon(); break
     case 'start': await start(); process.stdout.write(`${message('daemon.started')}\n`); break
     case 'status': {
-      const state = await (await connect()).json('/state')
-      process.stdout.write(`${JSON.stringify({ running: true, current: state.current, children: Object.values(state.runs).map(run => ({ id: run.id, status: run.status })) })}\n`)
+      const client = await connect()
+      const state = await client.json('/state')
+      // The version of the daemon that runs, which can be older than this checkout. A daemon of an earlier build gives none.
+      const version = client.health.megachatVersion
+      process.stdout.write(`${JSON.stringify({ running: true, ...(typeof version === 'string' ? { version } : {}), current: state.current,
+        children: Object.values(state.runs).map(run => ({ id: run.id, status: run.status })) })}\n`)
       break
     }
     case 'stop': await (await connect()).json('/shutdown', {}); break

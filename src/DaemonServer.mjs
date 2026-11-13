@@ -9,10 +9,11 @@ import { ReplyStream, streamEnabled } from './ReplyStream.mjs'
 
 export class DaemonServer {
   /** [onStreamSent] gets each stream event and the time when the daemon sends it. A test uses it. */
-  constructor(service, shutdown = () => {}, { build, stream = streamEnabled(), streamIntervalMs, onStreamSent } = {}) {
+  constructor(service, shutdown = () => {}, { build, version, stream = streamEnabled(), streamIntervalMs, onStreamSent } = {}) {
     this.service = service
     this.shutdown = shutdown
     this.build = build
+    this.version = version
     this.stream = stream
     this.streamIntervalMs = streamIntervalMs
     this.onStreamSent = onStreamSent
@@ -78,7 +79,7 @@ export class DaemonServer {
     }
     if (request.method === 'GET') {
       switch (url.pathname) {
-        case '/health': send({ version: 1, pid: process.pid, ...(this.build ? { build: this.build } : {}) }); return
+        case '/health': send({ version: 1, pid: process.pid, ...(this.build ? { build: this.build } : {}), ...(this.version ? { megachatVersion: this.version } : {}) }); return
         case '/state': send(await this.service.state.snapshot()); return
         case '/conversation': send(await this.service.view()); return
         case '/history': {

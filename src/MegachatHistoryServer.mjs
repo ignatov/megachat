@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
-import { VERSION } from './MegachatBuild.mjs'
+import { megachatVersion } from './MegachatBuild.mjs'
 import { message } from './messages.mjs'
 
 /** Exposes the retained conversation to child tasks through a read-only MCP tool. */
@@ -9,7 +9,7 @@ export class MegachatHistoryServer {
   constructor(service) { this.service = service }
 
   async handle(request, response, body) {
-    const server = new McpServer({ name: 'megachat-history', version: VERSION }, {
+    const server = new McpServer({ name: 'megachat-history', version: megachatVersion() }, {
       instructions: message('history.instructions'),
     })
     server.registerTool('history', {

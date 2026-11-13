@@ -9,8 +9,8 @@ import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk/unstable'
-import manifest from '../package.json' with { type: 'json' }
 import { DaemonClient } from '../src/DaemonClient.mjs'
+import { megachatVersion } from '../src/MegachatBuild.mjs'
 import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { message as continuationPrompt } from '../src/messages.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
@@ -45,7 +45,7 @@ test('concurrent ACP opens start one daemon without a separate start command', {
     assert.equal(code, 0, errors)
     const { agentInfo } = JSON.parse(output).result
     assert.equal(agentInfo.title, 'Megachat')
-    assert.equal(agentInfo.version, manifest.version)
+    assert.equal(agentInfo.version, megachatVersion())
   }
   await Promise.all([initialize(), initialize()])
   const daemon = await DaemonClient.connect(directory)

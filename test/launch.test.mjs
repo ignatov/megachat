@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -10,10 +11,10 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from '../src/CentralConfigurationService.mjs'
-import { daemonBuild, needsReplacement } from '../src/MegachatBuild.mjs'
+import { daemonBuild, megachatVersion, needsReplacement } from '../src/MegachatBuild.mjs'
 import { message } from '../src/messages.mjs'
 import { redactSecrets } from '../src/SessionText.mjs'
-import { sourceBuildId } from '../src/sourceBuildId.mjs'
+import { buildVersion, sourceBuildId } from '../src/sourceBuildId.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -92,6 +93,124 @@ test('a copy without .git has a stable build id, and a changed file changes it',
   assert.notEqual(changed, id)
   await writeFile(join(directory, 'resources', 'instructions.md'), 'A change.\n', { flag: 'a' })
   assert.notEqual(sourceBuildId(directory), changed)
+})
+
+/** Runs git in [directory] without the configuration of the user, and returns its output without the line end. */
+function git(directory, ...args) {
+  return execFileSync('git', ['-C', directory, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgSign=false',
+    '-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).trim()
+}
+
+/** A temporary git repository with the version 0.3.0 in `package.json`, one commit and no tag. */
+async function versionRepository(t) {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-version-')))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, 'package.json'), `${JSON.stringify({ name: 'megachat', version: '0.3.0' })}\n`)
+  git(directory, 'init', '-q')
+  git(directory, 'add', 'package.json')
+  git(directory, 'commit', '-q', '-m', 'The first commit')
+  return directory
+}
+
+/** A stand-in `git` in a new directory. It writes a file `started` next to it, then runs [body]. */
+async function fakeGit(t, body) {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-git-')))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, 'git'), `#!/bin/sh\nPATH=/usr/bin:/bin\ntouch "${join(directory, 'started')}"\n${body}\n`, { mode: 0o755 })
+  return { path: directory, started: () => existsSync(join(directory, 'started')) }
+}
+
+test('a git checkout adds the commits after the release tag to the version as SemVer build metadata', async t => {
+  const directory = await versionRepository(t)
+  git(directory, 'tag', 'v0.3.0')
+  assert.equal(buildVersion(directory), '0.3.0')
+  for (const text of ['First', 'Second']) {
+    await writeFile(join(directory, 'notes.txt'), `${text}\n`)
+    git(directory, 'add', 'notes.txt')
+    git(directory, 'commit', '-q', '-m', text)
+  }
+  const commit = git(directory, 'rev-parse', '--short=7', 'HEAD')
+  assert.match(commit, /^[0-9a-f]{7}$/)
+  assert.equal(buildVersion(directory), `0.3.0+2.g${commit}`)
+  // The variables of an outer git command do not select another repository.
+  const other = await versionRepository(t)
+  assert.equal(buildVersion(directory, { environment: { ...process.env, GIT_DIR: join(other, '.git'), GIT_WORK_TREE: other } }), `0.3.0+2.g${commit}`)
+
+  await writeFile(join(directory, 'notes.txt'), 'A change.\n')
+  assert.equal(buildVersion(directory), `0.3.0+2.g${commit}.dirty`)
+  git(directory, 'checkout', '-q', '--', 'notes.txt')
+
+  // The commit that sets the next version, before its release tag.
+  await writeFile(join(directory, 'package.json'), `${JSON.stringify({ name: 'megachat', version: '0.4.0' })}\n`)
+  git(directory, 'commit', '-q', '-a', '-m', 'Megachat has the version 0.4.0')
+  assert.equal(buildVersion(directory), `0.4.0+g${git(directory, 'rev-parse', '--short=7', 'HEAD')}`)
+})
+
+test('a copy without .git gives the version of package.json and starts no git command', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-version-copy-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, 'package.json'), `${JSON.stringify({ name: 'megachat', version: '0.3.0' })}\n`)
+  const fake = await fakeGit(t, 'exit 1')
+  assert.equal(buildVersion(directory, { environment: { PATH: fake.path } }), '0.3.0')
+  assert.equal(fake.started(), false)
+  // The same stand-in runs for a root with `.git`.
+  await mkdir(join(directory, '.git'))
+  assert.equal(buildVersion(directory, { environment: { PATH: fake.path } }), '0.3.0+dev')
+  assert.equal(fake.started(), true)
+})
+
+test('a git checkout gives the version with +dev when git fails or gives no answer in 2 seconds', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-version-dev-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, 'package.json'), `${JSON.stringify({ name: 'megachat', version: '0.3.0' })}\n`)
+  await writeFile(join(directory, '.git'), 'gitdir: /elsewhere\n')
+  assert.equal(buildVersion(directory), '0.3.0+dev')
+
+  const fake = await fakeGit(t, 'exec sleep 10')
+  const started = Date.now()
+  assert.equal(buildVersion(directory, { environment: { PATH: fake.path } }), '0.3.0+dev')
+  const elapsed = Date.now() - started
+  assert.ok(fake.started())
+  assert.ok(elapsed >= 1900 && elapsed < 8000, `${elapsed} ms`)
+})
+
+test('status gives the version of the running daemon after the key running', { timeout: 60000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-status-'))
+  t.after(async () => {
+    try { await stopDaemon(directory) }
+    finally { await rm(directory, { force: true, recursive: true }) }
+  })
+  const main = (...args) => {
+    const child = spawn(process.execPath, [join(root, 'src', 'main.mjs'), ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    return once(child, 'exit').then(([code]) => ({ code, stdout, stderr }))
+  }
+  const started = await main('start', directory)
+  assert.equal(started.code, 0, started.stderr)
+  const status = await main('status', directory)
+  assert.equal(status.code, 0, status.stderr)
+  const line = JSON.parse(status.stdout)
+  assert.deepEqual(Object.keys(line), ['running', 'version', 'current', 'children'])
+  assert.equal(line.version, megachatVersion())
+
+  // A daemon of an earlier build gives no version in /health.
+  const earlier = await mkdtemp(join(tmpdir(), 'megachat-status-earlier-'))
+  t.after(() => rm(earlier, { force: true, recursive: true }))
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify(request.url === '/health' ? { version: 1, pid: process.pid } : { current: null, runs: {} }))
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => server.close())
+  await mkdir(join(earlier, 'daemon'))
+  await writeFile(join(earlier, 'daemon', 'connection.json'), JSON.stringify({ version: 1, pid: process.pid, port: server.address().port, token: 'a'.repeat(64) }))
+  const old = await main('status', earlier)
+  assert.equal(old.code, 0, old.stderr)
+  assert.equal(old.stdout, '{"running":true,"current":null,"children":[]}\n')
 })
 
 test('a client replaces a daemon of another build or other agent commands', () => {

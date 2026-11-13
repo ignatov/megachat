@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { agent, methods } from '@agentclientprotocol/sdk/unstable'
-import { VERSION } from './MegachatBuild.mjs'
+import { megachatVersion } from './MegachatBuild.mjs'
 import { MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { transcriptPath } from './ChildTranscript.mjs'
@@ -114,7 +114,7 @@ export class AcpBridge {
         this.serviceSessions = capabilities.includes('serviceSessions')
         this.workspaces = capabilities.includes('workspaces')
         return {
-          protocolVersion: 1, agentInfo: { name: 'air-megachat', title: message('title'), version: VERSION },
+          protocolVersion: 1, agentInfo: { name: 'air-megachat', title: message('title'), version: megachatVersion() },
           agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } }, authMethods: [],
           _meta: { jetbrains: { air: { version: 1, capabilities: ['persistentSession',
             ...(this.nativeTurns ? ['asyncTasks'] : [])] } } },

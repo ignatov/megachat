@@ -9,7 +9,7 @@ import { resolveSettings as resolveClaudeSettings } from '@anthropic-ai/claude-a
 import { waitForState } from './waitForState.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { fileMaskEnvironment } from './fileMask.mjs'
-import { VERSION } from './MegachatBuild.mjs'
+import { megachatVersion } from './MegachatBuild.mjs'
 import { logChildText, logEvent, logFailure, MegachatError, message, minutesOf, requireCondition } from './messages.mjs'
 import { terminalStates } from './MegachatState.mjs'
 import { claudeChildRules } from './PiChild.mjs'
@@ -323,7 +323,7 @@ export class AcpRunService {
         .connect(countWork(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout)), work))
       const ctx = connection.agent
       const initialized = await ctx.request(methods.agent.initialize, {
-        protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: VERSION }, clientCapabilities: {},
+        protocolVersion: PROTOCOL_VERSION, clientInfo: { name: 'air-megachat', version: megachatVersion() }, clientCapabilities: {},
       })
       // These two faults do not go away on a new start of the agent. So they are errors that no continuation repeats.
       requireCondition(!this.historyServer || initialized.agentCapabilities?.mcpCapabilities?.http, 'agentHttp')
