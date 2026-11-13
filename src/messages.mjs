@@ -11,6 +11,13 @@ export function message(key, ...args) {
   return messages[key].replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)] ?? ''))
 }
 
+/**
+ * The cause codes of a failure of Central, and the name of the text of each. The state keeps the code of a failed
+ * reply, and the chat shows the text `error.central.<name>` for it.
+ */
+export const CENTRAL_CAUSES = Object.freeze({ central_missing: 'missing', central_command: 'command', central_proxy: 'proxy',
+  central_unreachable: 'unreachable', central_refused: 'refused' })
+
 export class MegachatError extends Error {
   constructor(code, ...args) {
     super(message(`error.${code}`, ...args))

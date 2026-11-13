@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,7 @@ import { MegachatError, message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { findSteer, terminalStates } from '../src/MegachatState.mjs'
 import { waitForState } from '../src/waitForState.mjs'
+import { centralChat, centralCommand, configurationOf, freePort, statusProxy } from './fake-central.mjs'
 
 async function finishChildren(service) {
   return waitForState(service.state, state => !state.current
@@ -887,6 +888,35 @@ test('a reply that fails on a model error tells the user that the model did not 
   const texts = viewer.updates.map(event => event.update.content?.text)
   assert.ok(texts.includes(message('error.model')))
   assert.ok(!texts.includes(message('error.interrupted')))
+})
+
+test('a reply that Central answers with the HTTP status 529 tells the user that the model did not answer', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
+  const { central } = await centralCommand(`echo '${configurationOf(await statusProxy(t, 529))}'`)
+  const chat = await centralChat(t, central)
+  t.mock.method(process.stderr, 'write', () => true)
+  const reply = await chat.prompt('Hello')
+  t.mock.restoreAll()
+  assert.deepEqual(reply, { stopReason: 'cancelled', notice: message('error.model') })
+  const input = Object.values((await chat.service.state.snapshot()).inputs).at(-1)
+  assert.deepEqual([input.reason, 'cause' in input], ['model_error', false])
+})
+
+test('a cause of Central from an earlier turn does not change the text of a later failed reply', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
+  // The Central command gives the configuration in the file, so the test can change the local proxy between the turns.
+  const { directory, central } = await centralCommand('cat "$(dirname "$0")/configuration.json"')
+  const file = join(directory, 'configuration.json')
+  await writeFile(file, configurationOf(await freePort()))
+  const chat = await centralChat(t, central)
+  t.mock.method(process.stderr, 'write', () => true)
+  const first = await chat.prompt('Hello')
+  await writeFile(file, configurationOf(await statusProxy(t, 529)))
+  const second = await chat.prompt('Hello again')
+  t.mock.restoreAll()
+  assert.equal(first.notice, message('error.central.proxy'))
+  assert.equal(second.notice, message('error.model'))
+  assert.equal(chat.configuration.lastFailure.cause, 'central_proxy')
+  const inputs = Object.values((await chat.service.state.snapshot()).inputs)
+  assert.deepEqual(inputs.map(input => input.cause), ['central_proxy', undefined])
 })
 
 

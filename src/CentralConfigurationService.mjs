@@ -119,19 +119,48 @@ const omitThinkingText = onPayload => async (params, model) => {
 }
 
 /**
+ * The cause of a failed `central run pi`. The error of `execFile` has the code `ENOENT` when the command does not
+ * exist. Each other failure, such as an exit code, the time limit, or a configuration that Megachat cannot use, has the
+ * cause `central_command`. The message of the error is not read: it holds the output of the command.
+ */
+export function commandCause(error) {
+  return error?.code === 'ENOENT' ? 'central_missing' : 'central_command'
+}
+
+/**
+ * The cause of a model request without a response. Only the code of the deepest cause that has a code is read. The code
+ * `ECONNREFUSED` always means the local proxy of Central, because `validateBaseUrl` accepts only an address of
+ * `127.0.0.1`. Each other error, such as a reset connection or the time limit of the stream, has the cause
+ * `central_unreachable`.
+ */
+export function requestCause(error) {
+  let code = error?.code
+  for (let next = error?.cause, depth = 0; next !== null && typeof next === 'object' && depth < 5; next = next.cause, depth++) code = next.code ?? code
+  return code === 'ECONNREFUSED' ? 'central_proxy' : 'central_unreachable'
+}
+
+/**
  * Writes a log line for each model request through Central that fails: a request without a response, or a response
  * with an HTTP error status. The provider turns the error into a text that the user does not see, and that text can
  * hold the address of Central. So the line has only the name and the code of the error, or the status. A stop of the
- * request by its caller, such as a cancel of the user, is no failure.
+ * request by its caller, such as a cancel of the user, is no failure. [record] gets the cause of a request without a
+ * response, and the cause `central_refused` for the status 401 or 403. Another status, such as 429 or 529, has no
+ * cause of Central: a new message can work.
  */
-const logFailedRequests = (fetch = globalThis.fetch, signal) => async (input, init) => {
+export const logFailedRequests = (fetch = globalThis.fetch, signal, record = () => {}) => async (input, init) => {
   let response
   try { response = await fetch(input, init) }
   catch (error) {
-    if (!signal?.aborted) logFailure('log.model', error)
+    if (!signal?.aborted) {
+      logFailure('log.model', error)
+      record(requestCause(error))
+    }
     throw error
   }
-  if (!response.ok) logEvent('log.model.status', response.status)
+  if (!response.ok) {
+    logEvent('log.model.status', response.status)
+    if (response.status === 401 || response.status === 403) record('central_refused')
+  }
   return response
 }
 
@@ -163,6 +192,17 @@ export class CentralConfigurationService {
      * transcripts and of the session index removes them. They stay in the memory only.
      */
     this.secrets = new KnownSecrets()
+    /**
+     * The cause code of the last failure of Central, and its time: `{ cause, at }`. A successful request and a
+     * failure without a cause of Central do not change it, so the reader compares its time with the start of a turn.
+     * It stays in the memory only.
+     */
+    this.lastFailure = undefined
+  }
+
+  /** Records the cause code [cause] of a failure of Central at this time. */
+  recordFailure(cause) {
+    this.lastFailure = { cause, at: Date.now() }
   }
 
   /**
@@ -189,6 +229,7 @@ export class CentralConfigurationService {
       if (signal?.aborted) throw signal.reason
       // The error of the command holds its output, and that can hold the key. The log gets no message of an error.
       this.log('log.central.main', error)
+      this.recordFailure(commandCause(error))
       throw new MegachatError('central')
     }
   }
@@ -222,7 +263,7 @@ export class CentralConfigurationService {
     const models = createModels()
     const provider = anthropicProvider()
     const omitted = options => ({ ...options, onPayload: omitThinkingText(options?.onPayload),
-      fetch: logFailedRequests(options?.fetch, options?.signal) })
+      fetch: logFailedRequests(options?.fetch, options?.signal, cause => this.recordFailure(cause)) })
     models.setProvider({
       ...provider,
       auth: { apiKey: { name: 'JetBrains Central', resolve: async ({ signal }) => {

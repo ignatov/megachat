@@ -197,8 +197,9 @@ export class PiMegachatService {
    * `KnownSecrets` with the exact values of the own secret of Megachat: the state and the session index remove them.
    * [memoryPath] is the path of `memory.md`. Without it, the main agent has no memory section, no tool
    * `agents_memory` and no reflection, for a test. [memory] gives the hooks of the memory, for a test.
+   * [centralFailure] gives the last failure of Central, `{ cause, at }`, as `CentralConfigurationService.lastFailure`.
    */
-  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -234,7 +235,7 @@ export class PiMegachatService {
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
-    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck, reportOptions, home,
+    Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck, centralFailure, reportOptions, home,
       stateDirectory, environment,
       spend: await DailySpend.open(spendPath, clock),
       // The live table of the session logs exists only with the consent of the user, as the index does.
@@ -1035,7 +1036,9 @@ export class PiMegachatService {
     if (reflectionNotice && status === 'completed') await this.state.reflectionNoticeShown(reflectionNotice).catch(error => logFailure('log.reflection.failed', error))
     // The turn still holds the state, so the next turn starts with the new settings.
     if (this.settingsPending) await this.applySettings().catch(error => logFailure('log.settings.failed', error))
-    await this.state.settleInput(receipt.mainRunId, status, reason, await this.stoppedReply(receipt.mainRunId))
+    // A model error can come from a failure of Central. The state takes its cause only when it came during this turn.
+    const central = reason === 'model_error' ? this.centralFailure?.() : undefined
+    await this.state.settleInput(receipt.mainRunId, status, reason, await this.stoppedReply(receipt.mainRunId), central)
     this.search?.catchUp().catch(() => {
       if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.search')}\n`)
     })

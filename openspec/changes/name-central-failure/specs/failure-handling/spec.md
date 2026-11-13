@@ -26,7 +26,7 @@ Tests: `test/integration.test.mjs`, `test/failure.test.mjs`
 ### Requirement: Text of a failure of Central
 Megachat MUST tell apart these causes: no command `~/.local/bin/central` (`central_missing`); a failed `central run pi`, its time limit of 15 s, or a configuration that it cannot use (`central_command`); a refused connection to the local proxy (`central_proxy`); another request with no response (`central_unreachable`); the HTTP status 401 or 403 (`central_refused`). Each text MUST name a command for the next step.
 
-Tests: `test/failure.test.mjs`
+Tests: `test/failure.test.mjs`, `test/integration.test.mjs`
 
 #### Scenario: A missing Central command
 - **WHEN** the command `~/.local/bin/central` does not exist, and the user sends "Hello"

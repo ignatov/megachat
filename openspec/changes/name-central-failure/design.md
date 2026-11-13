@@ -60,9 +60,10 @@ packages. Rejected.
 ### 2. The end of a failed reply takes the cause of its own time
 
 `main.mjs` gives the service an option `centralFailure: () => configuration.lastFailure`. `finish` reads it when the turn
-ends `interrupted` with the reason `model_error`. It takes the cause only when `at` is after the admission of the input
-(`admittedAt`), so a cause of an earlier turn does not change the text. `settleInput` gets the cause as a fourth
-argument and writes `input.cause`, a fixed code of at most 64 characters, next to `input.reason`.
+ends `interrupted` with the reason `model_error`, and gives it to `settleInput` as a fifth argument, after `stopped`.
+`settleInput` holds the input, so it takes the cause only when `at` is not before the admission of the input
+(`admittedAt`), and a cause of an earlier turn does not change the text. It writes `input.cause`, a fixed code of at most
+64 characters, next to `input.reason`.
 
 A pi child and a keep-alive request use the same service of Central. A failure of one of them during the turn can set
 the cause. That cause names the same Central and the same proxy, so its text is still true.
@@ -73,7 +74,9 @@ simpler, and the error of it is small. Rejected for now.
 
 ### 3. The bridge selects the text by the cause
 
-`AcpBridge.prompt` selects `error.central.<cause>` when `settled.cause` is one of the five codes, else the present rule.
+`AcpBridge.prompt` selects `error.central.<name>` when `settled.cause` is one of the five codes, else the present rule.
+The table `CENTRAL_CAUSES` of `src/messages.mjs` gives the name of the text for each code, such as `proxy` for
+`central_proxy`. The bridge does not import `CentralConfigurationService`, so it loads no provider module.
 A daemon of an earlier build gives no `cause`, so the bridge shows the present text. A bridge of an earlier build
 ignores the field.
 

@@ -927,9 +927,11 @@ export class MegachatState {
    * that fails for a reason that can go away is sent once more, after a delay. A cancelled report is not: the user
    * stopped it, or `interruptAutomaticTurn` already asked for a new report. A morning report or a summary of the
    * session index that a user message interrupted, or that failed for a reason that can go away, waits for one more
-   * turn. The user can stop it for good.
+   * turn. The user can stop it for good. [central] is the last failure of Central, `{ cause, at }`. The input keeps
+   * its cause code only when the failure came after the admission of the input, so a failure of an earlier turn does
+   * not change the text of this turn.
    */
-  async settleInput(mainRunId, status, reason, stopped) {
+  async settleInput(mainRunId, status, reason, stopped, central) {
     await this.change(async (state, tx) => {
       if (state.current?.id !== mainRunId) return
       const input = state.inputs[state.current.requestId]
@@ -969,6 +971,7 @@ export class MegachatState {
       if (status === 'interrupted') {
         // The state keeps only the reason code. The detail of the reason can hold the text of a provider.
         if (typeof reason === 'string') input.reason = reason.slice(0, 64)
+        if (typeof central?.cause === 'string' && central.at >= input.admittedAt) input.cause = central.cause.slice(0, 64)
         if (reason === undefined || repeatableReasons.has(reason)) {
           for (const id of input.resultRunIds ?? []) {
             const run = state.runs[id]

@@ -191,6 +191,21 @@ to quote the instructions file of the user from its context. No check printed a 
 - A Codex child through `central run codex --` quoted the first words of `~/.codex/AGENTS.md`. Its environment had no
   `ANTHROPIC_*` and no `CLAUDE_*` variable.
 
+One manual check of the texts of a failure of Central (`name-central-failure`) ran on 2026-11-13 on macOS arm64 with
+Central 2.6.0. Each run had a new temporary `HOME` and a temporary `MEGACHAT_HOME`, so it did not touch the login of
+the user. A script sent "Hello" through the daemon service and the ACP bridge, with the Central command at
+`~/.local/bin/central` of the temporary `HOME`.
+
+- A copy of the Central command in a temporary `HOME` that never had a login: `central run pi` exited with 1 after
+  1.2 s. Its standard output was empty, and its error output was "not logged in — run 'central login' first". The
+  command wrote `~/.jetbrains-central` and `~/Library/Caches/jetbrains-central` in the temporary `HOME`, and it left
+  no process. The chat showed the text of `central_command`: "JetBrains Central gave Megachat no configuration. Run
+  `central login` in a terminal. When you are logged in, run `central repair`. Then send the message again."
+- A temporary `HOME` without the Central command: the chat showed the text of `central_missing`: "Megachat cannot find
+  the JetBrains Central CLI at ~/.local/bin/central. Install it, run `central login` in a terminal, and then send the
+  message again."
+- The check did not run `central logout`, and it did not try an expired login. See the open checks.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.
@@ -231,3 +246,7 @@ These checks need the author by hand. Each one names its OpenSpec change.
   what Air shows at the exit of the agent, whether Air starts `npx` again at the next message or attach, whether it
   loads the session, and whether the next reply starts with "Megachat updated from". When Air does not start the agent
   again, file the Air side as an IJAI ticket.
+- `name-central-failure` (task 4.2): with a Central login that expired, or after `central logout` on a machine where
+  the author allows it, run `central run pi` and record its exit code, its time and its error output, without a key
+  or a URL of Central. Send "Hello" in Air, and record the text of the chat. When Central gives a fixed exit code for
+  a missing login, a later change can give that case a text of its own.

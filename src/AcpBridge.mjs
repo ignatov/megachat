@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { agent, methods } from '@agentclientprotocol/sdk/unstable'
 import { megachatVersion } from './MegachatBuild.mjs'
-import { MegachatError, message, requireCondition } from './messages.mjs'
+import { CENTRAL_CAUSES, MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { transcriptPath } from './ChildTranscript.mjs'
 import { NOTE_KIND } from './SessionNotes.mjs'
@@ -324,9 +324,12 @@ class AcpBridgeSession {
       const state = await this.daemon.json('/state')
       await this.enqueue(async () => { await this.conversation(view, false); await this.tasks(state) })
       if (settled.status === 'interrupted') {
-        // A daemon from before the reason field gives no reason. Then the text of a stopped process stays.
+        // A daemon from before the reason field gives no reason. Then the text of a stopped process stays. A failure of
+        // Central gives the text of its cause, with the command for the next step. A daemon from before the cause field
+        // gives no cause, and an unknown cause gets the text of the reason.
         // The notice is a message of its own. It does not continue the partial reply that the chat shows.
-        const text = message(settled.reason === 'model_error' ? 'error.model' : 'error.interrupted')
+        const central = Object.hasOwn(CENTRAL_CAUSES, settled.cause ?? '') ? CENTRAL_CAUSES[settled.cause] : undefined
+        const text = message(central ? `error.central.${central}` : settled.reason === 'model_error' ? 'error.model' : 'error.interrupted')
         await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-notice-${receipt.mainRunId}`, content: { type: 'text', text } })
       }
       return { stopReason: settled.status === 'completed' ? 'end_turn' : 'cancelled' }
