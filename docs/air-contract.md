@@ -249,6 +249,13 @@ It is `failed` when the run stopped, ended or changed its generation before an a
 request, and when the user of this view gave an answer that did not count. A view that attaches after the request
 closed gets no dialog and no update of the request.
 
+When Air answers `cancelled` to a request that is still open, the bridge sends nothing to the daemon, and it sends the
+same `session/request_permission` again, with the same `toolCallId`, to that view. It sends it 2 seconds after the
+answer, and only when no prompt of the view runs. The bridge first reads the last state: when a Stop of the child or an
+answer in another view closed the request, it does not send the request again. After its final `tool_call_update`,
+the bridge never sends the request again. When Air answers `cancelled` again sooner than 2 seconds after the request,
+the bridge doubles the wait for that request, up to 60 seconds.
+
 What Megachat builds on, from the code of Air:
 
 - Air puts the `toolCall` of the request in the chat as a tool call entry, with the approval on it
@@ -256,8 +263,18 @@ What Megachat builds on, from the code of Air:
 - Air closes a dialog that waits for the user when a final `tool_call_update` (`completed` or `failed`) for its
   `toolCallId` arrives. It records the approval as expired with the reason "Tool call finished before user decision",
   and it answers the request with `cancelled` (`AcpSessionRuntimeOwner.kt`, `admitProtocolNotification`;
-  `AcpClientOperations.kt`, `resolvePendingPermissionForTerminalToolUpdate`). The bridge sends nothing for
-  `cancelled`.
+  `AcpClientOperations.kt`, `resolvePendingPermissionForTerminalToolUpdate`). The bridge does not send the request
+  again after this `cancelled`.
+- Air binds a request that arrives during the prompt turn of the view to that turn. When the turn ends, Air expires
+  the request and answers it with `cancelled` ("Prompt turn ended before user decision",
+  `AcpSessionPromptTurnExecutor.kt`, `finishPromptInput`; `AcpSessionRuntimeOwner.kt`, `ExpirePendingPermissions`).
+  A Stop of the user cancels each pending request, also a request of the connection (`cancelPendingPermissions`).
+  But the child still waits. So the bridge sends the request again after the prompt response. Air binds a request that
+  arrives while no prompt runs to the connection, and the end of a later turn does not expire it.
+- Air refuses a request at once with `cancelled` while the end of its turn runs, and it then shows a warning row
+  about the cancelled request (`AcpSessionLiveState.kt`, `acceptsRootConnectionInput`;
+  `AcpPromptInputRefusalNotices.kt`). The wait of 2 seconds lets Air complete the end of the turn first, and the
+  doubled wait keeps a refused request from a loop.
 - The step status of the entry follows the approval first (`ThreadGuiSnapshotMapper.kt`, `toThreadGuiStepStatus`). An
   expired approval shows as cancelled, and a refused approval shows as rejected, whatever the status of the tool call
   is. Only an allowed approval, or an option of an unknown kind, shows the status of the tool call. So the status of

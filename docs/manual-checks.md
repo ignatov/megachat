@@ -250,3 +250,8 @@ These checks need the author by hand. Each one names its OpenSpec change.
   the author allows it, run `central run pi` and record its exit code, its time and its error output, without a key
   or a URL of Central. Send "Hello" in Air, and record the text of the chat. When Central gives a fixed exit code for
   a missing login, a later change can give that case a text of its own.
+- The dialog of a permission request after the end of the prompt (a fix without a change): on a real IDE build with
+  the Air support and a temporary state, give a task to a Claude child that asks for a permission while the main
+  agent still replies. Let the reply end, and do not answer. Verify that the dialog closes and shows again about 2
+  seconds after the end of the reply, with no warning row about a cancelled request, and that the answer `Allow` then
+  reaches the child. Repeat with a Stop of the reply while the dialog shows, for a child of an earlier turn.

@@ -103,6 +103,12 @@ const HEALTH_TIMEOUT_MS = 2000
 const END_DELAY_MS = 100
 /** The interval of the check for the end of another turn, while a prompt waits for it. */
 const IDLE_CHECK_MS = 2000
+/**
+ * The wait before a view shows a permission request again after the answer `cancelled` of Air, and the limit of that
+ * wait. Air ends its turn after the prompt response, and it refuses a new request until the end is complete.
+ */
+export const RESHOW_MS = 2000
+const RESHOW_MAX_MS = 60000
 
 /**
  * Routes ACP views to one daemon conversation. Each view owns its transcript projection. [transcripts] is the directory
@@ -112,12 +118,14 @@ export class AcpBridge {
   /**
    * [daemon] is the client of the daemon of the start of the bridge. The bridge never starts another daemon: when its
    * daemon is gone, it ends the ACP connection, so the next start of the agent goes through the entry again (see the
-   * capability `daemon`). [healthIntervalMs] replaces the interval of the check of `/health`, for a test.
+   * capability `daemon`). [healthIntervalMs] replaces the interval of the check of `/health`, and [reshowMs] replaces
+   * [RESHOW_MS], for a test.
    */
-  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS } = {}) {
+  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS, reshowMs = RESHOW_MS } = {}) {
     this.daemon = daemon
     this.transcripts = transcripts
     this.healthIntervalMs = healthIntervalMs
+    this.reshowMs = reshowMs
     this.views = new Map()
     daemon.onGone = () => this.end('log.daemonGone')
   }
@@ -247,6 +255,9 @@ class AcpBridgeSession {
     this.permissions = new Map()
     // The option that the user selected in this view, by the ID of the request.
     this.answers = new Map()
+    // The requests that Air answered with `cancelled` while they were open, by ID: the wait before the view shows the
+    // request again, its timer, and `due` when the view can show it again.
+    this.reshows = new Map()
     // The stop requests of the main agent that this view showed.
     this.stops = new Set()
     this.serial = Promise.resolve()
@@ -397,6 +408,7 @@ class AcpBridgeSession {
     this.entries.clear()
     this.permissions.clear()
     this.answers.clear()
+    this.clearReshows()
     this.stops.clear()
     this.childTasks.clear()
     this.reply = null
@@ -569,12 +581,17 @@ class AcpBridgeSession {
    * that this view showed is no longer open, the view ends its tool call one time with a final status: `completed`
    * after an answer that counts, else `failed`, for example when the run stopped or ended first. Air then removes the
    * dialog, if it still shows it, for example after an answer in another view or a stop of the child. A cancel of Air
-   * sends nothing.
+   * sends nothing to the daemon, but the view shows the request again while it is open (see [showAgain]).
    */
   async permissionRequests(state) {
     for (const permission of Object.values(state.permissions)) {
-      if (!permissionOpen(state, permission) || this.permissions.has(permission.id)) continue
+      const shown = this.permissions.get(permission.id)
+      const reshow = this.reshows.get(permission.id)
+      if (!permissionOpen(state, permission) || shown === null || (shown !== undefined && !reshow?.due)) continue
+      if (reshow) reshow.due = false
       this.permissions.set(permission.id, permission.runId)
+      const abort = this.abort
+      const shownAt = Date.now()
       // Several children can ask at the same time, so the title names the agent and the task of the run.
       const run = state.runs[permission.runId]
       this.connection.client.request(methods.client.session.requestPermission, {
@@ -586,6 +603,7 @@ class AcpBridgeSession {
           this.answers.set(permission.id, result.outcome.optionId)
           await this.daemon.json('/permission', { id: permission.id, decision: result.outcome.optionId })
         }
+        else if (result.outcome.outcome === 'cancelled' && !abort.signal.aborted) this.showAgain(permission.id, Date.now() - shownAt)
       }).catch(() => {})
     }
     for (const [id, runId] of this.permissions) {
@@ -602,6 +620,42 @@ class AcpBridgeSession {
       const counted = permission?.status === 'answered' && (answer === undefined || answer === permission.decision)
       await this.notify({ sessionUpdate: 'tool_call_update', toolCallId: id, status: counted ? 'completed' : 'failed' })
     }
+  }
+
+  /**
+   * Air answers `cancelled` for each request of the prompt turn of the view at the end of that turn, and for each request
+   * at a Stop of the user. The child still waits for an answer while the request is open. So the view shows the request
+   * again [RESHOW_MS] after the answer, when no prompt of the view runs. The last state then tells if the request is
+   * still open: a stop of the child or an answer in another view closes it, and the view does not show it again. After
+   * the final tool call update of the view, Air answers `cancelled` too, and the view does not show the request again.
+   * Air refuses a request at once while the end of its turn runs. So each later `cancelled` that comes sooner than
+   * [RESHOW_MS] after the request doubles the wait for that request, up to [RESHOW_MAX_MS].
+   */
+  showAgain(id, shownFor) {
+    if (this.closed || this.permissions.get(id) === null) return
+    const base = this.bridge.reshowMs ?? RESHOW_MS
+    const earlier = this.reshows.get(id)
+    clearTimeout(earlier?.timer)
+    const delay = earlier && shownFor < base ? Math.min(earlier.delay * 2, RESHOW_MAX_MS) : base
+    const reshow = { delay, timer: null, due: false }
+    const arm = () => {
+      reshow.timer = setTimeout(() => {
+        if (this.closed || this.reshows.get(id) !== reshow) return
+        // A request that Air shows during a prompt of the view belongs to that prompt, and Air ends it again with it.
+        if (this.promptInFlight) return arm()
+        reshow.due = true
+        // A failed send must not stop the queue of the view. The connection then ends anyway.
+        this.enqueue(() => this.lastState && this.permissionRequests(this.lastState).catch(() => {}))
+      }, delay)
+      reshow.timer.unref?.()
+    }
+    this.reshows.set(id, reshow)
+    arm()
+  }
+
+  clearReshows() {
+    for (const { timer } of this.reshows.values()) clearTimeout(timer)
+    this.reshows.clear()
   }
 
   /**
@@ -672,6 +726,7 @@ class AcpBridgeSession {
   close() {
     this.closed = true
     clearInterval(this.workspaceTimer)
+    this.clearReshows()
     this.abort.abort()
   }
 }

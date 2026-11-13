@@ -114,7 +114,7 @@ Tests: `test/state.test.mjs`
 - **THEN** the request is not open, and the answer `yes` fails with `stale`
 
 ### Requirement: Dialog of an open permission request
-Each view MUST show each open request through `session/request_permission`, also a view that attaches while the request is open. A view MUST show no dialog for a request that is not open.
+Each view MUST show each open request through `session/request_permission`, also a view that attaches while the request is open. A view MUST show no dialog for a request that is not open. When Air answers `cancelled` to a request that is still open, as at the end of the prompt turn and at a Stop of the user, the view MUST show the request again after the prompt response of the view.
 
 Tests: `test/integration.test.mjs`
 
@@ -125,6 +125,14 @@ Tests: `test/integration.test.mjs`
 #### Scenario: Requests that are not open
 - **WHEN** a view gets a state with an answered request, a request of a run with a stop request, and a request of a run with a new generation
 - **THEN** the view shows no dialog for these three requests
+
+#### Scenario: Air cancels an open request at the end of the prompt
+- **WHEN** a child asks for a permission, and Air answers `cancelled` after the prompt response of the view
+- **THEN** the view shows the request again with the same tool call ID, and the answer `yes` of the user then counts
+
+#### Scenario: Air cancels requests during the prompt
+- **WHEN** Air answers `cancelled` for three requests while the prompt of the view runs, and then the row of one run gets a Stop and another view answers the second request
+- **THEN** the view shows only the third request again, and only after the prompt response
 
 ### Requirement: End of the tool call of a closed permission request
 When a request that a view showed is no longer open, that view MUST end the tool call of the request one time with a final `tool_call_update`: `completed` after an answer that counts, and `failed` when the run stopped, ended or changed its generation first, when the state dropped the request, and when the user of that view gave an answer that did not count. So Air removes the dialog of each view that did not answer.
