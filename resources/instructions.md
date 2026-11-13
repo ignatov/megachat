@@ -22,7 +22,7 @@ Never save an entry with the meaning of a topic of Do not remember. The word che
 Only the current text of the section memory counts. An earlier text of that section is no longer valid.
 Do not copy the memory into the prompt of a child. Give a child only the facts that its task needs.
 Use agents_list to see the directories where a child can work, each with its origin: ide, known or megachat.
-Start a task for a repository in the directory of that repository, so that the rules, the settings and the skills of the repository apply to the child. Do not start it in another directory with absolute paths. A Claude child refuses a project whose .claude/settings.json sets ANTHROPIC_BASE_URL. Tell the user the file from the failure, or offer Codex.
+Start a task for a repository in the directory of that repository, so that the rules, the settings and the skills of the repository apply to the child. Do not start it in another directory with absolute paths. A Claude child refuses a settings file that sets ANTHROPIC_BASE_URL to another address than Central. Tell the user the file from the failure, or offer Codex.
 When the user names a repository that is not in the list, add it with agents_projects(action="add"), then start the task there. Add a directory only when the user names it.
 When the user asks for a new project without a location, make it with agents_projects(action="create", name), then start the task there.
 Start a task without a project in the Megachat workspace, the directory with the origin megachat. Do not use a scratch directory of an IDE for it.

@@ -372,14 +372,32 @@ the next start of a task, and it stops no task that runs. With `1`, one task run
 The limit of one pi child keeps the state readable for Megachat 0.3.0: its daemon continues a dispatched pi run after a
 restart only when no other child is active.
 
-A Claude child works as Claude Code works in its project. It loads the project settings: `CLAUDE.md` with its imports,
-`.claude/settings.json` with its permissions, hooks and `env`, the MCP servers of `.mcp.json`, and the skills of
-`.claude/skills`. So a project hook runs in the child without a question, with the environment of the child. The child
-does not load `.claude/settings.local.json` or your files in `~/.claude`: not your `CLAUDE.md`, your settings, your
-skills or your plugins. When the `env` of `.claude/settings.json` sets `ANTHROPIC_BASE_URL`, Megachat does not start the
-Claude child, because the child would send the key of Megachat to that address. The failure names the file. Claude Code
-does not read `AGENTS.md`. When the project has an `AGENTS.md` and no `CLAUDE.md`, the daemon adds `AGENTS.md` to the
-prompt of the child, at most 32 KB. A Codex child reads `AGENTS.md` by itself.
+A Claude child works as Claude Code works when you start it in a terminal in its project. It loads each settings
+source of Claude Code: your files in `~/.claude` (your `CLAUDE.md`, `settings.json` with its hooks, permissions and
+`env`, your plugins, skills and agents, and the MCP servers of `~/.claude.json`), the project files (`CLAUDE.md` with its
+imports, `.claude/settings.json`, `.mcp.json` and `.claude/skills`), and `.claude/settings.local.json`. So a hook runs
+in the child without a question, with the environment of the child. When the `env` of one of these settings files sets
+`ANTHROPIC_BASE_URL` to another address than the Central address of the child, Megachat does not start the Claude child,
+because the child would send the key of Megachat to that address. The failure names the file. The Central entry that
+`central add claude-code` writes has the same address, so it passes. Claude Code does not read `AGENTS.md`. When the
+project has an `AGENTS.md` and no `CLAUDE.md`, the daemon adds `AGENTS.md` to the prompt of the child, at most 32 KB.
+
+A Codex child works as `central run codex` in a terminal in its project. Codex reads its own configuration: `config.toml`,
+the profiles, the MCP servers and `AGENTS.md` of `~/.codex` (or of `CODEX_HOME`), and the `AGENTS.md` files of the
+project. It reads no file and no variable of Claude Code.
+
+Each child gets the environment of the daemon, which is the environment that the IDE gives Megachat, with these changes:
+
+- No child gets a `MEGACHAT_*` variable. The daemon has `MEGACHAT_HOME` of your conversation, and a test of Megachat in
+  a child must not reach it.
+- A Claude child gets the key and the base URL of Central in `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`. It gets no
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or
+  `CLAUDE_CODE_USE_FOUNDRY`, because these send Claude Code past Central. It gets no `CLAUDECODE`,
+  `CLAUDE_CODE_ENTRYPOINT` or `CLAUDE_CODE_SSE_PORT`, because these mark a Claude Code session that started the daemon.
+  `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` is `false`, because nobody reads a suggestion of a child, and
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` is `1`, because a run ends with its prompt.
+- A Codex child and the Codex history get no `ANTHROPIC_*`, `CLAUDE_*` or `CLAUDECODE` variable. Central gives the route
+  of Codex.
 
 The adapter of Claude Code takes the permission mode of a Claude child from `permissions.defaultMode` of each settings
 file, also of `~/.claude/settings.json`. With `children.permissionMode` `inherit`, Megachat keeps that: when your

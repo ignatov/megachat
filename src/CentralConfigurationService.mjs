@@ -77,6 +77,16 @@ export const CLAUDE_ACP_VARIABLE = 'MEGACHAT_CLAUDE_ACP'
 export const CODEX_ACP_VARIABLE = 'MEGACHAT_CODEX_ACP'
 
 /**
+ * The variables of the daemon that a Claude child does not get. The key and the base URL of Central replace the first
+ * three. The next four send Claude Code past the route of Central. The last three mark the Claude Code session that
+ * started the daemon, not the terminal of the user.
+ */
+export const CLAUDE_DROPPED_VARIABLES = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT']
+/** A variable of Claude Code. A Codex child gets none, because Codex reads only its own configuration. */
+const claudeVariable = name => name.startsWith('ANTHROPIC_') || name.startsWith('CLAUDE_') || name === 'CLAUDECODE'
+
+/**
  * Reads an agent command: a JSON array `[command, ...args]`, a JSON object `{ command, args, env, cwd }`, or one executable
  * path. An unset or blank value gives `undefined`, so the caller uses the agent that npm installed with Megachat.
  */
@@ -263,28 +273,37 @@ export class CentralConfigurationService {
   }
 
   /**
-   * The child uses Claude Code at `~/.local/bin/claude` when that file is there. Else no `CLAUDE_CODE_EXECUTABLE` is
-   * set, and the Claude agent starts the `claude` binary of its SDK.
+   * The environment of a Claude child: the environment of the daemon, as a terminal of the user gives it, without
+   * `CLAUDE_DROPPED_VARIABLES`, and with the key and the base URL of Central. The child uses Claude Code at
+   * `~/.local/bin/claude` when that file is there. Else no `CLAUDE_CODE_EXECUTABLE` is set, and the Claude agent starts
+   * the `claude` binary of its SDK. Two variables stay for a child without a person at the terminal: no prompt
+   * suggestion, because nobody reads it, and no background task, because a run ends with its prompt.
    */
   async childEnvironment() {
     const { baseUrl, apiKey } = await this.claudeConfiguration()
     const executable = await executableFile(this.claude) ? { CLAUDE_CODE_EXECUTABLE: this.claude } : {}
     return {
-      ...this.baseEnvironment(), ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_API_KEY: apiKey, ...executable,
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false',
-      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+      ...this.baseEnvironment(name => CLAUDE_DROPPED_VARIABLES.includes(name)), ANTHROPIC_BASE_URL: baseUrl,
+      ANTHROPIC_API_KEY: apiKey, ...executable, CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: 'false', CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
     }
   }
 
+  /** The environment of a Codex child and of the Codex history: no variable of Claude Code. */
+  codexEnvironment() {
+    return this.baseEnvironment(claudeVariable)
+  }
+
   /**
-   * The node that runs Megachat comes first on `PATH`, so the `#!/usr/bin/env node` scripts of the agents find it. The
-   * directory of the Central command comes next, because Central and a key helper of Central call `central` by its
-   * bare name.
+   * The environment of the daemon for a child, without each variable that [dropped] names and without each `MEGACHAT_*`
+   * variable. A variable of Megachat belongs to the daemon: with `MEGACHAT_HOME`, a test of Megachat in a child would
+   * reach the state of the user. The node that runs Megachat comes first on `PATH`, so the `#!/usr/bin/env node` scripts
+   * of the agents find it. The directory of the Central command comes next, because Central and a key helper of Central
+   * call `central` by its bare name.
    */
-  baseEnvironment() {
+  baseEnvironment(dropped = () => false) {
     const environment = this.environment
-    const variables = Object.fromEntries(['HOME', 'TMPDIR', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SSH_AUTH_SOCK', 'CODEX_HOME']
-      .filter(name => environment[name] !== undefined).map(name => [name, environment[name]]))
+    const variables = Object.fromEntries(Object.entries(environment)
+      .filter(([name, value]) => value !== undefined && !name.startsWith('MEGACHAT_') && !dropped(name)))
     return { ...variables, PATH: [dirname(process.execPath), this.centralPath(environment.PATH)].join(delimiter) }
   }
 
@@ -293,7 +312,7 @@ export class CentralConfigurationService {
    * `MEGACHAT_CODEX_ARGS` makes `bin/codex` start the Codex of the user or of the Codex agent directly, not the Codex ACP.
    */
   codexAppServerLaunch() {
-    const env = this.baseEnvironment()
+    const env = this.codexEnvironment()
     return { command: this.central, args: ['run', 'codex', '--', 'app-server', '--listen', 'stdio://'],
       env: { ...env, MEGACHAT_CODEX_ARGS: '[]', PATH: `${BIN}${delimiter}${env.PATH}` } }
   }
@@ -313,7 +332,7 @@ export class CentralConfigurationService {
         model: modelRef(DEFAULT_CLAUDE_MODEL).modelId, env: { ...claude.env, ...await this.childEnvironment() } }
     }
     requireCondition(agent === 'codex')
-    const env = this.baseEnvironment()
+    const env = this.codexEnvironment()
     const codex = this.environment[CODEX_ACP_VARIABLE]
     if (codex !== undefined) agentCommand(codex)
     return { command: this.central, args: ['run', 'codex', '--'],

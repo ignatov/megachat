@@ -17,23 +17,28 @@ import { answerText, ERROR_OUTPUT_KEPT, ERROR_OUTPUT_LOGGED, errorOutputText, pl
   redactSecrets, textEnd, textStart } from './SessionText.mjs'
 import { childDeadlineMs, CLAUDE_PERMISSION_MODES, modelRef } from './Settings.mjs'
 
+/** The setting sources of a Claude child: each source that Claude Code reads in a terminal. */
+export const CLAUDE_SETTING_SOURCES = ['user', 'project', 'local']
+
 /**
- * Refuses a Claude child in [cwd] when its project settings set `ANTHROPIC_BASE_URL` in `env`. Claude Code applies the
- * `env` of the project settings after the environment of the child, so the requests of the child, with the key of
- * Megachat, would go to the gateway of the project. `resolveSettings` of the SDK reads the files as Claude Code does:
- * only `.claude/settings.json` of [cwd], and no file that is not valid. This is a guard against an accident, not against
- * a hostile project: a project hook runs in the environment of the child and can read the key. The message names the
- * file and the variable, and never the value. When the read fails, the run goes on, and the log
- * of the daemon tells that the guard did not run. The log line has no content of the settings.
+ * Refuses a Claude child in [cwd] when a settings file sets `ANTHROPIC_BASE_URL` in `env` to another value than
+ * [baseUrl], the base URL of Central that Megachat gives the child. Claude Code applies the `env` of each settings file
+ * after the environment of the child, so the requests of the child, with the key of Megachat, would go to that address.
+ * The Central entry that `central add claude-code` writes in `~/.claude/settings.json` has the same base URL, so it
+ * passes. `resolveSettings` of the SDK reads the files of `CLAUDE_SETTING_SOURCES` as Claude Code does, and no file that
+ * is not valid. This is a guard against an accident, not against a hostile project: a project hook runs in the
+ * environment of the child and can read the key. The message names the file and the variable, and never the value.
+ * When the read fails, the run goes on, and the log of the daemon tells that the guard did not run. The log line has
+ * no content of the settings.
  */
-async function refuseProjectBaseUrl(cwd, resolveSettings) {
-  const resolved = await resolveSettings({ cwd, settingSources: ['project'] }).catch(error => {
-    logFailure('log.projectSettings', error)
+async function refuseSettingsBaseUrl(cwd, baseUrl, resolveSettings) {
+  const resolved = await resolveSettings({ cwd, settingSources: CLAUDE_SETTING_SOURCES }).catch(error => {
+    logFailure('log.claudeSettings', error)
     return undefined
   })
-  const source = resolved?.sources.find(entry => entry.source === 'project'
-    && Object.hasOwn(entry.settings?.env ?? {}, 'ANTHROPIC_BASE_URL'))
-  if (source) throw new MegachatError('projectBaseUrl', source.path ?? join(cwd, '.claude', 'settings.json'))
+  const source = resolved?.sources.find(entry => Object.hasOwn(entry.settings?.env ?? {}, 'ANTHROPIC_BASE_URL')
+    && entry.settings.env.ANTHROPIC_BASE_URL !== baseUrl)
+  if (source) throw new MegachatError('settingsBaseUrl', source.path ?? join(cwd, '.claude', 'settings.json'))
 }
 
 /**
@@ -138,7 +143,7 @@ export function steerBlock(items) {
  * [pool] holds the places for the children, and this service shares it with the pi run service. A pi run is not for
  * this service. Each run has its own agent process, deadline, permission requests and messages of the user.
  * [settings] gives the effective settings for the directory of the run at the time of each dispatch, with the project
- * values of that directory. [resolveSettings] reads the project settings of Claude Code. A test replaces it.
+ * values of that directory. [resolveSettings] reads the settings files of Claude Code. A test replaces it.
  */
 export class AcpRunService {
   constructor(state, configuration, {
@@ -247,7 +252,6 @@ export class AcpRunService {
       if (!await this.state.transition(run.id, ['admitted'], { status: 'launching', generation, startedAt: Date.now() })) return
       work.transcript = this.transcripts?.begin(run)
       const agent = run.agent ?? 'claude'
-      if (agent === 'claude') await refuseProjectBaseUrl(run.cwd, this.resolveSettings)
       // The settings of the dispatch in the directory of the run. A change during the run applies to the next child.
       const values = this.settings(run.cwd)
       deadlineMs = this.launch.deadlineMs ?? childDeadlineMs(values)
@@ -258,6 +262,7 @@ export class AcpRunService {
       const model = modelKey && (values[modelKey] ?? 'inherit') !== 'inherit' ? values[modelKey] : undefined
       const configured = await this.configuration.childLaunch(agent)
       const launch = { ...configured, ...Object.fromEntries(Object.entries(this.launch).filter(([, value]) => value !== undefined)) }
+      if (agent === 'claude') await refuseSettingsBaseUrl(run.cwd, launch.env?.ANTHROPIC_BASE_URL, this.resolveSettings)
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
       child = spawn(process.execPath, [fileURLToPath(new URL('./child-supervisor.mjs', import.meta.url)),
         launch.command ?? process.execPath, ...launch.args], {
@@ -335,13 +340,14 @@ export class AcpRunService {
       const steering = initialized._meta?.steering?.supported === true
       const params = {
         cwd: run.cwd, mcpServers: this.historyServer ? [this.historyServer] : [],
-        // A Claude child loads the project settings, as Claude Code does in the project: `CLAUDE.md` with its imports,
-        // the permissions, the hooks, the MCP servers and the skills. It loads no local settings and no file of the user.
-        // The options hold no session settings: the SDK puts them in the command line of Claude, and the base URL of
-        // Central holds the key. `refuseProjectBaseUrl` guards the base URL. `allowDangerouslySkipPermissions: false`
+        // A Claude child loads each settings source, as Claude Code does in a terminal in the directory of the run: the
+        // files of the user, of the project and the local files, with `CLAUDE.md` and its imports, the permissions, the
+        // hooks, the `env`, the plugins, the skills, the agents and the MCP servers. The options hold no session settings:
+        // the SDK puts them in the command line of Claude, and the base URL of Central holds the key.
+        // `refuseSettingsBaseUrl` guards the base URL. `allowDangerouslySkipPermissions: false`
         // removes the mode `bypassPermissions` from the modes of the session and from the options of the approval of a plan.
         // The options hold no `maxTurns`, so the SDK gives no turn limit. The time limit `children.timeoutMinutes` stops a run.
-        ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: model ? modelRef(model).modelId : launch.model, settingSources: ['project'],
+        ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: model ? modelRef(model).modelId : launch.model, settingSources: [...CLAUDE_SETTING_SOURCES],
           promptSuggestions: false, allowDangerouslySkipPermissions: false } } } } : {}),
       }
       let sessionId

@@ -180,6 +180,17 @@ not end in the time limit of 10 seconds of that build, because it started the pr
 Central. Later runs of the key helper took 1 to 2 seconds, also with the proxy stopped first. So the time limit is now
 60 seconds, and `install` writes no log line.
 
+One manual check of the settings of the children (`children-read-agent-settings`) ran on 2026-11-13 on macOS arm64
+with `@anthropic-ai/claude-agent-sdk` 0.3.321, without a daemon and with a temporary `MEGACHAT_HOME`. A script started
+each agent with `CentralConfigurationService.childLaunch()` in an empty temporary directory and asked it, with no tool,
+to quote the instructions file of the user from its context. No check printed a key or a base URL.
+
+- A Claude child with `settingSources: ["user", "project", "local"]` quoted the first line of `~/.claude/CLAUDE.md`.
+  With `["project"]`, the same prompt gave `NONE`. The guard read the source `user`, whose `ANTHROPIC_BASE_URL` is the
+  Central entry, and it did not refuse the child.
+- A Codex child through `central run codex --` quoted the first words of `~/.codex/AGENTS.md`. Its environment had no
+  `ANTHROPIC_*` and no `CLAUDE_*` variable.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.

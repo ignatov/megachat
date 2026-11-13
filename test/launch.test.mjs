@@ -267,10 +267,30 @@ test('the environment of a Claude child has the Central configuration and no bac
   // An executable Claude Code of the user goes to the agent in CLAUDE_CODE_EXECUTABLE.
   const claude = join(directory, 'claude')
   await writeFile(claude, '#!/bin/sh\n', { mode: 0o755 })
-  const configuration = new CentralConfigurationService({ settings, central, claude, environment: { PATH: '/usr/bin', HOME: directory, SECRET: 'x' } })
+  // The environment of the daemon, as a terminal of the user gives it, with variables of Megachat, of another route
+  // of Claude Code, of the Claude Code session that started the daemon, and of Codex.
+  const daemon = { PATH: '/usr/bin', HOME: directory, HTTPS_PROXY: 'http://proxy.test:3128', NODE_EXTRA_CA_CERTS: '/ca.pem',
+    MEGACHAT_HOME: '/state', MEGACHAT_ACP_CONFIG: '/acp.json', ANTHROPIC_AUTH_TOKEN: 'user-token', ANTHROPIC_API_KEY: 'user-key',
+    ANTHROPIC_BASE_URL: 'https://gateway.test', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli',
+    ANTHROPIC_MODEL: 'user-model', CLAUDE_CONFIG_DIR: join(directory, 'claude-config'), CODEX_HOME: '/codex', OPENAI_API_KEY: 'openai' }
+  const configuration = new CentralConfigurationService({ settings, central, claude, environment: daemon })
   const environment = await configuration.childEnvironment()
   assert.equal(environment.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, '1')
   assert.equal(environment.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION, 'false')
+  // A child is like Claude Code in a terminal: no variable that turns off the traffic that a terminal session sends.
+  assert.equal('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC' in environment, false)
+  // Each variable of the user goes to the child, also a configuration of Claude Code, a proxy and a variable of Codex.
+  for (const name of ['HOME', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS', 'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'OPENAI_API_KEY'])
+    assert.equal(environment[name], daemon[name], name)
+  // No variable of Megachat, no other route or key of Claude Code, and no mark of the session that started the daemon.
+  for (const name of ['MEGACHAT_HOME', 'MEGACHAT_ACP_CONFIG', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT'])
+    assert.equal(name in environment, false, name)
+  // A Codex child and the Codex history get the same variables of the user, and no variable of Claude Code.
+  const codex = [(await configuration.childLaunch('codex')).env, configuration.codexAppServerLaunch().env]
+  for (const env of codex) {
+    for (const name of ['HOME', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS', 'CODEX_HOME', 'OPENAI_API_KEY']) assert.equal(env[name], daemon[name], name)
+    assert.deepEqual(Object.keys(env).filter(name => /^(ANTHROPIC_|CLAUDE)/.test(name) || (name.startsWith('MEGACHAT_') && name !== 'MEGACHAT_CODEX_ARGS')), [])
+  }
   assert.equal(environment.ANTHROPIC_API_KEY, 'test-key')
   assert.equal(environment.ANTHROPIC_BASE_URL, 'http://127.0.0.1:9/wire/test')
   assert.equal(environment.CLAUDE_CODE_EXECUTABLE, claude)
@@ -278,8 +298,6 @@ test('the environment of a Claude child has the Central configuration and no bac
   // Without Claude Code of the user, no CLAUDE_CODE_EXECUTABLE: the Claude agent starts the claude binary of its SDK.
   const bundled = new CentralConfigurationService({ settings, central, claude: join(directory, 'missing'), environment: { PATH: '/usr/bin', HOME: directory } })
   assert.equal('CLAUDE_CODE_EXECUTABLE' in await bundled.childEnvironment(), false)
-  // A variable that is not in the list of the base environment does not reach the child.
-  assert.equal(environment.SECRET, undefined)
 })
 
 test('a Claude child takes the Central entry of Claude Code first, else the configuration of the main agent, and fails without both', async t => {

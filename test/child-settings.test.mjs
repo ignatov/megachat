@@ -119,7 +119,7 @@ test('a turn of a child result or of the sessions summary cannot change a settin
   assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')).values, {})
 })
 
-test('a Claude child loads the project settings, and its options hold no key, no base URL and no turn limit', { timeout: 20000 }, async t => {
+test('a Claude child loads the settings of the user, of the project and the local settings, and its options hold no key, no base URL and no turn limit', { timeout: 20000 }, async t => {
   const env = { ...process.env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test-key', ANTHROPIC_API_KEY: 'test-key' }
   const { cwd, turn } = await fixture(t, undefined, { childLaunch: async () => ({ env }) })
   // A project env without ANTHROPIC_BASE_URL does not move the key of Megachat, so the run starts.
@@ -128,7 +128,7 @@ test('a Claude child loads the project settings, and its options hold no key, no
   const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
   assert.equal(Object.values(state.runs)[0].status, 'completed')
   const options = JSON.parse(await readFile(join(cwd, 'claude-options.json'), 'utf8'))
-  assert.deepEqual(options.settingSources, ['project'])
+  assert.deepEqual(options.settingSources, ['user', 'project', 'local'])
   // A turn limit cut long runs at 30 turns. The time limit `children.timeoutMinutes` is the only limit of a run.
   assert.equal(options.maxTurns, undefined)
   // The SDK puts session settings in the command line of Claude, and the base URL of Central holds the key. So the
@@ -167,7 +167,7 @@ test('the adapter of Claude Code starts a session of a user mode bypassPermissio
   assert.ok(errors.length > 0)
 })
 
-test('a project ANTHROPIC_BASE_URL refuses a Claude child before the start of the agent, and the message has no value', { timeout: 20000 }, async t => {
+test('a project ANTHROPIC_BASE_URL refuses a Claude child before the start of the agent process, and the message has no value', { timeout: 20000 }, async t => {
   const { cwd, launched, turn } = await fixture(t)
   await mkdir(join(cwd, '.claude'))
   const settings = join(cwd, '.claude', 'settings.json')
@@ -176,15 +176,43 @@ test('a project ANTHROPIC_BASE_URL refuses a Claude child before the start of th
   const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
   const [run] = Object.values(state.runs)
   assert.equal(run.status, 'interrupted')
-  assert.equal(run.error, message('error.projectBaseUrl', settings))
+  assert.equal(run.error, message('error.settingsBaseUrl', settings))
   assert.doesNotMatch(run.error, /127\.0\.0\.1/)
-  // No adapter started: the run service asked for no launch, and the fake agent wrote no file.
-  assert.deepEqual(launched, [])
+  // The guard compares the address with the environment of the launch, so the launch is ready, but no adapter started:
+  // the run has no process, and the fake agent wrote no file.
+  assert.deepEqual(launched, ['claude'])
+  assert.equal(run.pid ?? null, null)
   await assert.rejects(readFile(join(cwd, 'session-request.json'), 'utf8'), { code: 'ENOENT' })
   // Claude Code ignores a settings file that is not valid, so the check does too.
   await writeFile(settings, '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9/wire/project"},}')
   const next = await turn('second', call('agents_spawn', { cwd, prompt: 'second task' }), fauxAssistantMessage('Started.'))
   assert.deepEqual(Object.values(next.runs).map(item => item.status), ['interrupted', 'completed'])
+})
+
+test('a base URL of the user or of the local settings refuses a Claude child only when it is not the Central address of the child', { timeout: 20000 }, async t => {
+  const address = 'http://127.0.0.1:9/wire/central'
+  const env = { ...process.env, ANTHROPIC_BASE_URL: address, ANTHROPIC_API_KEY: 'test-key' }
+  const { cwd, turn } = await fixture(t, undefined, { childLaunch: async () => ({ env }) })
+  t.mock.method(process.stderr, 'write', () => true)
+  // `test/state-guard.mjs` gives each test file an empty configuration directory of Claude Code.
+  const user = join(process.env.CLAUDE_CONFIG_DIR, 'settings.json')
+  t.after(() => rm(user, { force: true }))
+  // The Central entry of `central add claude-code` has the address of the child, so the run starts.
+  await writeFile(user, JSON.stringify({ apiKeyHelper: 'echo test-key', env: { ANTHROPIC_BASE_URL: address } }))
+  let state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(Object.values(state.runs).map(run => run.status), ['completed'])
+  // Another address in the settings of the user refuses the run, and the message names the file of the user.
+  await writeFile(user, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://gateway.test' } }))
+  state = await turn('second', call('agents_spawn', { cwd, prompt: 'second task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[1].error, message('error.settingsBaseUrl', user))
+  // The local settings of the project count too.
+  await rm(user)
+  await mkdir(join(cwd, '.claude'))
+  const local = join(cwd, '.claude', 'settings.local.json')
+  await writeFile(local, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://gateway.test' } }))
+  state = await turn('third', call('agents_spawn', { cwd, prompt: 'third task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(Object.values(state.runs).map(run => run.status), ['completed', 'interrupted', 'interrupted'])
+  assert.equal(Object.values(state.runs)[2].error, message('error.settingsBaseUrl', local))
 })
 
 test('a Claude child gets AGENTS.md in its prompt only when the directory has no CLAUDE.md', { timeout: 20000 }, async t => {
@@ -286,14 +314,14 @@ test('an agent that ends in the mode request interrupts the run, and the run get
   assert.equal(run.autoResume, true)
 })
 
-test('a failed read of the project settings goes to the log without its message, and the Claude child starts', { timeout: 20000 }, async t => {
+test('a failed read of the settings of Claude Code goes to the log without its message, and the Claude child starts', { timeout: 20000 }, async t => {
   const lines = []
   const resolveSettings = async () => { throw new SyntaxError('Unexpected token in {"env":{"ANTHROPIC_BASE_URL":"http://secret"}}') }
   const { cwd, turn } = await fixture(t, undefined, undefined, { resolveSettings })
   t.mock.method(process.stderr, 'write', chunk => { lines.push(String(chunk)); return true })
   const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
   assert.equal(Object.values(state.runs)[0].status, 'completed')
-  const logged = lines.filter(line => line.includes(message('log.projectSettings')))
+  const logged = lines.filter(line => line.includes(message('log.claudeSettings')))
   assert.equal(logged.length, 1)
   assert.match(logged[0], /name=SyntaxError/)
   assert.doesNotMatch(lines.join(''), /secret|ANTHROPIC_BASE_URL":/)

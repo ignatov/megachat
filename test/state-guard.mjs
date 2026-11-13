@@ -20,6 +20,13 @@ if (!process.env[ACP_CONFIG_VARIABLE]) {
   process.env[ACP_CONFIG_VARIABLE] = join(directory, 'acp.json')
   process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
 }
+// A Claude child reads the settings of the user, and the guard of the base URL reads them in the daemon. An empty
+// configuration directory of Claude Code keeps the settings of the user out of each test.
+{
+  const directory = mkdtempSync(join(tmpdir(), 'megachat-claude-guard-'))
+  process.env.CLAUDE_CONFIG_DIR = directory
+  process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
+}
 // The check of a new release and the request of the release notes must not reach GitHub. A path that does not exist
 // makes `git ls-remote` fail at once, and the port 9 of the local host gives no answer.
 process.env.MEGACHAT_RELEASE_REPOSITORY ||= join(tmpdir(), 'megachat-no-release-repository')
