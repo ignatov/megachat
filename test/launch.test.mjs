@@ -10,7 +10,7 @@ import { inspect } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
-import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE } from '../src/CentralConfigurationService.mjs'
+import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE, KEY_HELPER_TIMEOUT_MS } from '../src/CentralConfigurationService.mjs'
 import { daemonBuild, megachatVersion, needsReplacement } from '../src/MegachatBuild.mjs'
 import { message } from '../src/messages.mjs'
 import { redactSecrets } from '../src/SessionText.mjs'
@@ -323,6 +323,49 @@ test('a Claude child takes the Central entry of Claude Code first, else the conf
   log.length = 0
   await assert.rejects(configuration.childEnvironment(), { code: 'central' })
   assert.ok(!log.join('').includes('sk-secret-value'), log.join(''))
+})
+
+test('a key helper that fails or does not end in its time limit gives the pi route with a log line of its own', async t => {
+  assert.equal(KEY_HELPER_TIMEOUT_MS, 60000)
+  assert.equal(new CentralConfigurationService().keyHelperTimeout, 60000)
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-key-helper-'))
+  const settings = join(directory, 'settings.json')
+  const central = join(directory, 'central')
+  await writeFile(central, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ anthropic: { apiKey: 'pi-key', baseUrl: 'http://127.0.0.1:9/wire/pi/' } })}'\n`, { mode: 0o755 })
+  // A short limit of the test stands for the 60 seconds, so the test does not wait.
+  const configuration = new CentralConfigurationService({ settings, central, claude: join(directory, 'missing'), keyHelperTimeout: 200,
+    environment: { PATH: '/usr/bin', HOME: directory } })
+  const log = []
+  t.mock.method(process.stderr, 'write', text => { log.push(String(text)); return true })
+  const entry = helper => writeFile(settings, JSON.stringify({ apiKeyHelper: helper, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test' } }))
+  const helperLine = 'The key helper of the Central entry of Claude Code failed or did not end in 0.2 seconds, so a Claude child uses the Central configuration of the main agent:'
+
+  // A key helper that does not end in the time limit.
+  await entry('exec sleep 5')
+  const started = Date.now()
+  let result = await configuration.claudeConfiguration()
+  assert.ok(Date.now() - started < 4000)
+  assert.deepEqual([result.source, result.fallback, result.apiKey], ['pi', 'helper', 'pi-key'])
+  assert.equal(log.filter(line => line.includes(helperLine) && line.includes('signal=SIGTERM')).length, 1, log.join(''))
+  assert.equal(log.filter(line => line.includes('give no Central entry')).length, 0, log.join(''))
+
+  // A key helper that fails, and a key helper that gives no key.
+  for (const helper of ['exit 3', 'true']) {
+    await entry(helper)
+    log.length = 0
+    result = await configuration.claudeConfiguration()
+    assert.deepEqual([result.source, result.fallback], ['pi', 'helper'], helper)
+    assert.equal(log.filter(line => line.includes(helperLine)).length, 1, log.join(''))
+  }
+
+  // No Central entry: no settings, or a key helper without a base URL.
+  await rm(settings)
+  log.length = 0
+  result = await configuration.claudeConfiguration()
+  assert.deepEqual([result.source, result.fallback], ['pi', 'entry'])
+  assert.equal(log.filter(line => line.includes('The settings of Claude Code give no Central entry')).length, 1, log.join(''))
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo test-key' }))
+  assert.equal((await configuration.claudeConfiguration()).fallback, 'entry')
 })
 
 test('the key helper of Central and each child find a bare central in the directory of the Central command', async t => {

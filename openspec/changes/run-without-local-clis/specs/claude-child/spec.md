@@ -21,6 +21,23 @@ Tests: `test/launch.test.mjs`
 - **WHEN** the settings file of the test does not exist, and the Central command of the test exits with the code 7
 - **THEN** the launch of a Claude child fails with the code `central`, and no log line holds the output of the command
 
+### Requirement: Time limit and failure of the key helper of Claude Code
+Megachat MUST give the key helper of the Central entry of Claude Code a time limit of 60 seconds. When the settings give no valid Central entry, the log line of the fallback MUST start with "The settings of Claude Code give no Central entry". When the entry is there, but its key helper fails, does not end in the time limit or gives no key, the log line MUST start with "The key helper of the Central entry of Claude Code failed".
+
+Tests: `test/launch.test.mjs`
+
+#### Scenario: A key helper that does not end in the time limit
+- **WHEN** the settings file of the test holds the key helper `exec sleep 5` with a valid base URL, and the time limit of the test is 0.2 seconds
+- **THEN** a Claude child gets the key `pi-key` of `central run pi` in less than 4 seconds, and the log has one line that starts with "The key helper of the Central entry of Claude Code failed or did not end in 0.2 seconds" and has `signal=SIGTERM`
+
+#### Scenario: A key helper that fails
+- **WHEN** the key helper of the settings file of the test is `exit 3`, or `true`, which gives no key
+- **THEN** a Claude child gets the key of `central run pi`, and the log line names the key helper, not a missing entry
+
+#### Scenario: An entry without a base URL
+- **WHEN** the settings file of the test holds the key helper `echo test-key` and no `env.ANTHROPIC_BASE_URL`
+- **THEN** a Claude child gets the key of `central run pi`, and the reason of the fallback is a missing entry
+
 ### Requirement: PATH of the key helper of Claude Code
 Megachat MUST run the key helper of the settings of Claude Code, and `central run pi`, with the directory of the Central command first on the `PATH`. The key helper that `central add claude-code` writes is `central proxy start --ensure-updated --caller agent --return-key`. It calls `central` by its bare name, and the installer of Central does not put `~/.local/bin` on the `PATH`.
 

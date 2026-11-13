@@ -17,6 +17,15 @@ const execute = promisify(execFile)
 /** The directory of the `codex` shim. Central starts `codex` of the `PATH`, so this directory comes first there. */
 const BIN = fileURLToPath(new URL('../bin/', import.meta.url))
 
+/**
+ * The time limit of the key helper of the Central entry of Claude Code, in milliseconds. That helper,
+ * `central proxy start --ensure-updated --caller agent --return-key`, starts the proxy of Central and checks for an
+ * update of Central. On a clean Mac, its first run after `central login` and `central add claude-code` took more than
+ * 10 seconds, and later runs took 1 to 2 seconds. A shorter limit stops that first run, and a Claude child then gets
+ * the key of the pi route.
+ */
+export const KEY_HELPER_TIMEOUT_MS = 60000
+
 /** Whether the path is a file that the user can run. */
 export async function executableFile(path) {
   try {
@@ -130,11 +139,15 @@ const withoutFallbacks = model => {
 
 export class CentralConfigurationService {
   constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'),
-    settings = join(homedir(), '.claude/settings.json'), environment = process.env } = {}) {
+    settings = join(homedir(), '.claude/settings.json'), environment = process.env, keyHelperTimeout = KEY_HELPER_TIMEOUT_MS,
+    log = logFailure } = {}) {
     this.central = central
     this.claude = claude
     this.settings = settings
     this.environment = environment
+    this.keyHelperTimeout = keyHelperTimeout
+    /** Writes one line about a failure of Central. `install` gives a function that writes nothing: it prints its own line. */
+    this.log = log
     /**
      * The exact key and base URL of each Central configuration that this service read. The secret filter of the
      * transcripts and of the session index removes them. They stay in the memory only.
@@ -165,14 +178,19 @@ export class CentralConfigurationService {
     catch (error) {
       if (signal?.aborted) throw signal.reason
       // The error of the command holds its output, and that can hold the key. The log gets no message of an error.
-      logFailure('log.central.main', error)
+      this.log('log.central.main', error)
       throw new MegachatError('central')
     }
   }
 
   validate(configuration) {
     requireCondition(configuration && typeof configuration.apiKey === 'string' && configuration.apiKey.trim().length > 0, 'central')
-    const url = new URL(configuration.baseUrl)
+    this.validateBaseUrl(configuration.baseUrl)
+  }
+
+  /** A base URL of Central is an address of the local proxy, with a path under `/wire/`. */
+  validateBaseUrl(baseUrl) {
+    const url = new URL(baseUrl)
     requireCondition(url.protocol === 'http:' && url.hostname === '127.0.0.1' && !url.search && !url.hash, 'central')
     requireCondition(url.pathname.startsWith('/wire/'), 'central')
   }
@@ -209,29 +227,37 @@ export class CentralConfigurationService {
 
   /**
    * The key and the base URL of a Claude child, and their source. The source `settings` is the Central entry of the
-   * settings of Claude Code, which `central add claude-code` writes. Without a valid entry, the source is `pi`: the
-   * configuration of the main agent from `central run pi`, on the route of pi in Central. The log gets one line for
-   * the fallback, with no message of the error, because the output of the key helper can hold the key.
+   * settings of Claude Code, which `central add claude-code` writes. Else the source is `pi`: the configuration of the
+   * main agent from `central run pi`, on the route of pi in Central. Then `fallback` gives the reason: `entry` when
+   * the settings have no valid Central entry, `helper` when the entry is there but its key helper failed, did not end
+   * in [keyHelperTimeout] or gave no key. The log gets one line for the fallback, with no message of the error,
+   * because the output of the key helper can hold the key.
    */
   async claudeConfiguration() {
+    let fallback = 'entry'
     try {
       const settings = JSON.parse(await readFile(this.settings, 'utf8'))
       const baseUrl = settings.env?.ANTHROPIC_BASE_URL
       requireCondition(typeof settings.apiKeyHelper === 'string', 'central')
-      const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: 10000, maxBuffer: 64000,
+      this.validateBaseUrl(baseUrl)
+      fallback = 'helper'
+      const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: this.keyHelperTimeout, maxBuffer: 64000,
         env: { ...process.env, PATH: this.centralPath() } })
       const apiKey = result.stdout.trim()
       this.validate({ baseUrl, apiKey })
       this.remember({ baseUrl, apiKey })
       return { baseUrl, apiKey, source: 'settings' }
     }
-    catch (error) { logFailure('log.central.claudeFallback', error) }
+    catch (error) {
+      if (fallback === 'entry') this.log('log.central.claudeFallback', error)
+      else this.log('log.central.claudeHelperFailed', error, this.keyHelperTimeout / 1000)
+    }
     try {
       const { baseUrl, apiKey } = await this.pi()
-      return { baseUrl, apiKey, source: 'pi' }
+      return { baseUrl, apiKey, source: 'pi', fallback }
     }
     catch (error) {
-      logFailure('log.central.claude', error)
+      this.log('log.central.claude', error)
       throw new MegachatError('central')
     }
   }

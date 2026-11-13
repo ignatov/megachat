@@ -76,7 +76,14 @@ can select the other order at the review: that changes one sentence of the `laun
 `childEnvironment()` first tries the present path: `apiKeyHelper` and `env.ANTHROPIC_BASE_URL` of
 `~/.claude/settings.json`, which `central add claude-code` writes. When it fails for any reason (no file, no
 `apiKeyHelper`, a helper that fails, a configuration that is not valid), it calls `pi()`, uses its `baseUrl` and
-`apiKey`, and writes the log line `log.central.claudeFallback` with only the name and the code of the first error.
+`apiKey`, and writes one log line with only the name and the code of the first error. The line tells the two cases
+apart: `log.central.claudeFallback` when the settings have no valid entry (no file, no `apiKeyHelper`, no valid base
+URL), and `log.central.claudeHelperFailed` when the entry is there, but its helper fails, does not end in its time
+limit or gives no key. The time limit of the helper is `KEY_HELPER_TIMEOUT_MS`, 60 seconds. On a clean Mac (see
+`docs/manual-checks.md`), the first run of the helper after `central login` and `central add claude-code` took more
+than 10 seconds, the earlier limit, because it starts the proxy and checks for an update of Central. Later runs took 1
+to 2 seconds. `install` gives the service a log function that writes nothing, because each check prints its own plain
+line, and a log line of a failure has the frames of the stack.
 When `pi()` fails too, it throws `MegachatError('central')` as now. `remember()` gets the values of each source, so the
 secret filter knows them.
 
@@ -151,6 +158,7 @@ that the bundled Codex serves the history API.
 | neither | `install.claudeMissing` | No Claude Code is available for a Claude child. Install Claude Code at {0}, or run the install line again. | no |
 | the settings give a valid entry | `install.claudeKey` | A Claude child gets its key from the Central entry in {0}. | key |
 | no valid entry, `pi()` works | `install.claudeKeyPi` | A Claude child gets its key from the pi route of Central, because {0} has no valid Central entry. Run "central add claude-code" to give Claude children the route of Claude Code. | key |
+| the entry is there, its key helper fails, `pi()` works | `install.claudeKeyHelper` | A Claude child gets its key from the pi route of Central, because the key helper of the Central entry in {0} failed or did not end in {1} seconds. | key |
 | no source | `install.claudeCentral` | A Claude child gets no key from Central. Run "central login", then run the install again. | no |
 | `codex` on the `PATH` | `install.codex` | A Codex child uses Codex at {0}. | binary |
 | no `codex`, `codex.js` resolves | `install.codexBundled` | The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat. | binary |

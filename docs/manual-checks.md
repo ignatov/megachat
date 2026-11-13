@@ -173,6 +173,13 @@ Claude Code.
   add `~/.local/bin` to the `PATH`.
 - `central status` exited with 0 also without a login. Its text then held "Auth  not connected".
 
+A run of `setup.sh` on the same kind of virtual machine on 2026-11-13 passed each step. On its first run, directly
+after `central login` and `central add claude-code`, `install` said that a Claude child gets its key from the pi route
+of Central, and printed the fallback log line with the frames of the stack and `signal=SIGTERM`. The key helper did
+not end in the time limit of 10 seconds of that build, because it started the proxy and checked for an update of
+Central. Later runs of the key helper took 1 to 2 seconds, also with the proxy stopped first. So the time limit is now
+60 seconds, and `install` writes no log line.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.

@@ -28,6 +28,12 @@ use no recursive delete.
   Central command" to `test/launch.test.mjs`, and name it in the `Tests:` lines of "PATH of the key helper of Claude
   Code" of `claude-child` and "PATH of a child agent" of `launch`. Verify with `npm test`.
 
+- [x] 1.7 Give the key helper the time limit `KEY_HELPER_TIMEOUT_MS`, 60 seconds, and tell a missing entry
+  (`log.central.claudeFallback`, `install.claudeKeyPi`) apart from a failed key helper (`log.central.claudeHelperFailed`,
+  `install.claudeKeyHelper`). `install` writes no log line. Add the case "a key helper that fails or does not end in
+  its time limit gives the pi route with a log line of its own" to `test/launch.test.mjs`, and the two texts and an
+  empty error output to `test/install.test.mjs`. Verify with `npm test`.
+
 ## 2. Codex child and Codex history without the Codex CLI
 
 - [x] 2.1 In `bin/codex`, in the branch with `MEGACHAT_CODEX_ARGS`, search the `PATH` without `bin/` for an executable

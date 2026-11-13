@@ -142,9 +142,10 @@ async function checks({ configuration, platform, path, binaries }) {
     : binaries.claude ? message('install.claudeBundled', configuration.claude) : message('install.claudeMissing', configuration.claude))
   let claudeKey = false
   try {
-    const { source } = await configuration.claudeConfiguration()
+    const { source, fallback } = await configuration.claudeConfiguration()
     claudeKey = true
-    lines.push(message(source === 'settings' ? 'install.claudeKey' : 'install.claudeKeyPi', configuration.settings))
+    const key = source === 'settings' ? 'install.claudeKey' : fallback === 'helper' ? 'install.claudeKeyHelper' : 'install.claudeKeyPi'
+    lines.push(message(key, configuration.settings, configuration.keyHelperTimeout / 1000))
   }
   catch { lines.push(message('install.claudeCentral')) }
   const codex = await codexOnPath(path)
@@ -160,11 +161,12 @@ async function checks({ configuration, platform, path, binaries }) {
  * replaces an [earlierEntry] or an [entryWithoutTimeLimits]. The command prints one line for each result, then the lines
  * about the IDE build, the network and npx, then the version and the directory of this copy. It returns 0 only when the
  * entry is in place and the checks passed. The lines about the IDE build and the network do not change it. A test can
- * pass its own [configuration] and [binaries].
+ * pass its own [configuration] and [binaries]. The default [configuration] writes no log line: each check prints one
+ * plain line, and a log line of a failure has the frames of the stack.
  */
 export async function install({ environment = process.env, platform = process.platform, print = line => process.stdout.write(`${line}\n`),
   root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, ''),
-  configuration = new CentralConfigurationService({ environment }), binaries = bundledBinaries() } = {}) {
+  configuration = new CentralConfigurationService({ environment, log: () => {} }), binaries = bundledBinaries() } = {}) {
   const { lines, passed } = await checks({ configuration, platform, path: environment.PATH ?? '', binaries })
   for (const line of lines) print(line)
   const path = acpConfigPath(environment)

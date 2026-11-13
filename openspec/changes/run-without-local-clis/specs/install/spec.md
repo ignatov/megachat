@@ -1,9 +1,17 @@
 ## MODIFIED Requirements
 
 ### Requirement: Checks of install
-`install` MUST check the platform, Central and its login. It MUST print which Claude Code and which key a Claude child uses and which Codex a Codex child uses, from the places of the run time (see the capabilities `launch` and `claude-child`). Each check MUST print one line, and a failed check MUST name what to do. `install` MUST NOT print the output of Central or of the key helper of Claude Code.
+`install` MUST check the platform, Central and its login. It MUST print which Claude Code and which key a Claude child uses and which Codex a Codex child uses, from the places of the run time (see the capabilities `launch` and `claude-child`). Each check MUST print one line, and a failed check MUST name what to do. `install` MUST NOT print the output of Central or of the key helper of Claude Code. It MUST NOT write a log line of a failure of Central: its own line names the result.
 
 Tests: `test/install.test.mjs`
+
+#### Scenario: A key helper that fails
+- **WHEN** `install` runs, and the key helper of the Central entry of the settings of Claude Code exits with the code 3
+- **THEN** `install` prints "A Claude child gets its key from the pi route of Central, because the key helper of the Central entry in" with the path of the settings and "failed or did not end in 60 seconds.", it does not print "central add claude-code", and its error output is empty
+
+#### Scenario: A key helper that does not end in the time limit
+- **WHEN** the key helper of the Central entry is `exec sleep 5`, and the time limit of the test is 0.2 seconds
+- **THEN** `install` prints the line about the key helper with "0.2 seconds", and the exit code is 0
 
 #### Scenario: Each check passes
 - **WHEN** `install` runs on macOS, Central, Claude Code and `codex` are in their places, and the key helper of Claude Code prints `test-key`
@@ -42,7 +50,7 @@ Tests: `test/install.test.mjs`
 
 #### Scenario: Only Central and the binaries of npm
 - **WHEN** `install` writes the entry on macOS, Central gives a valid configuration, Claude Code is not at `~/.local/bin/claude`, the settings of Claude Code do not exist, and `codex` is not on the `PATH`
-- **THEN** `install` prints "Claude Code is not at" with the path, "A Claude child uses the Claude Code that npm installed with Megachat.", "A Claude child gets its key from the pi route of Central", "Run "central add claude-code"", and "A Codex child uses the Codex that npm installed with Megachat.", and the exit code is 0
+- **THEN** `install` prints "Claude Code is not at" with the path, "A Claude child uses the Claude Code that npm installed with Megachat.", "A Claude child gets its key from the pi route of Central", "Run "central add claude-code"", and "A Codex child uses the Codex that npm installed with Megachat.", its error output is empty, and the exit code is 0
 
 #### Scenario: No child agent is ready
 - **WHEN** `install` writes the entry on macOS, Central gives a valid configuration, Claude Code is not at `~/.local/bin/claude`, the `PATH` has no `codex`, and the module system finds neither the `claude` binary nor the `codex` binary
