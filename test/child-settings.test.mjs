@@ -119,7 +119,7 @@ test('a turn of a child result or of the sessions summary cannot change a settin
   assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')).values, {})
 })
 
-test('a Claude child loads the project settings, and its options hold no key and no base URL', { timeout: 20000 }, async t => {
+test('a Claude child loads the project settings, and its options hold no key, no base URL and no turn limit', { timeout: 20000 }, async t => {
   const env = { ...process.env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test-key', ANTHROPIC_API_KEY: 'test-key' }
   const { cwd, turn } = await fixture(t, undefined, { childLaunch: async () => ({ env }) })
   // A project env without ANTHROPIC_BASE_URL does not move the key of Megachat, so the run starts.
@@ -129,6 +129,8 @@ test('a Claude child loads the project settings, and its options hold no key and
   assert.equal(Object.values(state.runs)[0].status, 'completed')
   const options = JSON.parse(await readFile(join(cwd, 'claude-options.json'), 'utf8'))
   assert.deepEqual(options.settingSources, ['project'])
+  // A turn limit cut long runs at 30 turns. The time limit `children.timeoutMinutes` is the only limit of a run.
+  assert.equal(options.maxTurns, undefined)
   // The SDK puts session settings in the command line of Claude, and the base URL of Central holds the key. So the
   // options hold neither. The key and the base URL go only in the environment of the agent.
   assert.equal(options.settings, undefined)

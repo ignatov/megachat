@@ -340,8 +340,9 @@ export class AcpRunService {
         // The options hold no session settings: the SDK puts them in the command line of Claude, and the base URL of
         // Central holds the key. `refuseProjectBaseUrl` guards the base URL. `allowDangerouslySkipPermissions: false`
         // removes the mode `bypassPermissions` from the modes of the session and from the options of the approval of a plan.
+        // The options hold no `maxTurns`, so the SDK gives no turn limit. The time limit `children.timeoutMinutes` stops a run.
         ...(agent === 'claude' ? { _meta: { claudeCode: { options: { model: model ? modelRef(model).modelId : launch.model, settingSources: ['project'],
-          promptSuggestions: false, maxTurns: 30, allowDangerouslySkipPermissions: false } } } } : {}),
+          promptSuggestions: false, allowDangerouslySkipPermissions: false } } } } : {}),
       }
       let sessionId
       if (run.providerSessionId) {
