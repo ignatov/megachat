@@ -6,7 +6,7 @@ import { MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { transcriptPath } from './ChildTranscript.mjs'
 import { NOTE_KIND } from './SessionNotes.mjs'
-import { replyText } from './ReplyStream.mjs'
+import { replyText, STOPPED_KIND } from './ReplyStream.mjs'
 import { livePromptSuggestion, promptSuggestionUpdate } from './Suggestions.mjs'
 
 /** A short row title: the first prompt line without Markdown markers. */
@@ -393,8 +393,9 @@ class AcpBridgeSession {
     for (const entry of view.entries) {
       if (this.entries.has(entry.id)) continue
       this.entries.add(entry.id)
-      // A summary of older entries is a user message for the model only. The chat does not show it.
-      if (entry.head !== undefined) continue
+      // A summary of older entries is a user message for the model only. The chat does not show it. The entry of a
+      // stopped turn is for the model only too: the chat shows the partial reply from the entry of the stopped request.
+      if (entry.head !== undefined || entry.kind === STOPPED_KIND) continue
       for (const model of entry.model ?? []) {
         if (model.role === 'user' && replayUsers && entry.kind !== 'air.megachat.event') {
           const text = typeof model.content === 'string' ? model.content

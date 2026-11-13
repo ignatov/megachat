@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import { entryText, MegachatSearchIndex, RANK_WINDOW, snippet } from '../src/MegachatSearchIndex.mjs'
+import { STOPPED_KIND } from '../src/ReplyStream.mjs'
 
 const user = (id, content) => ({ kind: 'pi.user', id, conversationId: 1, model: [{ role: 'user', content, timestamp: 1000 + id }] })
 const assistant = (id, content) => ({ kind: 'pi.assistant', id, conversationId: 1, model: [{ role: 'assistant', content, timestamp: 1000 + id }] })
@@ -67,6 +68,10 @@ test('skips the call and the result of agents_memory, and keeps the other text o
   assert.deepEqual(await ids(index, 'agents_memory'), [])
   assert.deepEqual(await ids(index, 'Saving'), [1])
   assert.equal(entryText({ id: 2, model: [{ role: 'toolResult', toolName: 'agents_memory', content: [{ type: 'text', text: 'Munich' }] }] }), undefined)
+})
+
+test('the entry of a stopped turn is not indexed, because the entry of the stopped request holds the same text', () => {
+  assert.equal(entryText({ id: 3, kind: STOPPED_KIND, model: [{ role: 'assistant', content: [{ type: 'text', text: 'Queues hold' }], timestamp: 1003 }] }), undefined)
 })
 
 test('finds Russian and English substrings regardless of case and ё', async t => {

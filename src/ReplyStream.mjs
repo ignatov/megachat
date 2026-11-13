@@ -18,6 +18,35 @@ export function streamEnabled(environment = process.env) {
 export const replyText = model => model.content.filter(block => block.type === 'text').map(block => block.text).join('')
 
 /**
+ * The kind of the entry that tells the model about a turn that the user stopped. The entry is for the model only: the
+ * chat shows the partial text from the entry of the stopped request, so it does not show this entry.
+ */
+export const STOPPED_KIND = 'air.megachat.stopped'
+
+/** The stop reasons of an assistant message that Pi Durable leaves out of the model context. */
+const UNFINISHED_STOP_REASONS = new Set(['aborted', 'error', 'deferred'])
+
+/**
+ * The text that the model gets for a turn that the user stopped: the partial reply of the turn, then the marker. Pi
+ * Durable keeps a partial reply as an entry with the stop reason `aborted`, and it leaves that message out of the model
+ * context. Without this text, the model sees two messages of the user one after the other, and it answers both.
+ * [entries] are the newest entries of the conversation, the newest first. The turn starts at an entry `pi.user` or
+ * `air.megachat.event`. Gives undefined when the turn ended with a full reply, because the model already sees it.
+ */
+export function stoppedReplyText(entries, marker) {
+  for (const entry of entries) {
+    const model = entry.model?.at(-1)
+    if (entry.head !== undefined || entry.kind === 'pi.user' || entry.kind === 'air.megachat.event' || model?.role === 'user') return marker
+    if (!model) continue
+    if (model.role !== 'assistant') return marker
+    if (!UNFINISHED_STOP_REASONS.has(model.stopReason)) return undefined
+    const partial = replyText(model).trimEnd()
+    return partial ? `${partial}\n\n${marker}` : marker
+  }
+  return marker
+}
+
+/**
  * The reply that the model writes now, from the `pi.live` document of a view of the conversation. The task ID and the
  * attempt identify one model request. The entry of the reply has the same task ID in `byTaskId`.
  */

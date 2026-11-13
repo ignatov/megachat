@@ -3,6 +3,7 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, InboxDoc, LiveDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
 import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
+import { STOPPED_KIND } from './ReplyStream.mjs'
 import { forgottenTopic } from './MegachatMemory.mjs'
 import { REFLECTION_TURNS } from './MemoryReflection.mjs'
 import { rmdir } from 'node:fs/promises'
@@ -841,11 +842,16 @@ export class MegachatState {
    * session index that a user message interrupted, or that failed for a reason that can go away, waits for one more
    * turn. The user can stop it for good.
    */
-  async settleInput(mainRunId, status, reason) {
-    await this.change(state => {
+  async settleInput(mainRunId, status, reason, stopped) {
+    await this.change(async (state, tx) => {
       if (state.current?.id !== mainRunId) return
       const input = state.inputs[state.current.requestId]
       if (state.current.cancelling) status = 'cancelled'
+      // The model gets the stopped turn as a reply that the user stopped. The write lands before the next turn can start.
+      if (status === 'cancelled' && stopped) {
+        await this.root.submit(tx, { type: 'write', requestId: `stopped:${mainRunId}`,
+          entry: { kind: STOPPED_KIND, data: { type: 'stopped' }, model: [noteMessage(stopped, Date.now())] } })
+      }
       input.status = status
       // Each completed turn of the user counts for the reflection of the memory. At 10, a pass is due.
       const reflection = state.memoryReflection

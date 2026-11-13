@@ -15,7 +15,7 @@ import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
-import { ReplyStream, STREAM_INTERVAL_MS, streamEnabled } from '../src/ReplyStream.mjs'
+import { ReplyStream, STOPPED_KIND, stoppedReplyText, STREAM_INTERVAL_MS, streamEnabled } from '../src/ReplyStream.mjs'
 import { fakeClock } from './fake-clock.mjs'
 
 const LONG = Array.from({ length: 60 }, (_, index) => `word${index}`).join(' ')
@@ -62,7 +62,8 @@ const until = async (condition, text) => {
   for (let attempt = 0; attempt < 500; attempt++) { if (await condition()) return; await sleep(10) }
   assert.fail(text)
 }
-const assistantTexts = async service => (await service.view()).entries.flatMap(entry => entry.model ?? [])
+// The entry of a stopped turn is for the model only, so the texts of the chat leave it out.
+const assistantTexts = async service => (await service.view()).entries.filter(entry => entry.kind !== STOPPED_KIND).flatMap(entry => entry.model ?? [])
   .filter(model => model.role === 'assistant').map(model => model.content.filter(block => block.type === 'text').map(block => block.text).join(''))
 
 test('the chunks of a reply arrive before its entry, and the entry adds no text again', { timeout: 20000 }, async t => {
@@ -96,6 +97,60 @@ test('a stopped reply keeps its partial text one time, in the chat and in a repl
   assert.deepEqual(await assistantTexts(service), [partial])
   const later = await attach(t, daemon, cwd)
   assert.deepEqual(messages(later.chunks()), [partial])
+})
+
+/** The role and the text of each message of a model request, as the faux model gets them. */
+const contextTexts = context => context.messages.filter(model => model.role !== 'system').map(model => [model.role, typeof model.content === 'string' ? model.content
+  : model.content.filter(block => block.type === 'text').map(block => block.text).join('')])
+
+test('the next request after a stopped reply holds the partial text with the stop marker, and the chat shows it one time', { timeout: 20000 }, async t => {
+  let seen
+  const { cwd, daemon, service } = await fixture(t, [fauxAssistantMessage(LONG),
+    context => { seen = contextTexts(context); return fauxAssistantMessage('One, two, three, four, five.') }])
+  const viewer = await attach(t, daemon, cwd)
+  const reply = viewer.prompt('Write an essay')
+  await until(() => viewer.chunks().length >= 2, 'no chunk arrived')
+  await viewer.connection.agent.notify(methods.agent.session.cancel, { sessionId: viewer.sessionId })
+  assert.equal((await reply).stopReason, 'cancelled')
+  const [partial] = messages(viewer.chunks())
+  assert.equal((await viewer.prompt('Count from 1 to 5')).stopReason, 'end_turn')
+  // The model gets the partial reply as a reply that the user stopped, before the next message of the user.
+  assert.deepEqual(seen, [['user', 'Write an essay'], ['assistant', `${partial.trimEnd()}\n\n${message('reply.stopped')}`], ['user', 'Count from 1 to 5']])
+  // The chat and a replay show the partial text one time, and no marker.
+  assert.deepEqual(messages(viewer.chunks()), [partial, 'One, two, three, four, five.'])
+  const later = await attach(t, daemon, cwd)
+  assert.deepEqual(messages(later.chunks()), [partial, 'One, two, three, four, five.'])
+  // The history tool gives the partial text one time.
+  const history = await service.history()
+  assert.deepEqual(history.entries.filter(entry => entry.role === 'assistant').map(entry => entry.text).reverse(), [partial, 'One, two, three, four, five.'])
+})
+
+test('the next request after a reply stopped before its first text holds only the stop marker', { timeout: 20000 }, async t => {
+  let seen
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  const { cwd, daemon, service } = await fixture(t, [async () => { await held; return fauxAssistantMessage(LONG) },
+    context => { seen = contextTexts(context); return fauxAssistantMessage('Done.') }])
+  const viewer = await attach(t, daemon, cwd)
+  const reply = viewer.prompt('Hello')
+  await until(async () => (await service.state.snapshot()).current, 'the turn did not start')
+  const stopping = service.cancel()
+  release()
+  await stopping
+  assert.equal((await reply).stopReason, 'cancelled')
+  assert.equal((await viewer.prompt('Again')).stopReason, 'end_turn')
+  assert.deepEqual(seen, [['user', 'Hello'], ['assistant', message('reply.stopped')], ['user', 'Again']])
+  assert.deepEqual(messages(viewer.chunks()), ['Done.'])
+})
+
+test('the text of a stopped turn takes the partial reply of its last request, and a full reply gives no text', () => {
+  const user = { id: 1, kind: 'pi.user', model: [{ role: 'user', content: 'Hello' }] }
+  const assistant = (id, text, stopReason) => ({ id, kind: 'pi.assistant', model: [{ role: 'assistant', content: [{ type: 'text', text }], stopReason }] })
+  const toolResult = { id: 3, kind: 'pi.tool-result', model: [{ role: 'toolResult', toolCallId: 'a', content: [{ type: 'text', text: 'aborted' }] }] }
+  assert.equal(stoppedReplyText([assistant(2, 'Queues hold items. ', 'aborted'), user], 'M'), 'Queues hold items.\n\nM')
+  assert.equal(stoppedReplyText([user], 'M'), 'M')
+  assert.equal(stoppedReplyText([toolResult, assistant(2, 'Look', 'toolUse'), user], 'M'), 'M')
+  assert.equal(stoppedReplyText([assistant(2, 'Done.', 'stop'), user], 'M'), undefined)
 })
 
 test('a reply that fails in the middle keeps its partial text one time, and the notice is another message', { timeout: 20000 }, async t => {

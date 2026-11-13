@@ -1,3 +1,4 @@
+import { STOPPED_KIND } from './ReplyStream.mjs'
 import { corrupt, deleteSidecar, fold, FTS_TABLE, matchExpression, openSidecar, queryTerms, snippet } from './SqliteSidecar.mjs'
 
 export { queryTerms, snippet }
@@ -40,7 +41,8 @@ function eventText(data, full) {
 
 /** Text of an entry as the index sees it, or undefined for entries it does not index. */
 export function entryText(entry, { full = false } = {}) {
-  if (entry.head !== undefined || entry.kind === 'pi.system') return undefined
+  // The entry of a stopped turn repeats the partial reply for the model, so the index has that reply one time.
+  if (entry.head !== undefined || entry.kind === 'pi.system' || entry.kind === STOPPED_KIND) return undefined
   const timestamp = entry.model?.find(model => Number.isFinite(model.timestamp))?.timestamp
   if (entry.kind === 'air.megachat.event') {
     const text = eventText(entry.data, full)

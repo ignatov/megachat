@@ -61,3 +61,13 @@ started and recorded.
   `/bin/sleep`.
 - One read of `ps -A -o pid=,ppid=,pgid=,uid=,lstart=` of 1,254 processes took about 40 ms and 4 ms of CPU time. Under a
   load average of about 100, one read took up to 1.15 seconds.
+
+One manual check of a stopped turn ran on 2026-11-13 against the default main model through Central, with a temporary
+state directory and an ACP client that sends what Air sends. The user sent "Write a 600-word essay about queues. No
+tools.", sent `session/cancel` after 6 seconds, and then sent "Count from 1 to 5 in words."
+
+- Before the change, a run of the same steps on `origin/main` gave the whole essay, about 3,600 characters, and then
+  "One, two, three, four, five." in the second reply.
+- After the change, the stopped turn ended with `cancelled` and 985 characters of partial text in the chat. The second
+  reply was "One, two, three, four, five.", 28 characters, with `end_turn`. The conversation had the entry
+  `air.megachat.stopped` with the marker after the `aborted` entry of the partial reply. The run cost 0.0051 USD.

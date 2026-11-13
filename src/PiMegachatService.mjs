@@ -14,7 +14,7 @@ import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
-import { STREAM_INTERVAL_MS } from './ReplyStream.mjs'
+import { STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
@@ -913,7 +913,7 @@ export class PiMegachatService {
     if (reflectionNotice && status === 'completed') await this.state.reflectionNoticeShown(reflectionNotice).catch(error => logFailure('log.reflection.failed', error))
     // The turn still holds the state, so the next turn starts with the new settings.
     if (this.settingsPending) await this.applySettings().catch(error => logFailure('log.settings.failed', error))
-    await this.state.settleInput(receipt.mainRunId, status, reason)
+    await this.state.settleInput(receipt.mainRunId, status, reason, await this.stoppedReply(receipt.mainRunId))
     this.search?.catchUp().catch(() => {
       if (!this.lifetime.signal.aborted) process.stderr.write(`${message('error.search')}\n`)
     })
@@ -949,6 +949,17 @@ export class PiMegachatService {
     else logFailure('log.turn.failed', failure, mainRunId, kind)
   }
 
+  /**
+   * The text that the model gets for the turn [mainRunId] when the user stopped it, or undefined. The text holds the
+   * partial reply and the marker, so the next turn does not continue the stopped request (see `stoppedReplyText`).
+   */
+  async stoppedReply(mainRunId) {
+    const current = (await this.state.snapshot()).current
+    if (current?.id !== mainRunId || !current.cancelling) return undefined
+    const page = await this.root.entries({ order: 'descending' }, 20, undefined, context)
+    return stoppedReplyText(page.items, message('reply.stopped'))
+  }
+
   /** Cancels the current turn. With [expectedRunId], it cancels only that turn, and tells whether it did. */
   async cancel(expectedRunId) {
     const snapshot = await this.state.snapshot()
@@ -975,7 +986,8 @@ export class PiMegachatService {
       if (characters >= 24000) break
       scanned++
       lastId = entry.id
-      if (entry.kind === 'air.megachat.event' || entry.head !== undefined) continue
+      // The entry of a stopped turn repeats the partial reply for the model, so the history gives that reply one time.
+      if (entry.kind === 'air.megachat.event' || entry.kind === STOPPED_KIND || entry.head !== undefined) continue
       for (const model of entry.model ?? []) {
         if (model.role !== 'user' && model.role !== 'assistant') continue
         const text = typeof model.content === 'string' ? model.content
