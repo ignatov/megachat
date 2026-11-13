@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
@@ -18,7 +19,7 @@ import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
-import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
+import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
 import { isNoteMessage, SessionNotes } from './SessionNotes.mjs'
 import { waitForState } from './waitForState.mjs'
 import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
@@ -94,7 +95,7 @@ function harnessSettings(values, models) {
  * own, so a change sends only this section to the model again, and not the bundled rules. [projects] gives the project
  * values as `[directory, text]`, one line for each project.
  */
-function settingsRules(values, onboarding, rules, notice, projects = []) {
+function settingsRules(values, onboarding, rules, notice, projects = [], offers = []) {
   const language = values['reply.language']
   return [
     message(`instructions.length.${values['reply.length']}`),
@@ -107,9 +108,20 @@ function settingsRules(values, onboarding, rules, notice, projects = []) {
     message('instructions.projects', PROJECT_SETTINGS.join(', ')),
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? onboardingRules(values, rules) : message('instructions.settings'),
+    ...(offers.length ? [rules.offers.head, message('instructions.offers.open'),
+      ...offers.map(({ key, value, trigger }) => `${key} (${value}): ${trigger}`)] : []),
     message('instructions.notes', notesOn(values) ? 'on' : 'off'),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')
+}
+
+/**
+ * The offer rules of `resources/instructions-offers.md`: the lines before the line "The offers:", and the list after it,
+ * one line `- <key>: <trigger>` for each setting that the main agent can offer.
+ */
+export function parseOffers(text) {
+  const [head, list = ''] = text.split(/^The offers:$/m)
+  return { head: head.trim(), items: [...list.matchAll(/^- ([\w.]+): (.+)$/gm)].map(([, key, trigger]) => ({ key, trigger: trigger.trim() })) }
 }
 
 /**
@@ -197,7 +209,7 @@ export class PiMegachatService {
     const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
       ghost: await resource('instructions-suggestions-ghost.md'),
       onboarding: await resource('instructions-onboarding.md'), onboardingGhost: await resource('instructions-onboarding-ghost.md'),
-      user: await readUserInstructions(userInstructionsPath) }
+      offers: parseOffers(await resource('instructions-offers.md')), user: await readUserInstructions(userInstructionsPath) }
     const live = { harness: harnessSettings(values, models) }
     const registry = createRegistry()
     const harness = await Harness.open(storage, {
@@ -221,6 +233,8 @@ export class PiMegachatService {
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
     service.stopper = new AgentStop(state, { table: service.running.table, running: service.running, clock, ...stopOptions })
+    // The keys of the settings that the main agent offered. The rules section shows only the other offers.
+    service.offered = new Set(Object.keys((await state.snapshot()).initiative.offers))
     service.adopt(values)
     await service.dropPromptSuggestion()
     service.workdayClock = reportOptions.clock ?? workdayClock
@@ -286,6 +300,8 @@ export class PiMegachatService {
     this.values = values
     this.projectRules = this.settings.projectRules()
     this.onboarding = this.settings.onboarding
+    // The open offers change only with the settings, so the rules section changes only between two turns.
+    this.openOffers = this.offersOpen(values, values['reply.suggestions'], this.onboarding)
     this.live.harness = harnessSettings(values, this.models)
     this.model = modelRef(values['coordinator.model'])
     this.thinkingLevel = values['coordinator.thinking']
@@ -388,8 +404,9 @@ export class PiMegachatService {
    * The tool `agents_settings`. A turn of a child result, of the sessions summary or of the morning report cannot change
    * a setting, also not a project value.
    */
-  async settingsTool(args) {
-    requireCondition(['get', 'set', 'reset', 'onboarding'].includes(args.action))
+  async settingsTool(args, taskId) {
+    requireCondition(['get', 'set', 'reset', 'onboarding', 'offer'].includes(args.action))
+    if (args.action === 'offer') return this.offerSetting(args.key, taskId)
     if (args.action === 'get') {
       return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') },
         ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}), sessionNotes: this.notesStatus() }
@@ -416,6 +433,34 @@ export class PiMegachatService {
     }
     await this.settingsChanged()
     return changed
+  }
+
+  /**
+   * The offers of the list that the main agent can give with the [values], the [mode] of the suggestions and the status
+   * of the [onboarding]: in the modes `reply` and `ghost` after the setup, for a setting without an offer before, without
+   * a stored value and without a variable. The notes need the consent of the index first.
+   */
+  offersOpen(values, mode, onboarding) {
+    if (mode === 'off' || onboarding === 'pending') return []
+    return this.rules.offers.items.filter(({ key }) => !this.offered.has(key) && this.settings.entry(key).source === 'default'
+      && (key !== 'sessions.notes' || values['sessions.index'] === 'on')).map(item => ({ ...item, value: values[item.key] }))
+  }
+
+  /**
+   * The action `offer` of `agents_settings`: records the offer of the setting [key] before the agent writes it. It
+   * changes no setting, so it works also in an automatic turn and in the morning report.
+   */
+  async offerSetting(key, taskId) {
+    requireCondition(typeof key === 'string' && SETTINGS.some(setting => setting.key === key), 'settingKey')
+    const values = this.settings.values()
+    const open = this.offersOpen(values, this.suggestions, this.settings.onboarding).some(item => item.key === key)
+    // A real tool call has its task ID, so a replay after a crash gets the same decision. A direct call of a test has none.
+    const { allowed } = await this.state.offerSetting(`tool:${taskId ?? randomUUID()}:offer`, key, open)
+    if (allowed && !this.offered.has(key)) {
+      this.offered.add(key)
+      await this.settingsChanged()
+    }
+    return { allowed, key, value: values[key] }
   }
 
   /** Whether the notes about the waiting sessions are on, and why not when the setting is on without the consent. */
@@ -476,7 +521,7 @@ export class PiMegachatService {
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
-      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules) },
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules, this.openOffers) },
       // The section is always there when the daemon has a memory, so a change of the file changes only this section.
       ...(this.memory ? [{ key: 'memory', render: () => this.memorySection() }] : []),
     ], hooks: [
@@ -497,7 +542,7 @@ export class PiMegachatService {
       }),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
         value: opt(union([str({ maxLength: 2000 }), num(), bool(), arr(str({ maxLength: 200 }), { maxItems: 50 })])),
-        status: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })) }), async args => result(await this.settingsTool(args))),
+        status: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })) }), async (args, api) => result(await this.settingsTool(args, api?.taskId))),
       // A check that runs gives its result also to a second call, so two calls do not start four agents.
       tool('accounts', obj({}), async () => {
         await this.refuseInMorningReport()

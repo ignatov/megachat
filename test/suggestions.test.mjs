@@ -109,6 +109,7 @@ test('the added setup rules ask for the likely answer and name no setting key', 
   const rules = await readFile(new URL('../resources/instructions-onboarding-ghost.md', import.meta.url), 'utf8')
   assert.match(rules, /call agents_suggest one time with the likely answer/)
   assert.match(rules, /Keep the current values/)
+  assert.match(rules, /For the pair of agents, the likely answer is the current pair/)
   const keys = new Set(SETTINGS.map(setting => setting.key))
   assert.deepEqual((rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g) ?? []).filter(word => keys.has(word)), [])
 })
@@ -451,11 +452,12 @@ test('a change of the mode in the turn of the suggestion sends no suggestion, an
 test('in the mode ghost, a setup question gets the likely answer as a prompt suggestion, and the end of the setup ends the added setup rules', { timeout: 20000 }, async t => {
   const { cwd, daemon, service, requests, turn } = await ghostFixture(t)
   const viewer = await view(t, daemon, cwd)
-  turn(suggest('Keep the current values'), fauxAssistantMessage('Which agent runs a new child task? The current value is claude.'))
+  turn(suggest('Opus + Claude'), fauxAssistantMessage('Which agents do you want: Opus + Claude, or Opus + Codex on GPT-6 Astra? Now it is Opus + Claude.'))
   await viewer.prompt('Start the setup')
   assert.match(requests[0], /While a setup question waits for an answer, give the likely answer as a prompt suggestion\./)
-  assert.deepEqual(viewer.suggestions(), ['Keep the current values'])
-  assert.ok(!viewer.updates.some(event => event.update.sessionUpdate === 'agent_message_chunk' && event.update.content?.text?.includes('Keep the current values')))
+  assert.deepEqual(viewer.suggestions(), ['Opus + Claude'])
+  // The reply names the pair, but no reply chunk holds the suggestion alone.
+  assert.ok(!viewer.updates.some(event => event.update.sessionUpdate === 'agent_message_chunk' && event.update.content?.text === 'Opus + Claude'))
   const onboarding = status => fauxAssistantMessage(fauxToolCall('agents_settings', { action: 'onboarding', status }), { stopReason: 'toolUse' })
   turn(onboarding('done'), fauxAssistantMessage('The setup is done.'))
   await viewer.prompt('Yes')
@@ -464,7 +466,7 @@ test('in the mode ghost, a setup question gets the likely answer as a prompt sug
   // The history keeps the earlier section, so the check reads the section of the next request.
   const agent = await service.root.agent(BACKGROUND_CONTEXT)
   const section = agent.sections.find(item => item.key === 'settings').render()
-  assert.match(section, /Read or change a setting of Megachat with agents_settings only when the user asks\./)
+  assert.match(section, /Read or change a setting of Megachat with agents_settings only when the user asks, or for an offer of the offer rules\./)
   assert.doesNotMatch(section, /While a setup question waits for an answer/)
   // A new setup gets the setup rules and the added setup rules in the tool result, so it can start in the same turn.
   turn(onboarding('pending'), fauxAssistantMessage('Which model does the main agent use?'))

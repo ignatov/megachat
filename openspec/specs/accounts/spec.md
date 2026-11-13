@@ -50,8 +50,10 @@ Tests: `test/accounts.test.mjs`
 - **THEN** Claude Code has the status `failed` with the problem "Claude Code did not start.", and Codex has the status `failed` with the problem "Central gave no key to Codex."
 
 ### Requirement: When the check runs
-The setup MUST run the check at its end and show the result. The rules of the main agent MUST run the check when a child fails with a login error.
+The setup MUST run the check at its end as no question. It MUST show only the agents with a problem and what to fix, and say nothing about the check when each agent is ready. The rules of the main agent MUST run the check when a child fails with a login error.
+
+Tests: `test/settings.test.mjs`
 
 #### Scenario: The end of the setup
-- **WHEN** the setup comes to its end
-- **THEN** the agent runs the check and shows the result to the user
+- **WHEN** a test reads `resources/instructions-onboarding.md`
+- **THEN** it holds "call agents_accounts" and "Show only the agents with a problem and what to fix. When each agent is ready, say nothing about the check."

@@ -88,9 +88,9 @@ Tests: `test/settings.test.mjs`
 - **THEN** each setting has its description and its `applies` text, and its allowed values or its range
 
 ### Requirement: Change of a setting
-The tool `agents_settings` MUST store a valid value at once, remove a stored value, and set the status of the onboarding. It MUST refuse an unknown key and an invalid value as each other tool refuses an invalid request.
+The tool `agents_settings` MUST store a valid value at once, remove a stored value, set the status of the onboarding, and record an offer of a setting (see the capability `setting-offers`). It MUST refuse an unknown key and an invalid value as each other tool refuses an invalid request.
 
-Tests: `test/settings.test.mjs`
+Tests: `test/settings.test.mjs`, `test/setting-offers.test.mjs`
 
 #### Scenario: Store and remove a value
 - **WHEN** the agent sets `keepAlive.hours` to `2` and then removes the stored value
@@ -101,13 +101,17 @@ Tests: `test/settings.test.mjs`
 - **THEN** the tool refuses the key with the code `settingKey`, and the value with the code `settingValue`
 
 ### Requirement: No change from an automatic turn
-A turn of a child result or of the summary of the past sessions MUST NOT change a setting or the status of the onboarding.
+A turn of a child result or of the summary of the past sessions MUST NOT change a setting or the status of the onboarding. The record of an offer MUST work in such a turn, because it changes no setting.
 
-Tests: `test/settings.test.mjs`
+Tests: `test/settings.test.mjs`, `test/setting-offers.test.mjs`
 
 #### Scenario: A turn of a child result
 - **WHEN** the turn of a child result calls `agents_settings` to set `reply.length` to `detailed`
 - **THEN** `settings.json` has no value for `reply.length`, and the tool result says that an automatic turn cannot change a setting
+
+#### Scenario: An offer in a turn of a child result
+- **WHEN** the turn of a child result calls `agents_settings(action="offer", key="children.push")`
+- **THEN** the result has `allowed: true` and the value `ask`, and `settings.json` does not change
 
 ### Requirement: List of the settings of the main agent
 The settings of the main agent, of the keep-alive, of the cache and of the summary MUST be these, with the variable of a setting in brackets:
@@ -262,16 +266,28 @@ Tests: `test/settings.test.mjs`
 - **THEN** `agents_settings get` gives the onboarding `pending`, and the rules hold "The setup of Megachat is pending."
 
 ### Requirement: Content of the setup rules
-The setup rules MUST tell the agent to answer the user first and then offer the setup one time, to ask one question at a time with its default, to let the user skip one question or the setup, to store each answer at once, and to mark the onboarding done at the end. They MUST name only the settings of this build.
+The setup rules MUST tell the agent to answer the user first and then offer the setup one time, to ask one question at a time with its default, to let the user skip one question or the setup, to store each answer at once, and to mark the onboarding done at the end. They MUST ask only for the pair of agents, which changes only the children, the index of past sessions and the known repositories. The end MUST say that each setting can change later in the chat.
 
 Tests: `test/settings.test.mjs`
 
 #### Scenario: The settings in the setup rules
 - **WHEN** a test reads `resources/instructions-onboarding.md`
-- **THEN** the setting keys that it names are the keys of the settings of this build
+- **THEN** the setting keys that it names are `coordinator.model`, `children.agent`, `children.codexModel` and `sessions.index`
+
+#### Scenario: The pairs of agents
+- **WHEN** a test reads `resources/instructions-onboarding.md`
+- **THEN** it holds "+ Claude" with `children.agent` `claude`, "+ Codex on GPT-6 Astra" with `children.agent` `codex` and `children.codexModel` `openai/gpt-6-astra`, and "Do not change coordinator.model"
+
+#### Scenario: The values of the pair with Codex
+- **WHEN** `coordinator.model` is `faux/deep`, and the agent stores the answers of the pair with Codex: `children.agent` `codex` and `children.codexModel` `openai/gpt-6-astra`
+- **THEN** `children.agent` is `codex`, `children.codexModel` is `openai/gpt-6-astra`, and `coordinator.model` stays `faux/deep`
+
+#### Scenario: The closing text
+- **WHEN** a test reads `resources/instructions-onboarding.md`
+- **THEN** it holds "tell the user that each setting can change later in the chat"
 
 ### Requirement: End of the onboarding
-After the status `done` or `skipped`, the setup rules MUST NOT come back by themselves, also after a restart. The rules MUST then say that the agent changes a setting or runs the setup again when the user asks.
+After the status `done` or `skipped`, the setup rules MUST NOT come back by themselves, also after a restart. The rules MUST then say that the agent changes a setting or runs the setup again when the user asks, and that it offers a setting only as the offer rules say.
 
 The status `pending` MUST bring the setup rules back. The tool result MUST hold them, so the setup can start in the same turn.
 
@@ -279,7 +295,11 @@ Tests: `test/settings.test.mjs`
 
 #### Scenario: Done stays after a restart
 - **WHEN** the agent sets the status of the onboarding to `done` and the daemon restarts
-- **THEN** the rules do not hold the setup rules, and they hold "Read or change a setting of Megachat with agents_settings only when the user asks."
+- **THEN** the rules do not hold the setup rules, and they hold "Read or change a setting of Megachat with agents_settings only when the user asks, or for an offer of the offer rules."
+
+#### Scenario: Skipped stays after a restart
+- **WHEN** `settings.json` holds the onboarding `skipped` and the daemon starts
+- **THEN** the rules do not hold the setup rules
 
 #### Scenario: Pending brings the setup back
 - **WHEN** the agent sets the status of the onboarding to `pending`

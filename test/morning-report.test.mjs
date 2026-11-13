@@ -472,6 +472,25 @@ test('the report turn refuses each tool that starts or changes something', { tim
   assert.equal(await readFile(join(fixture.stateDirectory, 'settings.json'), 'utf8'), before)
 })
 
+test('the report turn records an offer of a setting, and settings.json does not change', { timeout: 20000 }, async t => {
+  let results
+  const replies = [
+    () => fauxAssistantMessage(fauxToolCall('agents_settings', { action: 'offer', key: 'budget.dailyUsd' }), { stopReason: 'toolUse' }),
+    context => { results = toolResults(context.messages); return fauxAssistantMessage('Report.') },
+  ]
+  const fixture = await daemonFixture(t, { start: '2026-11-16T09:30:00Z', spendDays: ACTIVE, userTurns: [FRIDAY], replies })
+  const before = await readFile(join(fixture.stateDirectory, 'settings.json'), 'utf8')
+  await logLines(t, async () => {
+    await fixture.service.resume()
+    await fixture.service.morningReport.running
+    await fixture.settled()
+  })
+  assert.equal(results.length, 1)
+  assert.deepEqual(JSON.parse(results[0].text), { allowed: true, key: 'budget.dailyUsd', value: 0 })
+  assert.ok(Object.hasOwn((await fixture.service.state.snapshot()).initiative.offers, 'budget.dailyUsd'))
+  assert.equal(await readFile(join(fixture.stateDirectory, 'settings.json'), 'utf8'), before)
+})
+
 test('a user message interrupts the report, and the report runs again one time', { timeout: 20000 }, async t => {
   const started = [Promise.withResolvers(), Promise.withResolvers()]
   const hang = index => async (_context, options) => {

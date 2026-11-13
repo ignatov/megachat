@@ -101,17 +101,17 @@ Tests: `test/settings.test.mjs`, `test/parallel.test.mjs`
 - **THEN** the setting refuses the value
 
 ### Requirement: Parallel runs in the rules
-The rules of the setup MUST ask for the setting `children.parallel`. The rules of the main agent MUST say that tasks in different directories run at the same time, and that tasks in one directory or in a directory inside it run one after the other.
+The setup MUST NOT ask for the setting `children.parallel`. The main agent MUST offer it as the offer rules say (see the capability `setting-offers`). The rules of the main agent MUST say that tasks in different directories run at the same time, and that tasks in one directory or in a directory inside it run one after the other.
 
-Tests: `test/settings.test.mjs`, `test/parallel.test.mjs`
+Tests: `test/settings.test.mjs`, `test/parallel.test.mjs`, `test/setting-offers.test.mjs`
 
 #### Scenario: The rules of the main agent
 - **WHEN** the main agent reads its rules
 - **THEN** the rules say "Tasks in different directories run at the same time, at most children.parallel of them." and "Tasks in one directory or in a directory inside it run one after the other"
 
 #### Scenario: The rules of the setup
-- **WHEN** the setup rules start
-- **THEN** they name `children.parallel` together with each other setting of this build
+- **WHEN** a test reads `resources/instructions-onboarding.md` and `resources/instructions-offers.md`
+- **THEN** the setup rules do not name `children.parallel`, and the list of the offers names it
 
 ### Requirement: Claude settings in the rules of the main agent
 The rules of the main agent MUST give the values of `children.permissionMode` and `children.claudeModel`, say that `inherit` leaves them to the settings of Claude Code, that no value lets a child skip a permission request, that a refused mode or model fails the task before its start, and that the settings do not change a Codex or a pi child.

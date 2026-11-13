@@ -21,7 +21,7 @@ const FAST = 'faux/fast'
 const DEEP = 'faux/deep'
 const text = content => typeof content === 'string' ? content : content.filter(block => block.type === 'text').map(block => block.text).join('\n')
 const ONBOARDING = /The setup of Megachat is pending\./
-const SETTINGS_RULE = /Read or change a setting of Megachat with agents_settings only when the user asks\./
+const SETTINGS_RULE = /Read or change a setting of Megachat with agents_settings only when the user asks, or for an offer of the offer rules\./
 
 /**
  * The system prompt that a request gives the model. Pi Durable sends a changed section as a later system message, so
@@ -602,10 +602,28 @@ test('a stored setting of the project events of v0.3.0 causes no error, and the 
   assert.deepEqual((await stored(directory)).values, { 'coordinator.model': FAST, 'future.key': 1, 'reply.length': 'normal' })
 })
 
-test('the setup rules name each setting of this build and no other setting', async () => {
+test('the setup asks three questions: the pair of agents, the index and the repositories, and the account check shows only problems', async () => {
   const rules = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
-  const named = new Set(rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g))
-  assert.deepEqual([...named].sort(), SETTINGS.map(setting => setting.key).sort())
+  const keys = new Set(SETTINGS.map(setting => setting.key))
+  const named = new Set(rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g).filter(word => keys.has(word)))
+  assert.deepEqual([...named].sort(), ['children.agent', 'children.codexModel', 'coordinator.model', 'sessions.index'])
+  // The pair question changes only the children, and the main model keeps its value.
+  assert.match(rules, /\+ Claude[^\n]*children\.agent claude/)
+  assert.match(rules, /\+ Codex on GPT-6 Astra[^\n]*children\.agent codex, children\.codexModel openai\/gpt-6-astra/)
+  assert.match(rules, /Do not change coordinator\.model/)
+  assert.match(rules, /call agents_accounts/)
+  assert.match(rules, /Show only the agents with a problem and what to fix\. When each agent is ready, say nothing about the check\./)
+  assert.match(rules, /tell the user that each setting can change later in the chat/)
+})
+
+test('the answers of the pair with Codex change only the children, and the main model stays', { timeout: 20000 }, async t => {
+  const directory = await temporary(t)
+  await seed(directory, { 'coordinator.model': DEEP }, 'pending')
+  const { tool } = await open(t, directory)
+  await tool({ action: 'set', key: 'children.agent', value: 'codex' })
+  await tool({ action: 'set', key: 'children.codexModel', value: 'openai/gpt-6-astra' })
+  const values = Object.fromEntries((await tool({ action: 'get' })).settings.map(entry => [entry.key, entry.value]))
+  assert.deepEqual([values['children.agent'], values['children.codexModel'], values['coordinator.model']], ['codex', 'openai/gpt-6-astra', DEEP])
 })
 
 test('each setting of the children, the projects and the spend stays across a restart', { timeout: 20000 }, async t => {

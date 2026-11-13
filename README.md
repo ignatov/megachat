@@ -384,20 +384,40 @@ summaries and the keep-alive requests. The cost of the Claude and Codex children
 accounts of Claude and Codex pay for them. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
 `spend.json` keeps the count across a restart. Ask the agent for the settings to see the spend of the day.
 
-At the end of the setup, the main agent checks the accounts with its tool `agents_accounts`. The check starts Claude
-Code and Codex as a task starts them and opens a session without a prompt, so it spends no tokens. It shows for each
-agent `started`, or the problem and what to fix, for example a missing login. A session that opens does not prove that
-the provider accepts the login: the first task shows that. Ask the agent to check the accounts again at any time.
+At the end of the setup, the main agent checks the accounts with its tool `agents_accounts`. This is no question. The
+check starts Claude Code and Codex as a task starts them and opens a session without a prompt, so it spends no tokens.
+The agent shows only the agents with a problem and what to fix, for example a missing login, and it says nothing about
+the check when each agent is ready. A session that opens does not prove that the provider accepts the login, or that
+Codex offers the model of `children.codexModel`: the first task shows that. Ask the agent to check the accounts again
+at any time.
 
 Each environment variable still works, and it wins over the stored value. The agent tells you when a variable hides
 a stored value. A daemon reads the variables at its start.
 
 Without `settings.json`, the setup of Megachat is pending. In its next reply to you, the main agent answers your
-message and then offers the setup. The setup asks one question at a time and shows the default of each question. You
-can skip one question or the whole setup, and the defaults then apply. In the mode `ghost` of `reply.suggestions`, Air
-shows the likely answer of each setup question as grey text, such as "Keep the current values", and Tab puts it into
-the input. After the setup, or after a skip, Megachat does not offer it again. Ask the agent to run the setup again at
-any time. A file that the daemon cannot read stays as `settings.json.unreadable-<UTC time>`, and the defaults apply.
+message and then offers the setup. The setup asks three questions, one at a time, and shows the current value and the
+default of each:
+
+1. The agents: your main model with Claude Code, or with Codex on GPT-6 Astra, for example "Opus + Claude" or "Opus +
+   Codex on GPT-6 Astra". The answer sets `children.agent`, and for Codex also `children.codexModel`
+   `openai/gpt-6-astra`. The main model keeps its value.
+2. The index of past sessions, `sessions.index`. It is on only when you agree.
+3. The known repositories.
+
+You can skip one question or the whole setup, and the defaults then apply. Each other setting keeps its default, and
+you can change it in the chat at any time. In the mode `ghost` of `reply.suggestions`, Air shows the likely answer of
+each setup question as grey text, such as "Opus + Claude", and Tab puts it into the input. After the setup, or after a
+skip, Megachat does not offer it again. Ask the agent to run the setup again at any time. A file that the daemon
+cannot read stays as `settings.json.unreadable-<UTC time>`, and the defaults apply.
+
+After the setup, in the modes `reply` and `ghost` of `reply.suggestions`, the main agent offers a setting that left
+the setup when a report or a tool result shows that it helps. For example, it offers `children.push` when a child
+result says that a push is necessary, and `budget.dailyUsd` when the spend of the main agent is 20 USD or more on one
+day. Each such setting gets at most one offer, in one sentence of the reply with its current value, and only while it
+has no stored value and no variable. In the mode `ghost`, the acceptance can show as grey text. The conversation state
+keeps each offer, so a restart does not repeat it, and a request for silence stops the offers.
+`resources/instructions-offers.md` lists the settings and their triggers. The agent changes a setting only after your
+yes.
 
 ## The learned memory
 
@@ -740,7 +760,7 @@ The session text is data for the agent, not instructions.
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/MegachatMemory.mjs` | The learned memory: the parse of `memory.md`, the checks of an entry, the address of an entry, the write with the second read, the versions, and the section of the prompt. |
 | `src/MemoryReflection.mjs` | The reflection of the learned memory: the transcript of a pass, the parse of the answer, the writes, and the schedule. `resources/reflection.md` holds the prompt of a pass. |
-| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules, and `resources/instructions-onboarding-ghost.md` holds the added setup rules of the mode `ghost`. |
+| `src/Settings.mjs` | The settings: the registry of each setting with its key, default, variable and validation, the settings that can have a project value, the file `settings.json`, and the precedence. `resources/instructions-onboarding.md` holds the setup rules, `resources/instructions-onboarding-ghost.md` holds the added setup rules of the mode `ghost`, and `resources/instructions-offers.md` holds the offer rules and the list of the settings that the main agent offers after the setup. |
 | `src/Suggestions.mjs` | The modes of the next-step suggestions, and the prompt suggestion of the mode `ghost` with its ACP update. `resources/instructions-suggestions.md` and `resources/instructions-suggestions-ghost.md` hold the rules of the modes `reply` and `ghost`. |
 | `src/MegachatSearchIndex.mjs`, `src/MegachatHistoryServer.mjs` | The search index of the conversation, and its read-only MCP tool for the children. |
 | `src/SessionHistoryService.mjs`, `src/ClaudeSessionHistoryService.mjs`, `src/CodexSessionHistoryService.mjs`, `src/CodexAppServerClient.mjs` | The search in the Claude and Codex sessions of the registered projects. |

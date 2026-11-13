@@ -156,9 +156,9 @@ test('the notes need the consent sessions.index, and the change of each setting 
   const set = await tool({ action: 'set', key: 'sessions.notes', value: 'on' })
   assert.deepEqual(set.sessionNotes, { on: false, note: message('settings.notes.consent') })
   assert.ok(message('setting.sessions.notes').includes('sessions.index'))
-  // The setup asks for the notes only after the consent.
+  // The setup does not ask for the notes. The main agent offers them after the consent (see setting-offers.test.mjs).
   const setup = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
-  assert.match(setup, /Set sessions\.index to on only when the user agrees\. Only then, ask [^\n]*sessions\.notes \(default off\)/)
+  assert.doesNotMatch(setup, /sessions\.notes/)
   // The consent gives the first check at once.
   assert.deepEqual((await tool({ action: 'set', key: 'sessions.index', value: 'on' })).sessionNotes, { on: true })
   await service.sessionNotes.running

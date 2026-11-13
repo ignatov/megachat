@@ -316,6 +316,8 @@ export class MegachatState {
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {} }
       // The prompt suggestion of the `ghost` mode. A state of an earlier build has none.
       state.initiative.promptSuggestion ??= null
+      // The offers of a setting by the key of the setting. A state of an earlier build has none.
+      state.initiative.offers ??= {}
       // Megachat up to v0.3.0 watched the files of each project. `pending` kept each change that waited for its event
       // turn. This build has no such turn, so it drops these changes, and they start no turn. The two fields stay as
       // empty objects, because a daemon of v0.3.0 can open this state again, and it reads them.
@@ -632,6 +634,22 @@ export class MegachatState {
           expiresAt: new Date(Date.now() + this.promptSuggestionLifetimeMs).toISOString() }
       }
       return { allowed, suggestion: allowed ? shown : null, declines: initiative.declines, silenced: initiative.silenced }
+    })
+  }
+
+  /**
+   * Records the offer of the setting [key]. [open] tells whether the service allows an offer of the key: the mode, the
+   * status of the setup, the list of the offers, and no stored value and no variable. The gate also refuses a key with an
+   * offer before, a request for silence, and a second offer in the same turn. The offers are apart from `decisions`, so
+   * the cut of the old decisions keeps them.
+   */
+  async offerSetting(requestId, key, open) {
+    return this.initiativeDecision(requestId, { offer: key }, (initiative, state) => {
+      const turnId = state.current?.requestId ?? null
+      const allowed = open && !initiative.silenced && !Object.hasOwn(initiative.offers, key)
+        && !(turnId !== null && Object.values(initiative.offers).some(offer => offer.turnId === turnId))
+      if (allowed) initiative.offers[key] = { offeredAt: new Date().toISOString(), turnId }
+      return { allowed }
     })
   }
 
