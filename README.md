@@ -85,17 +85,19 @@ The machine needs:
   Megachat.
 - git, and access to `github.com`. The repository is public, so the line needs no GitHub account.
 - Node.js 22.19 or later for the install line. The IDE runs Megachat with its own Node.js.
-- The Central command at `~/.local/bin/central`, with a login: `central login`. When a reply fails because of
-  Central, the chat names the cause and the command for the next step: a missing Central command (install it, then
-  `central login`), no configuration from `central run pi`, such as after an expired login (`central login`, then
-  `central repair`), a stopped local proxy (`central proxy start` or `central repair`), no response (check the
-  network, or `central repair`), and a refused request (`central login`). Another model error, such as the HTTP status
-  429 or 529, gives "The model did not answer. Send the message again."
-- Optional: the Central entry of Claude Code in `~/.claude/settings.json`: `central add claude-code`. A Claude child
-  takes its key from it when it is there. Else a Claude child takes the key of the main agent, from `central run pi`,
-  and Central counts its requests as requests of pi. `central add claude-code` works also without Claude Code. Its key
-  helper calls `central` by its bare name, so Megachat puts the directory of `~/.local/bin/central` on the `PATH` of
-  the helper and of each child.
+- The Central command at `~/.local/bin/central`, with a login: `~/.local/bin/central login`. The installer of Central
+  does not put `~/.local/bin` on the `PATH`, so each text of Megachat gives a Central command with its full path. When a
+  reply fails because of Central, the chat names the cause and the command for the next step: a missing Central command
+  (the setup line), no configuration from `central run pi`, such as after an expired login
+  (`~/.local/bin/central login`, then `~/.local/bin/central repair`), a stopped local proxy
+  (`~/.local/bin/central proxy start` or `~/.local/bin/central repair`), no response (check the network, or
+  `~/.local/bin/central repair`), and a refused request (`~/.local/bin/central login`). Another model error, such as the
+  HTTP status 429 or 529, gives "The model did not answer. Send the message again."
+- Optional: the Central entry of Claude Code in `~/.claude/settings.json`: `~/.local/bin/central add claude-code`. A
+  Claude child takes its key from it when it is there. Else a Claude child takes the key of the main agent, from
+  `central run pi`, and Central counts its requests as requests of pi. `central add claude-code` works also without
+  Claude Code. Its key helper calls `central` by its bare name, so Megachat puts the directory of
+  `~/.local/bin/central` on the `PATH` of the helper and of each child.
 - Optional: Claude Code at `~/.local/bin/claude`. A Claude child uses it when it is there. Else a Claude child uses
   the Claude Code that npm installed with Megachat.
 - Optional: the Codex command, `codex`, on the `PATH`. A Codex child and the Codex history use it when it is there.

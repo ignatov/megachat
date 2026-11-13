@@ -19,7 +19,7 @@ Tests: `test/install.test.mjs`
 
 #### Scenario: Missing tools
 - **WHEN** the home of the user has no Central, no Claude Code and no settings of Claude Code, and only a `node_modules/.bin` directory of npx holds `codex`
-- **THEN** `install` prints "Central is not at" with the path, "Claude Code is not at" with the path and "A Claude child uses the Claude Code that npm installed with Megachat.", "A Claude child gets no key from Central. Run "central login"", and "The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat.", it writes the entry, and it exits with the code 1
+- **THEN** `install` prints "Central is not at" with the path and the setup line, "Claude Code is not at" with the path and "A Claude child uses the Claude Code that npm installed with Megachat.", "A Claude child gets no key from Central. Run "~/.local/bin/central login"", and "The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat.", it writes the entry, and it exits with the code 1
 
 #### Scenario: No binary of an agent
 - **WHEN** Claude Code is not at `~/.local/bin/claude`, the `PATH` has no `codex`, and the module system finds neither the `claude` binary nor the `codex` binary that npm installs with the agents
@@ -50,7 +50,7 @@ Tests: `test/install.test.mjs`
 
 #### Scenario: Only Central and the binaries of npm
 - **WHEN** `install` writes the entry on macOS, Central gives a valid configuration, Claude Code is not at `~/.local/bin/claude`, the settings of Claude Code do not exist, and `codex` is not on the `PATH`
-- **THEN** `install` prints "Claude Code is not at" with the path, "A Claude child uses the Claude Code that npm installed with Megachat.", "A Claude child gets its key from the pi route of Central", "Run "central add claude-code"", and "A Codex child uses the Codex that npm installed with Megachat.", its error output is empty, and the exit code is 0
+- **THEN** `install` prints "Claude Code is not at" with the path, "A Claude child uses the Claude Code that npm installed with Megachat.", "A Claude child gets its key from the pi route of Central", "Run "~/.local/bin/central add claude-code"", and "A Codex child uses the Codex that npm installed with Megachat.", its error output is empty, and the exit code is 0
 
 #### Scenario: No child agent is ready
 - **WHEN** `install` writes the entry on macOS, Central gives a valid configuration, Claude Code is not at `~/.local/bin/claude`, the `PATH` has no `codex`, and the module system finds neither the `claude` binary nor the `codex` binary

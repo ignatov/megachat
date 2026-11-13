@@ -98,27 +98,40 @@ Tests: `test/failure.test.mjs`, `test/integration.test.mjs`
 
 #### Scenario: A missing Central command
 - **WHEN** the command `~/.local/bin/central` does not exist, and the user sends "Hello"
-- **THEN** the user sees "Megachat cannot find the JetBrains Central CLI at ~/.local/bin/central. Install it, run `central login` in a terminal, and then send the message again."
+- **THEN** the user sees "Megachat cannot find the JetBrains Central CLI at ~/.local/bin/central. To install it and log in, run the setup line `curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash` in a terminal, and then send the message again."
 
 #### Scenario: A Central command that fails
 - **WHEN** the Central command prints "Not logged in" and exits with the code 1, and the user sends "Hello"
-- **THEN** the user sees "JetBrains Central gave Megachat no configuration. Run `central login` in a terminal. When you are logged in, run `central repair`. Then send the message again."
+- **THEN** the user sees "JetBrains Central gave Megachat no configuration. Run `~/.local/bin/central login` in a terminal. When you are logged in, run `~/.local/bin/central repair`. Then send the message again."
 
 #### Scenario: A local proxy that refuses the connection
 - **WHEN** the configuration of Central gives a local address where nothing listens, and the user sends "Hello"
-- **THEN** the user sees "Megachat cannot connect to the local proxy of JetBrains Central. Run `central proxy start` or `central repair` in a terminal, and then send the message again."
+- **THEN** the user sees "Megachat cannot connect to the local proxy of JetBrains Central. Run `~/.local/bin/central proxy start` or `~/.local/bin/central repair` in a terminal, and then send the message again."
 
 #### Scenario: A connection that the proxy resets
 - **WHEN** the local proxy of Central accepts the connection of the model request and closes it before a response, and the user sends "Hello"
-- **THEN** the user sees "Megachat got no response from JetBrains Central. Check the network, or run `central repair` in a terminal. Then send the message again."
+- **THEN** the user sees "Megachat got no response from JetBrains Central. Check the network, or run `~/.local/bin/central repair` in a terminal. Then send the message again."
 
 #### Scenario: A request that Central refuses
 - **WHEN** the local proxy of Central answers the model request with the HTTP status 401, and the user sends "Hello"
-- **THEN** the user sees "JetBrains Central refused the request of the model. Your Central login can have expired. Run `central login` in a terminal, and then send the message again."
+- **THEN** the user sees "JetBrains Central refused the request of the model. Your Central login can have expired. Run `~/.local/bin/central login` in a terminal, and then send the message again."
 
 #### Scenario: A cause of an earlier turn
 - **WHEN** a model request through a refused connection failed in an earlier turn, and the next reply fails with the HTTP status 529
 - **THEN** the user sees "The model did not answer. Send the message again."
+
+### Requirement: Central command in a text
+A text of the chat, of `install` or of `agents_accounts` that tells the user to run a Central command MUST give its full path `~/.local/bin/central`. The installer of Central does not put `~/.local/bin` on the `PATH`, so a bare `central` gives "command not found" in a new terminal. A text of a missing Central command MUST give the setup line of the README, because that line installs Central and logs in.
+
+Tests: `test/failure.test.mjs`, `test/install.test.mjs`, `test/accounts.test.mjs`
+
+#### Scenario: Each Central command in the resources
+- **WHEN** a test reads each text of `resources/Megachat.properties`
+- **THEN** each `central login`, `central repair`, `central proxy start` and `central add` in a text follows `~/.local/bin/`
+
+#### Scenario: A missing Central command
+- **WHEN** a reply fails because the command `~/.local/bin/central` does not exist, or `install` finds no Central command
+- **THEN** the text gives the setup line `curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash` of the README
 
 ### Requirement: Lifetime of a child agent
 A child agent MUST NOT stay alive after its daemon, also when it still writes output. A stop and a loss of the daemon MUST send SIGKILL only to the process group of the agent, so a process of the run in a session of its own, such as a shell that restarts the daemon, stays. When the agent ends by itself while the daemon runs, each process of the run MUST end (see the capability `child-processes`).

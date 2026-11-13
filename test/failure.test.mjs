@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -173,32 +173,49 @@ async function failedReply(t, central, cause) {
   return reply.notice
 }
 
+// The installer of Central puts `central` in ~/.local/bin and does not put that directory on the PATH. So a text that
+// tells the user to run a bare `central` command gives "command not found" in a new terminal.
+test('each text that tells the user to run a Central command gives the full path of the command', async () => {
+  const text = await readFile(new URL('../resources/Megachat.properties', import.meta.url), 'utf8')
+  const bare = text.split('\n').filter(line => line && !line.startsWith('#'))
+    .filter(line => /(?<!~\/\.local\/bin\/)\bcentral (?:login|logout|repair|proxy|add|run|status)\b/.test(line.slice(line.indexOf('=') + 1)))
+  assert.deepEqual(bare, [])
+})
+
+test('the text of a missing Central command gives the setup line of the README', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8')
+  const line = 'curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash'
+  assert.ok(readme.includes(`\n${line}\n`), 'README')
+  assert.ok(message('error.central.missing').includes(`\`${line}\``))
+  assert.ok(message('install.centralMissing', '/home/user/.local/bin/central').includes(`"${line}"`))
+})
+
 test('a reply without the Central command names the missing command', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const notice = await failedReply(t, join(tmpdir(), 'megachat-no-such-directory', 'central'), 'central_missing')
   assert.equal(notice, message('error.central.missing'))
-  assert.equal(notice, 'Megachat cannot find the JetBrains Central CLI at ~/.local/bin/central. Install it, run `central login` in a terminal, and then send the message again.')
+  assert.equal(notice, 'Megachat cannot find the JetBrains Central CLI at ~/.local/bin/central. To install it and log in, run the setup line `curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash` in a terminal, and then send the message again.')
 })
 
 test('a reply through a Central command that fails names the login', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const { central } = await centralCommand(`echo "Not logged in ${SECRET}" >&2\nexit 1`)
   assert.equal(await failedReply(t, central, 'central_command'),
-    'JetBrains Central gave Megachat no configuration. Run `central login` in a terminal. When you are logged in, run `central repair`. Then send the message again.')
+    'JetBrains Central gave Megachat no configuration. Run `~/.local/bin/central login` in a terminal. When you are logged in, run `~/.local/bin/central repair`. Then send the message again.')
 })
 
 test('a reply through a local proxy that refuses the connection names the proxy', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const { central } = await centralCommand(`echo '${configurationOf(await freePort())}'`)
   assert.equal(await failedReply(t, central, 'central_proxy'),
-    'Megachat cannot connect to the local proxy of JetBrains Central. Run `central proxy start` or `central repair` in a terminal, and then send the message again.')
+    'Megachat cannot connect to the local proxy of JetBrains Central. Run `~/.local/bin/central proxy start` or `~/.local/bin/central repair` in a terminal, and then send the message again.')
 })
 
 test('a reply through a local proxy that closes the connection names the network', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const { central } = await centralCommand(`echo '${configurationOf(await resetProxy(t))}'`)
   assert.equal(await failedReply(t, central, 'central_unreachable'),
-    'Megachat got no response from JetBrains Central. Check the network, or run `central repair` in a terminal. Then send the message again.')
+    'Megachat got no response from JetBrains Central. Check the network, or run `~/.local/bin/central repair` in a terminal. Then send the message again.')
 })
 
 test('a reply that Central refuses with the HTTP status 401 names the login', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const { central } = await centralCommand(`echo '${configurationOf(await statusProxy(t, 401))}'`)
   assert.equal(await failedReply(t, central, 'central_refused'),
-    'JetBrains Central refused the request of the model. Your Central login can have expired. Run `central login` in a terminal, and then send the message again.')
+    'JetBrains Central refused the request of the model. Your Central login can have expired. Run `~/.local/bin/central login` in a terminal, and then send the message again.')
 })

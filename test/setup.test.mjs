@@ -266,6 +266,7 @@ test('a failed login stops the setup', async t => {
   assert.equal(code, 1)
   assert.deepEqual(ran(commands, 'central'), ['central status', 'central login', 'central login read terminal input', 'central status'])
   assert.match(output, /Central still has no login\./)
+  assert.ok(output.includes(`Run "${mac.home}/.local/bin/central login" in a terminal`), output)
   assert.deepEqual(ran(commands, 'npx'), [])
 })
 
@@ -275,6 +276,14 @@ test('without a terminal the setup runs no central login and stops', async t => 
   assert.equal(code, 1)
   assert.deepEqual(ran(commands, 'central'), ['central status'])
   assert.match(output, /Megachat cannot open the terminal/)
+  // The installer of Central does not put ~/.local/bin on the PATH, so the message gives the full path.
+  assert.ok(output.includes(`Run "${mac.home}/.local/bin/central login" in a terminal`), output)
+})
+
+test('each message of the setup that tells the user to run a Central command gives the full path of the command', async () => {
+  const script = await readFile(SCRIPT, 'utf8')
+  const bare = script.split('\n').filter(line => /\b(?:say|stop) /.test(line) && /\b[Rr]un \\?["`']central /.test(line))
+  assert.deepEqual(bare, [])
 })
 
 test('a failed central add claude-code does not stop the setup', async t => {

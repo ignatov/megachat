@@ -18,7 +18,7 @@ Tests: `test/setup.test.mjs`, `test/release.test.mjs`
 
 #### Scenario: No terminal
 - **WHEN** Central shows no login and `MEGACHAT_SETUP_TTY` names a file that does not exist
-- **THEN** the script runs no `central login`, says that it needs a terminal, and ends with the exit code 1
+- **THEN** the script runs no `central login`, says that it needs a terminal, tells the user to run `~/.local/bin/central login` by its full path, and ends with the exit code 1
 
 ### Requirement: Platform of the setup
 The script MUST stop with the exit code 1 and a message on a platform other than macOS, before each other step.
@@ -78,7 +78,7 @@ Tests: `test/setup.test.mjs`
 - **THEN** the script runs no install line, and ends with the exit code 1
 
 ### Requirement: Login of the setup
-`central status` exits with 0 also without a login. When a line of its output has `Auth` and `not connected`, the script MUST run `central login` with the terminal as its input, and check `central status` again. When the second check shows no login, the script MUST stop with the exit code 1.
+`central status` exits with 0 also without a login. When a line of its output has `Auth` and `not connected`, the script MUST run `central login` with the terminal as its input, and check `central status` again. When the second check shows no login, the script MUST stop with the exit code 1. A message that tells the user to run a Central command MUST give its full path `~/.local/bin/central`, because the installer of Central does not put `~/.local/bin` on the `PATH`.
 
 Tests: `test/setup.test.mjs`
 

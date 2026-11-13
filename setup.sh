@@ -140,11 +140,12 @@ main() {
   say "The Central command is at $CENTRAL."
 
   # 5. The login of Central. The standard input of this script is the pipe of curl, and `central login` needs a
-  # terminal.
+  # terminal. Each message gives the full path of the Central command, because the installer of Central does not put
+  # ~/.local/bin on the PATH.
   if ! central_has_login; then
     terminal=${MEGACHAT_SETUP_TTY:-/dev/tty}
     if ! { : <"$terminal"; } 2>/dev/null; then
-      stop "Central has no login, and Megachat cannot open the terminal $terminal for \"central login\". Run \"central login\" in a terminal, then run the setup line again."
+      stop "Central has no login, and Megachat cannot open the terminal $terminal for \"central login\". Run \"$CENTRAL login\" in a terminal, then run the setup line again."
     fi
     say "Central has no login. Log in to Central now."
     "$CENTRAL" login <"$terminal"

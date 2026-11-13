@@ -43,7 +43,7 @@ Tests: `test/accounts.test.mjs`
 
 #### Scenario: An agent without a login
 - **WHEN** Codex refuses the session with `authRequired`
-- **THEN** Codex has the status `failed` with the login `missing`, the problem "Codex needs a login." and the fix "Run "central login" in a terminal. Then run the check again."
+- **THEN** Codex has the status `failed` with the login `missing`, the problem "Codex needs a login." and the fix "Run "~/.local/bin/central login" in a terminal. Then run the check again."
 
 #### Scenario: An agent that does not start and a failed Central configuration
 - **WHEN** the command of Claude Code does not exist and Central gives no configuration for Codex

@@ -237,7 +237,7 @@ test('install names each missing tool, uses the binaries of npm, writes the entr
   assert.equal(result.code, 1, result.stdout + result.stderr)
   for (const line of [`Central is not at ${join(home, '.local', 'bin', 'central')}.`,
     `Claude Code is not at ${join(home, '.local', 'bin', 'claude')}. A Claude child uses the Claude Code that npm installed with Megachat.`,
-    'A Claude child gets no key from Central. Run "central login"',
+    'A Claude child gets no key from Central. Run "~/.local/bin/central login"',
     'The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat.']) {
     assert.ok(result.stdout.includes(line), `${line}\n${result.stdout}`)
   }
@@ -256,7 +256,7 @@ test('install with only Central and the binaries of npm exits with 0, with the p
   for (const line of ['Central gives a valid configuration.',
     `Claude Code is not at ${join(home, '.local', 'bin', 'claude')}. A Claude child uses the Claude Code that npm installed with Megachat.`,
     `A Claude child gets its key from the pi route of Central, because ${join(home, '.claude', 'settings.json')} has no valid Central entry.`,
-    'Run "central add claude-code"',
+    'Run "~/.local/bin/central add claude-code"',
     'The command codex is not on the PATH. A Codex child uses the Codex that npm installed with Megachat.']) {
     assert.ok(result.stdout.includes(line), `${line}\n${result.stdout}`)
   }
@@ -299,7 +299,7 @@ test('install says when no binary of an agent is available, and exits with 1 whe
   // Without the Central entry of Claude Code, the pi route of Central gives the key, so Claude is ready.
   const pi = await installWith(t, await temporary(t), { binaries: { claude: '/npm/claude' }, settings: false })
   assert.ok(pi.text.includes(`A Claude child gets its key from the pi route of Central, because ${pi.settings} has no valid Central entry.`), pi.text)
-  assert.ok(pi.text.includes('Run "central add claude-code"'), pi.text)
+  assert.ok(pi.text.includes('Run "~/.local/bin/central add claude-code"'), pi.text)
   assert.equal(pi.code, 0, pi.text)
   // The Central entry is there, but its key helper does not end in the time limit: no hint to run central add claude-code.
   const slow = await installWith(t, await temporary(t), { binaries: { claude: '/npm/claude' }, helper: 'exec sleep 5', keyHelperTimeout: 200 })

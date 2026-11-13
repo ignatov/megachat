@@ -38,7 +38,7 @@ Tests: `test/install.test.mjs`
 
 #### Scenario: Missing tools
 - **WHEN** the home of the user has no Central and no Claude Code, and only a `node_modules/.bin` directory of npx holds `codex`
-- **THEN** `install` prints "Central is not at" with the path, "Claude Code is not at" with the path, and "The command codex is not on the PATH.", it writes the entry, and it exits with the code 1
+- **THEN** `install` prints "Central is not at" with the path and the setup line, "Claude Code is not at" with the path, and "The command codex is not on the PATH.", it writes the entry, and it exits with the code 1
 
 #### Scenario: Another platform
 - **WHEN** `install` runs on Linux
