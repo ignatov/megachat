@@ -28,6 +28,20 @@ needs no process table, and the tool cannot read more than `agents_running` read
 `agents_running` with no row limit, and follows its cursors; an incomplete list gives an incomplete triage with the
 same note as `agents_running` (capability `running-sessions`, requirement "Incomplete lists").
 
+### 1a. The tty
+
+`src/ProcessTable.mjs` reads the column `tty=` of `ps` in addition. `RunningAgents` keeps the tty of each row inside
+the view and gives it only to the triage, so the row of `agents_running` keeps exactly its present keys (capability
+`running-sessions`, requirement "Fields of a row"). A row with the owner kind `terminal` or `multiplexer` gets `tty`;
+a row with no terminal (`??` in `ps`) gets none.
+
+### 1b. The shape of the chat answer
+
+The research of the brief (section "Interface") found that a chat is weak as an overview that is always there, and
+strong for a decision on a batch. So the rule asks for one short answer that ends with a decision, not a full table:
+a count line, the `needs_you` rows, then the close list. The CMU tab study found that people keep tabs open from fear
+of loss, so the close list says that the log stays and that `agents_resume` can continue the session.
+
 ### 2. The bucket order
 
 A row takes the first match: `needs_you`, `stuck`, `working`, `abandoned`, `quiet`. A session that waits for the user

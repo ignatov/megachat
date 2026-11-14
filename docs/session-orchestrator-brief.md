@@ -75,8 +75,8 @@ Findings:
   cross-process lock, so a second writer is a risk.)
 - **No model call for the triage in phase 1.** Rules on the status, the age and the title. No cost per call, no
   private text that leaves the machine, and a result that a test can check.
-- **No dashboard or board UI.** The chat is the surface. Air shows tasks of children only; a board needs an Air
-  change and an IJAI ticket. Prove the answer in chat first.
+- **No GUI of Megachat's own.** No menu bar app, no web dashboard, no Kanban board, no mobile app. The section
+  "Interface" gives the reasons. A view in Air is an Air change and an IJAI ticket, not Megachat code.
 - **No merge of sessions, no "auto-resume of all".** Two writers on one log is the known hazard.
 - **No new default.** Notes, index and every new reading stay behind the present consent. Nothing starts to run on its own.
 
@@ -104,6 +104,112 @@ The ratio matters less than the counter-metric: one lost session beats all gains
 | Resume makes two writers | Phase 3 only, and only after the old process is gone (see `delegation`). |
 | Scope creep to "agent OS" | Each phase has a gate on a metric. No phase starts without the numbers of the one before. |
 
+## Interface
+
+Question of the author (2026-11-14): is the chat the right surface for many sessions, or is another surface better?
+Earlier the author said "foreign sessions only in the chat, no new UI". This section treats that as open.
+
+Method: a web search on 2026-11-14. Most sources are product docs, vendor blogs and forum threads, not studies. The
+direct fetch of `code.claude.com` and `github.com` failed from this machine, so the quotes of these two come from
+search excerpts. Nothing here is tested hands-on, except `herdr --help` on this machine.
+
+### What other products do
+
+Agent tools:
+
+| Product | Pattern | What users praise or report | Source |
+|---|---|---|---|
+| Claude Code agent view (`claude agents`) | One list of background sessions with states `working`, `blocked`, `done`, `failed`, `stopped`; peek, attach, reply | One screen for "what needs input". Interactive sessions in other terminals do not show until the user backgrounds them. | [docs](https://code.claude.com/docs/en/agent-view), [HN](https://news.ycombinator.com/item?id=49158580) |
+| Claude Code notifications | OS notification from a `Notification` hook | With 5 sessions, identical "Claude Code needs your attention" alerts do not say which session. Fix: put the project name in the text. | [issue #36885](https://github.com/anthropics/claude-code/issues/36885), [guide](https://contextbolt.com/blog/claude-code-notifications/) |
+| Claude Code Notifier, Context Board | Menu bar app; a "Needs you" widget over Claude Code and Codex | Third-party tools fill the gap "which one needs me". | [notifier](https://claudecodenotifier.com/), [roundup](https://tacticremote.com/blog/2026-02-28-managing-multiple-claude-code-sessions/) |
+| Claude Remote Control, Dispatch | Phone as a remote screen; the permission prompt shows on all devices | Mobile approval of a prompt. Only for sessions that the user starts with Remote Control. | [guide](https://radar.firstaimovers.com/claude-code-remote-control-dispatch-multi-device-guide-2026) |
+| Codex app | Threads by project; a Triage section with an inbox of runs, filter "unread" | The review queue is the center. Several sources say the human review is the bottleneck. | [guide](https://codex.danielvaughan.com/2026/04/08/codex-desktop-automations/), [review](https://www.verdent.ai/guides/codex-app-first-impressions-2026) |
+| Cursor Agents Window | Sidebar of agents grouped by repository; pin | Forum: no global list of active chats, repo groups bury live work, no multi-select for batch actions, about 25% of cloud agents missing from the sidebar. | [no recent list](https://forum.cursor.com/t/agents-window-sidebar-unusable-for-multi-repo-orchestration-no-recent-list-no-multi-chat-view-repo-groups-bury-active-work/166317), [no batch](https://forum.cursor.com/t/please-add-multi-select-in-the-agents-window-for-batch-actions/167355), [missing](https://forum.cursor.com/t/cloud-agents-do-not-show-in-agents-recent-agents-sidebar/158067) |
+| GitHub Copilot agents panel | An overlay on each page; a task list with live status; the result is a draft PR | Start and track without leaving the current page. | [GitHub blog](https://github.blog/news-insights/product-news/agents-panel-launch-copilot-coding-agent-tasks-anywhere-on-github/) |
+| Devin | One Slack thread for each session, with a status chip `working`, `blocked`, `done`; sessions sleep, not end; `devin_session_gather` waits for many | A chat for one session, not one chat for all sessions. | [Slack](https://docs.devin.ai/integrations/slack), [MCP](https://docs.devin.ai/work-with-devin/devin-mcp) |
+| Warp | Agent management panel, a mailbox of notifications (All, Unread, Errors), toasts, a badge on the tab | The panel does not show Claude Code or Codex; for them, only notifications and the tab badge. | [docs](https://docs.warp.dev/guides/agent-workflows/how-to-run-multiple-ai-coding-agents/) |
+| herdr (on this machine) | Multiplexer sidebar with `working`, `blocked`, `done`, `idle`; "done" stays flagged until the user looks | State from hooks or from the screen text; only for panes inside herdr. | [Better Stack](https://betterstack.com/community/guides/ai/herdr-ai-agent/), [Jacar](https://jacar.es/en/herdr-terminal-agent-multiplexer/) |
+| Conductor, Sculptor, Nimbalyst (was Crystal), Vibe Kanban | A desktop app: one workspace (worktree) per agent; a list or a Kanban board | They manage only the agents that they start. Vibe Kanban is shutting down; reviews name "review debt" and worktree cleanup. | [Conductor](https://tgmarinhopro.com/en/blog/conductor-mac-parallel-agents-experience-en), [Sculptor](https://imbue.com/product/sculptor), [Vibe Kanban](https://vibecoding.app/blog/vibe-kanban-review), [HN](https://news.ycombinator.com/item?id=44533004) |
+| JetBrains Air | Tasks of agents in one desktop app; switch, review and approve | Also only the tasks that Air or its ACP agents run. | [docs](https://air.dev/docs), [blog](https://blog.jetbrains.com/air/2026/03/air-launches-as-public-preview-a-new-wave-of-dev-tooling-built-on-26-years-of-experience/) |
+
+Analogies outside agents:
+
+| Product | Pattern | Lesson | Source |
+|---|---|---|---|
+| Superhuman | Split inbox; Remind Me (hide until a time); "get me to zero" archives all mail older than a week in one step | A bulk action on "old" is the praised feature. | [Product Hunt](https://www.producthunt.com/products/superhuman/reviews), [review](https://www.breakthetwitch.com/superhuman/) |
+| HEY | Screener; Reply Later and Set Aside piles | Users say the piles "just move the problem" and become a second inbox. | [Masalar](https://mariusmasalar.me/hey-is-not-for-me), [TheKeesh](https://thekeesh.com/2021/01/review-of-hey-com-email/) |
+| Linear Triage | A shared inbox; four keys: accept, decline, duplicate, snooze | A fixed, small set of verbs, and "duplicate" is one of them. | [docs](https://linear.app/docs/triage) |
+| PagerDuty | Deduplication and grouping of alerts into one incident | Fewer, grouped interrupts. The ops guide ranks deduplication first. | [docs](https://support.pagerduty.com/main/docs/alert-grouping), [guide](https://www.pagerduty.com/ops-guides/ops-practices/reduce-noise/) |
+| Browser tabs (CMU, CHI 2021) | Study of tab overload | People keep tabs open as reminders and from fear that they cannot find the work again. | [CMU](https://www.cmu.edu/news/stories/archives/2021/may/overcoming-tab-overload.html) |
+| Parallel agents, practitioners | HN threads | For real work, many people say 2 to 3 parallel sessions is the limit; the cost is the reload of context. | [HN 1](https://news.ycombinator.com/item?id=45110075), [HN 2](https://news.ycombinator.com/item?id=47573483) |
+
+### Five findings
+
+1. **The pattern is a list with states and one "needs you" signal, not a chat.** Claude agent view, Codex Triage,
+   Warp, herdr and the Copilot panel all show rows with a state and a badge for "blocked". Devin uses chat, but one
+   thread for each session. No product found uses one chat as the overview of many sessions.
+2. **Each product sees only its own sessions.** Claude agent view does not list interactive terminal sessions. Warp
+   does not list Claude Code or Codex. Conductor, Air and Vibe Kanban list only what they start. A view across
+   owners (terminal, herdr, IDE, Megachat) is the one narrow thing that Megachat has and the others do not. This is
+   the difference to defend. It is not an empty market: herdr and Context Board cover parts.
+3. **An interrupt without identity is noise.** The most reported gap is "which session needs me". Each fix adds the
+   project and the title to the signal. PagerDuty adds deduplication and grouping.
+4. **Bulk "old" actions are praised; "later" piles are not.** Superhuman's "get me to zero" is praised, and Cursor
+   users ask for multi-select. HEY's piles turned into a second inbox. So a bucket `abandoned` is only useful with a
+   one-step exit, and a "keep for later" bucket is a trap.
+5. **People keep things open from fear of loss.** The CMU tab study gives the reason for 16 silent sessions better
+   than any status: a tab is a reminder. For a session, the log stays on disk, and `agents_resume` can continue it.
+   Saying so at the moment of the close list is cheaper than any UI.
+
+### Chat compared with other surfaces
+
+| Job | Chat (Megachat) | List or board (Air, agent view) | Notification or badge | Terminal sidebar (herdr) |
+|---|---|---|---|---|
+| Overview of 20 sessions | Weak: a long table goes stale at once, and the user must ask | Strong: always there, sorted | Weak | Strong, but only for herdr panes |
+| "What needs me" | Good on request | Good | Strong: it comes to the user | Good inside herdr |
+| Attention and interrupts | Weak: a chat note is an interrupt in the wrong place | Medium: a badge | Strong, with identity | Medium |
+| Bulk actions (close 9 old ones) | Strong: "these 9, the reason, the age; say yes" | Strong with multi-select; Air has none for foreign sessions | None | Weak |
+| Drill into one session | Strong for "what did it do" (read without resume) | Medium | None | Strong for "go to it" |
+| Duplicates, "where did I stop" | Strong: it needs words, not pixels | Weak | None | None |
+| Mobile | Medium: Air has no mobile client | None today | Claude Remote Control covers Claude only | None |
+
+Read: the chat is strong where the job needs language (why, what it did, which ones, a decision on a batch). It is
+weak where the job needs presence (an overview that is always there, an interrupt that comes to the user). The
+author is right that the chat is not enough. The chat is still the right place for triage and decisions.
+
+### Recommendation: which surface owns which job
+
+| Job | Owner | Why |
+|---|---|---|
+| Triage on request, "what did X do", duplicates, the close list, resume | **Chat of Megachat** | Needs language and a decision. Megachat already has the data. |
+| Overview that is always there, a count of `needs_you` | **Air** (IJAI ticket, not Megachat code) | The author works in Air. Air has a task list for children of Megachat. A read-only section "Other sessions" and a badge reuse that place. |
+| The interrupt "session X waits for you" | **The note of `session-notes`, with project, title and tty** (phase 2) | One signal, deduplicated by the present rule "one note for each state". No new channel. |
+| Go to the session | **The owner** (Terminal, Rex, herdr, IDE) | Megachat gives the tty and the owner name. It does not focus a window. herdr already has a sidebar for its panes. |
+| Mobile | **Not built** | Claude Remote Control covers Claude sessions. One user on one Mac does not need more. |
+
+The minimum that changes the day of the author (phase 1, no new surface):
+
+1. One question "what waits for me / what can I close" gives one chat answer: a short count line, the `needs_you`
+   rows first, then the close list of `abandoned` rows with the age, the project and the tty.
+2. The close list says that closing a tab loses nothing: the log stays, and `agents_resume` continues it later.
+3. The user closes the tabs, and the tty helps to find each one.
+
+What not to build:
+
+- **No GUI of Megachat's own** (menu bar app, web dashboard, Kanban). Every product of this kind sees only its own
+  sessions, and Vibe Kanban shows that a board is costly to keep alive. Megachat's edge is the data across owners,
+  not pixels. If a GUI is needed, it goes to Air.
+- **No "later" bucket and no snooze.** HEY shows the pile becomes a second inbox.
+- **No focus of a foreign window or pane** from Megachat. It is an Accessibility or AppleScript path for each
+  terminal, and it is close to "write into a foreign session".
+- **No push for each state change.** Only `needs_you`, once, with identity.
+
+### Open question for the author
+
+Air side: a read-only section "Other sessions" in the task list with a `needs_you` badge. This needs an ACP extension
+(a list of foreign rows), a change of `docs/air-contract.md`, and an IJAI ticket. Phase 2 measures first whether the
+chat answer is used each day; if it is, the Air ticket goes next.
+
 ## Phased plan
 
 Gate rule: a phase starts when the author approves its OpenSpec proposal and the metrics of the earlier phase say it
@@ -111,10 +217,13 @@ helps.
 
 0. **Measure** (done in part, section above). Add the two missing numbers: unanswered questions and real duplicates.
 1. **Observe and triage** (change `session-triage`, in this commit). One read-only tool `agents_triage` and one rule
-   in the instructions: the buckets `needs_you`, `stuck`, `working`, `abandoned`, `quiet`, and the duplicate hints.
+   in the instructions: the buckets `needs_you`, `stuck`, `working`, `abandoned`, `quiet`, the duplicate hints, the
+   tty of each terminal row, and one chat answer that ends with a close list.
    Gate to phase 2: precision of `abandoned` is 90% or more for a week.
-2. **Notify** (modifies `session-notes` and `morning-report`). The morning report gets a "waits for you" and an
-   "abandoned" line. A note for `needs_you` is opt-in under the present `sessions.notes`. No new default.
+2. **Notify and show** (modifies `session-notes` and `morning-report`; an IJAI ticket for Air). The morning report
+   gets a "waits for you" and an "abandoned" line. A note for `needs_you` names the project, the title and the tty,
+   and is opt-in under the present `sessions.notes`. The Air side: a count badge of `needs_you` and a read-only list
+   of foreign sessions (section "Interface"). No new default.
 3. **Adopt** (modifies `delegation`). "Continue this old work" in one step: Megachat reads the old session, asks the
    user to close the old process, then resumes it as a child. Gate: the order of the steps proves no two writers.
 4. **Policies** (new capability). Rules of the user, for example "ask me about a session silent for 5 days". A
@@ -129,3 +238,4 @@ Not planned: any step that writes into a foreign terminal.
 1. Is 72 hours the right line for `abandoned`? (Data: 9 of 18 are past it today.)
 2. Is a duplicate hint worth a place in phase 1, or does it wait for the measurement of real duplicates?
 3. Phase 2: the morning report line only, or also a note for `needs_you`?
+4. Interface: the Air section "Other sessions" after phase 1, or only when the chat answer proves daily use?

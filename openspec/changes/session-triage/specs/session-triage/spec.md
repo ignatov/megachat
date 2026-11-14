@@ -33,6 +33,24 @@ Tests: `test/triage.test.mjs`
 - **WHEN** two sessions are `quiet`, with the last activity 2 hours and 10 hours ago
 - **THEN** the session of 10 hours is first
 
+### Requirement: Place of a triage row
+A triage row with the owner kind `terminal` or `multiplexer` MUST give `tty`, the terminal device of its process, such as `ttys023`. A process without a terminal MUST give no `tty`. The row of `agents_running` MUST keep its present keys.
+
+Tests: `test/triage.test.mjs`, `test/running.test.mjs`
+
+#### Scenario: A session in Terminal
+- **WHEN** Claude Code runs in Terminal on `ttys023`, and Codex runs below `codex-acp` of an IDE with no terminal
+- **THEN** the first triage row has the `tty` `ttys023`, the second has no `tty`, and the rows of `agents_running` have no `tty`
+
+### Requirement: Answer of the triage
+When the user asks what waits for them, what is stuck or what can close, the rules MUST tell the main agent to call `agents_triage` and give a count line, the `needs_you` rows, then a close list of the `abandoned` rows with the age, the project and the `tty`. The close list MUST say that the log stays and that `agents_resume` can continue the session.
+
+Tests: `test/settings.test.mjs`
+
+#### Scenario: The rule of the answer
+- **WHEN** the instructions of the main agent are rendered
+- **THEN** they name `agents_triage`, the close list, the `tty` and `agents_resume`
+
 ### Requirement: Possible duplicates
 A row MUST give `possibleDuplicates`, the session IDs of the other rows whose titles share at least 2 words of 4 letters or more, and the shared words are at least half of the shorter set. The directory MUST NOT count. A row without a title MUST have no duplicate. The tool MUST say that the field is a guess.
 
