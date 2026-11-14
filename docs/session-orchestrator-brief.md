@@ -67,10 +67,11 @@ Findings:
 
 - **No writes into a foreign live session.** No keystroke injection into a terminal, no `tmux send-keys`, no
   Accessibility tricks. It breaks on each terminal and it risks the user's work. (`steering` works for children only.)
-- **No automatic stop, close or archive of a session.** Stop stays an explicit confirmation of the user, for an
-  orphan only (capability `stop-sessions`). A heuristic that guesses "done" will kill live work once, and one such
-  case ends the trust.
-- **No second store of session state.** The logs of the CLIs are the truth. The triage is a view that Megachat
+- **No automatic stop, close or archive of a session.** Each stop and each archive needs an explicit confirmation
+  of the user (capability `stop-sessions`, change `session-archive`). A heuristic that guesses "done" will kill live
+  work once, and one such case ends the trust.
+- **No second store of session state.** The logs of the CLIs are the truth. The archive cards are a record of the
+  user's decision, not a copy of the state. The triage is a view that Megachat
   computes at each call. No new SQLite table, no sync, no cache that can go stale. (Also: Pi Durable has no
   cross-process lock, so a second writer is a risk.)
 - **No model call for the triage in phase 1.** Rules on the status, the age and the title. No cost per call, no
@@ -89,6 +90,9 @@ Findings:
 | Sessions silent for more than 7 days | 4 of 18 | 0 at the end of a week | `agents_triage` count |
 | Precision of `abandoned` (the user agrees it can close) | none | 90% or more | the author marks 20 rows |
 | Precision of a duplicate hint | none | 50% or more | the author marks the hints of one week |
+| Sessions archived with a card | 0 | 15 or more in the first week | `session-archive.jsonl` |
+| Time to archive the close list | a tab walk for each session | one dialog, under 1 minute | the author times it |
+| Restores within 7 days of an archive | none | under 10% | `restoredAt` in the cards |
 | Work lost by a closed session | none | 0 reports | the author tells, a counter-metric |
 
 The ratio matters less than the counter-metric: one lost session beats all gains.
@@ -101,6 +105,8 @@ The ratio matters less than the counter-metric: one lost session beats all gains
 | Codex has no permission record, so `waiting_for_user` is blind | Say it in the answer: a Codex row gets a "status from log only" mark. Do not hide it. |
 | Titles can be empty or private; duplicate hints are noisy | Hints only, with a low claim. Measure first. Cut the hint if precision is below 30%. |
 | Consent: the triage needs `sessions.index` | Without the consent, the tool says so and gives process facts only. It never turns the consent on. |
+| An archive closes a session with work in it | Refuse a working or waiting session; warn on uncommitted files, unpushed commits and a shared directory; card first. |
+| The title mark couples Megachat to an Air format | IJAI ticket makes it a contract; a fixture test in Megachat. |
 | Resume makes two writers | Phase 3 only, and only after the old process is gone (see `delegation`). |
 | Scope creep to "agent OS" | Each phase has a gate on a metric. No phase starts without the numbers of the one before. |
 
@@ -210,6 +216,103 @@ Air side: a read-only section "Other sessions" in the task list with a `needs_yo
 (a list of foreign rows), a change of `docs/air-contract.md`, and an IJAI ticket. Phase 2 measures first whether the
 chat answer is used each day; if it is, the Air ticket goes next.
 
+## Archive
+
+Decision of the author (2026-11-14): "we must be able to archive any session, else we do not clear this mess". So the
+archive moves from phase 5 to phase 1, next to the triage, and it covers each session on the machine. The OpenSpec
+change is `session-archive`.
+
+### What "archive a session" means
+
+Three steps, in this order, and each one is separate:
+
+1. **Card.** Megachat writes what the session did and how to continue it. This is the step that removes the fear of
+   loss. It works for each owner.
+2. **Close.** The process of the session ends. Megachat does it only where it is safe and the user confirms.
+3. **Hide.** The session leaves the lists of the products (Codex, Air), in their own format. `restore` brings it
+   back.
+
+### What the products have (checked on 2026-11-14, read-only)
+
+| Product | Own archive state | Can a third party set it | Evidence |
+|---|---|---|---|
+| Codex (CLI, app, IDE) | `threads.archived` and `archived_at` in `~/.codex/state_5.sqlite`; `~/.codex/archived_sessions` (126 files; 126 rows with `archived = 1`, 705 with 0) | Yes, officially: `codex archive <id>`, `codex unarchive <id>` (codex-cli 0.167.0), app-server `thread/archive` | local files, `codex --help` |
+| Claude Code CLI | None for an interactive session. `claude --resume` lists each session file. `claude rm <id>` removes a background session from agent view and keeps the conversation | No official way. Air uses a title record `[archived] <title>` (`custom-title` and `agent-name`, plus `custom-title.json`), as `/rename` writes it. 16 of 768 Claude Code logs of 60 days have it | Air source at `e9de692b3d125`: `AgentThreadArchiveTitles.kt`, `ClaudeStoreThreadBackend.kt` |
+| Claude desktop app | Not installed on this machine | Not checked | `~/Library/Application Support` has no `Claude` |
+| Air | Reads the states above for its list. Before the mark of a Claude Code session, Air stops its workers, also a `claude` in a terminal after a wait | An ACP agent can write the same marks; Air has no ACP request for an archive | `ClaudeSessionSource.archiveSession`, `ClaudeSessionWorkerStopper.kt` |
+| pi | Air appends a `session_info` record with the prefix | Yes, the same format | `PiSessionSource.kt` |
+| herdr | Panes, no archive. `herdr pane close`, `herdr agent focus`, `herdr agent list` | Close only | `herdr --help`; the server was not on the default socket, so no live check |
+| Megachat children | Delegated Claude Code and Codex sessions are hidden in Air already (`_session/service/record`). Pi Durable cannot archive a pi child (`docs/roadmap.md`, item 9) | Card only for a pi child | `docs/air-contract.md` |
+
+### What Megachat can do for each owner
+
+| Owner | Card | Close of the process | Hide |
+|---|---|---|---|
+| Terminal (Terminal, Rex, iTerm) | yes | yes, SIGTERM then SIGKILL, after the dialog; the tab stays with its shell | Codex: `codex archive`; Claude Code: title record |
+| herdr, tmux | yes | yes, the same; the pane stays | the same |
+| IntelliJ IDEA, Air | yes | no: archive it in Air, which stops and marks it | only after the process is gone |
+| Megachat run | yes | no: cancel the task first | after the run; pi child: card only |
+| `claude daemon` background job | yes | no: the answer gives `claude stop <id>` | after the process is gone |
+| Past session, no process | yes | nothing to close | yes |
+
+Why Megachat does not stop an IDE session: the IDE owns the process and its ACP adapter, and Air already has a stop
+and an archive of its own. Two stoppers of one process is a race.
+
+### The card
+
+One JSON line of `session-archive.jsonl` in the state directory: the title, the project, the dates, the first and the
+last prompt, the last answer, the commits and the tickets that the log names, the changed files, the warnings, the
+hide state, and the command to continue (`agents_resume`, or `claude --resume <id>` and `codex resume <id>`).
+`agents_archive(action="search")` finds a card by a ticket, a file or a word.
+
+No model makes the card. It costs nothing, no text leaves the machine, and a test can check it. The last answer of a
+session is often its summary. If the author finds the cards too thin after a week, phase 2 adds a model summary on
+request for one card. Its cost is not measured; measure it before the proposal.
+
+The commits come from the `git commit` output in the log, not from `git log`, because one directory had 8 live
+sessions on 2026-11-14.
+
+### Bulk and undo
+
+- The close list of `agents_triage` gives the batch: up to 50 rows, one dialog, the options `archive` and `keep`.
+- The dialog has one line for each row: agent, project, age, owner, what happens (close and hide, card only), the
+  warnings.
+- `restore` reverses the hide and keeps the card. It starts no process. The result gives the command to continue.
+- The close of a process cannot be undone, but no work goes with it: the log stays, and `agents_resume` continues it.
+
+### Safety: never lose work
+
+Refuse the row (no dialog line):
+
+- the status `working`, `stuck` or `waiting_for_permission`;
+- a tool runs: the process file of Claude Code says `shell` (2 sessions on 2026-11-14), or a process below the agent
+  that is no MCP server;
+- a Megachat run has the session;
+- a Codex row with an activity in the last 10 minutes, because Codex writes no permission record;
+- no consent `sessions.index`.
+
+Warn in the dialog, and keep the warning in the card:
+
+- uncommitted files in the directory (`git status --porcelain`);
+- the branch is ahead of its upstream;
+- another live session has the same directory, so the changes can be its own;
+- the last activity is less than 1 hour ago.
+
+Never: delete a log, a worktree or a branch; `claude rm --discard-unpushed`; move a file in `~/.claude` or
+`~/.codex`; write a mark while a process of the session lives; archive without the dialog.
+
+### What Megachat does alone, and what goes to Air
+
+Alone (phase 1): the card, the batch dialog, the close of terminal and multiplexer sessions, the hide in the formats
+of Codex and Air. Air shows the hidden state with no Air release, because it reads these marks.
+
+IJAI ticket (draft, not filed; filed on "да"):
+
+1. Keep the prefix `[archived] ` and the record types as a contract that an ACP agent may write, with a test in Air.
+2. Refresh the session list on a new title record of a closed session.
+3. Later: an ACP request `_session/archive` from an agent, so Megachat can ask Air to archive a session that Air owns.
+   This needs a change of `docs/air-contract.md`.
+
 ## Phased plan
 
 Gate rule: a phase starts when the author approves its OpenSpec proposal and the metrics of the earlier phase say it
@@ -219,7 +322,9 @@ helps.
 1. **Observe and triage** (change `session-triage`, in this commit). One read-only tool `agents_triage` and one rule
    in the instructions: the buckets `needs_you`, `stuck`, `working`, `abandoned`, `quiet`, the duplicate hints, the
    tty of each terminal row, and one chat answer that ends with a close list.
-   Gate to phase 2: precision of `abandoned` is 90% or more for a week.
+   **Archive** (change `session-archive`): the card, one dialog for the close list, the close of terminal and
+   multiplexer sessions, the hide in the formats of Codex and Air, `restore` (section "Archive").
+   Gate to phase 2: precision of `abandoned` is 90% or more, restores are under 10%, and no work is lost.
 2. **Notify and show** (modifies `session-notes` and `morning-report`; an IJAI ticket for Air). The morning report
    gets a "waits for you" and an "abandoned" line. A note for `needs_you` names the project, the title and the tty,
    and is opt-in under the present `sessions.notes`. The Air side: a count badge of `needs_you` and a read-only list
@@ -228,10 +333,9 @@ helps.
    user to close the old process, then resumes it as a child. Gate: the order of the steps proves no two writers.
 4. **Policies** (new capability). Rules of the user, for example "ask me about a session silent for 5 days". A
    rule only asks. It never stops.
-5. **Archive** (new capability, small). A closed or ended session leaves a one-paragraph card in the learned memory
-   ("what was done, where it stopped"), so a closed tab loses no context. Only with a request of the user.
+5. **Archive** moved to phase 1. Phase 2 can add a model summary of a card on request, after a cost measure.
 
-Not planned: any step that writes into a foreign terminal.
+Not planned: any step that writes into a foreign terminal or into the log of a live session.
 
 ## Open questions for the author
 
@@ -239,3 +343,6 @@ Not planned: any step that writes into a foreign terminal.
 2. Is a duplicate hint worth a place in phase 1, or does it wait for the measurement of real duplicates?
 3. Phase 2: the morning report line only, or also a note for `needs_you`?
 4. Interface: the Air section "Other sessions" after phase 1, or only when the chat answer proves daily use?
+5. Archive: may Megachat write the title mark of Air into a closed Claude Code log (works today), or wait for an ACP
+   request of Air (cleaner, needs an Air release)?
+6. Archive: a stop of an idle terminal session after the dialog, or a card and hide only, and the user closes the tab?

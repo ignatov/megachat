@@ -28,7 +28,8 @@ Where it shows: the chat. One new read-only tool of the main agent, and one rule
   `agents_triage` and gives one answer: a count line, the `needs_you` rows first, then a close list of the
   `abandoned` rows with the age, the project and the tty. The close list says that a close loses no work: the log
   stays, and `agents_resume` can continue the session later. The answer names no command to close a session. For an
-  orphan it may offer `agents_stop`, which asks the user as before.
+  orphan it may offer `agents_stop`, which asks the user as before. The change `session-archive` (also phase 1)
+  adds `agents_archive` for the close list.
 - **The surface.** The chat only. The brief (section "Interface") compares the chat with a list in Air, notifications
   and the sidebar of a multiplexer. The chat owns the triage and the decisions; a view in Air is a later IJAI ticket.
 

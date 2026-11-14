@@ -70,7 +70,7 @@ Tests: `test/triage.test.mjs`
 - **THEN** the row is `unread`, the result names the setting `sessions.index`, and the setting is still off
 
 ### Requirement: Triage takes no action
-The tool MUST NOT stop, resume, or write into a session. The instructions MUST tell the main agent to name no command that closes a session of another CLI, and to offer `agents_stop` only for an orphan (see the capability `stop-sessions`).
+The tool MUST NOT stop, resume, or write into a session. The instructions MUST tell the main agent to name no shell command that closes a session of another CLI, and to close a session only through a tool that asks the user: `agents_stop` for an orphan (see the capability `stop-sessions`), or `agents_archive` for the close list (see the change `session-archive`).
 
 Tests: `test/triage.test.mjs`
 
