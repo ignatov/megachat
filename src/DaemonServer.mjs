@@ -129,6 +129,12 @@ export class DaemonServer {
         send({ cwd })
         return
       }
+      case '/client': {
+        requireCondition(typeof body.airSupport === 'boolean')
+        await this.service.setAirSupport(body.airSupport)
+        send({ airSupport: body.airSupport })
+        return
+      }
       case '/input': send(await this.service.submit(body.requestId, body.text)); return
       case '/prompt-suggestion/withdraw': {
         requireCondition(typeof body.id === 'string' && body.id.length <= 200)

@@ -483,6 +483,8 @@ function stubDaemon({ workspaces = [], quiet = [] } = {}) {
   let workspaceCalls = 0
   const daemon = { open: new Set(), watches: 0 }
   daemon.json = async path => {
+    // The attach of a view tells the daemon whether the client has the Air support.
+    if (path === '/client') return {}
     assert.equal(path, '/workspace')
     return workspaces[workspaceCalls++] ?? {}
   }

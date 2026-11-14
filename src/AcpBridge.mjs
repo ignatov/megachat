@@ -204,6 +204,8 @@ export class AcpBridge {
         this.nativeTurns = capabilities.includes('asyncTasks')
         this.serviceSessions = capabilities.includes('serviceSessions')
         this.workspaces = capabilities.includes('workspaces')
+        // The client draws the `air-html` fence: Air names the capability `htmlFence`, or until then any Air with version 1.
+        this.airSupport = air?.version >= 1
         return {
           protocolVersion: 1, agentInfo: { name: 'air-megachat', title: message('title'), version: megachatVersion() },
           agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } }, authMethods: [],
@@ -265,6 +267,7 @@ class AcpBridgeSession {
     this.nativeTurns = capabilities.nativeTurns
     this.serviceSessions = capabilities.serviceSessions
     this.workspaces = capabilities.workspaces
+    this.airSupport = capabilities.airSupport === true
     this.transcripts = capabilities.transcripts
     // The prompt suggestion that this view sent last, and the last state of the daemon. The view sends a suggestion
     // only after its attach, so a suggestion never is a part of the replay.
@@ -418,6 +421,11 @@ class AcpBridgeSession {
     const open = () => requireCondition(!this.closed, 'missing')
     // The daemon refuses a directory that it cannot read, such as a deleted project. The view attaches without it.
     try { await this.daemon.json('/workspace', { cwd: ctx.params.cwd }) }
+    catch (error) { if (!(error instanceof MegachatError)) throw error }
+    open()
+    // The daemon builds the rules of the main agent for the next turn from the support of the view that attached last.
+    // A daemon of an earlier build refuses the route. The view attaches without it.
+    try { await this.daemon.json('/client', { airSupport: this.airSupport }) }
     catch (error) { if (!(error instanceof MegachatError)) throw error }
     open()
     await this.refreshWorkspaces()

@@ -23,7 +23,7 @@ import { replyText, STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from '.
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
 import { SessionArchive } from './SessionArchive.mjs'
-import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
+import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, htmlOn, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
 import { isNoteMessage, SessionNotes } from './SessionNotes.mjs'
 import { waitForState } from './waitForState.mjs'
 import { isSleeping, isWorkingDate, localDate, nextWorkdayStart, workdaySettings, zonedTime } from './Workday.mjs'
@@ -106,7 +106,7 @@ function harnessSettings(values, models) {
  * own, so a change sends only this section to the model again, and not the bundled rules. [projects] gives the project
  * values as `[directory, text]`, one line for each project.
  */
-function settingsRules(values, onboarding, rules, notice, projects = [], offers = []) {
+function settingsRules(values, onboarding, rules, notice, projects = [], offers = [], html = false) {
   const language = values['reply.language']
   return [
     message(`instructions.length.${values['reply.length']}`),
@@ -122,6 +122,8 @@ function settingsRules(values, onboarding, rules, notice, projects = [], offers 
     ...(offers.length ? [rules.offers.head, message('instructions.offers.open'),
       ...offers.map(({ key, value, trigger }) => `${key} (${value}): ${trigger}`)] : []),
     message('instructions.notes', notesOn(values) ? 'on' : 'off'),
+    // The page rules are for the main agent only. A child gets the rules paragraph of `childRulesText`, not this section.
+    ...(html ? [rules.html.trimEnd()] : []),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
   ].join('\n')
 }
@@ -219,7 +221,7 @@ export class PiMegachatService {
     const values = settings.values()
     // The rules of the user come from the file at the start of the daemon only.
     const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
-      ghost: await resource('instructions-suggestions-ghost.md'),
+      ghost: await resource('instructions-suggestions-ghost.md'), html: await resource('air-html.md'),
       onboarding: await resource('instructions-onboarding.md'), onboardingGhost: await resource('instructions-onboarding-ghost.md'),
       offers: parseOffers(await resource('instructions-offers.md')), user: await readUserInstructions(userInstructionsPath) }
     const live = { harness: harnessSettings(values, models) }
@@ -251,6 +253,8 @@ export class PiMegachatService {
       codexArchive: join(environment.CODEX_HOME || join(home ?? homedir(), '.codex'), 'archived_sessions'), ...archiveOptions })
     // The keys of the settings that the main agent offered. The rules section shows only the other offers.
     service.offered = new Set(Object.keys((await state.snapshot()).initiative.offers))
+    // The Air support of the last client that attached. `chat.html` `auto` uses it until the next attach.
+    service.airSupport = (await state.snapshot()).airSupport === true
     service.adopt(values)
     await service.dropPromptSuggestion()
     service.workdayClock = reportOptions.clock ?? workdayClock
@@ -315,6 +319,7 @@ export class PiMegachatService {
   adopt(values) {
     this.values = values
     this.projectRules = this.settings.projectRules()
+    this.html = htmlOn(values, this.airSupport)
     this.onboarding = this.settings.onboarding
     // The open offers change only with the settings, so the rules section changes only between two turns.
     this.openOffers = this.offersOpen(values, values['reply.suggestions'], this.onboarding)
@@ -344,6 +349,17 @@ export class PiMegachatService {
     this.keepAlive = keepAlive ? new PromptCacheKeepAlive({ ...keepAlive, clock, ...(minTokens === undefined ? {} : { minTokens }),
       tokens: () => this.contextTokens(), ping: signal => this.ping(signal), compact: () => this.compact() }) : undefined
     return true
+  }
+
+  /**
+   * Takes the Air [support] that a view reports with its attach. The rules section of the next turn follows it, as it
+   * follows a setting.
+   */
+  async setAirSupport(support) {
+    if (support === this.airSupport && (await this.state.snapshot()).airSupport === support) return
+    await this.state.setAirSupport(support)
+    this.airSupport = support
+    await this.settingsChanged()
   }
 
   /**
@@ -537,7 +553,7 @@ export class PiMegachatService {
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
-      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules, this.openOffers) },
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules, this.openOffers, this.html) },
       // The section is always there when the daemon has a memory, so a change of the file changes only this section.
       ...(this.memory ? [{ key: 'memory', render: () => this.memorySection() }] : []),
     ], hooks: [

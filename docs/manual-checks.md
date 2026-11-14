@@ -266,4 +266,12 @@ These checks need the author by hand. Each one names its OpenSpec change.
   Air records with the prefix, copied each, restored it and archived it again, and compared the last two lines with the
   originals: 13 of 13 equal. The 16 logs have no sidecar `custom-title.json`, as `ClaudeCustomTitleSidecarWrite.WHEN_PRESENT`
   of Air gives.
+- `air-html-in-chat` (task 1.1, open): on a real Air build with a temporary `MEGACHAT_HOME`, log the `initialize` and the
+  `session/new` that Air sends to Megachat, without a token. Record the capabilities, and whether `additionalDirectories`
+  or the `air-views` path arrives. The ACP logs of the IDE (`~/Library/Logs/JetBrains/IntelliJIdea2027.1/acp`) hold no
+  request body, so the check needs Air. The state keeps the last value of the support in the field `airSupport` of the
+  state document (no key-value table was needed).
+- `air-html-in-chat` (task 1.2, open): give the rules to the model in a test chat, and verify that Air draws the fence and
+  that a stream with a chunk inside the fence ends in a page.
+- `air-html-in-chat` (task 3.2, open): ask "draw the open tasks as a chart" in Megachat in Air, and record the result.
 

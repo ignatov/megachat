@@ -333,6 +333,8 @@ export class MegachatState {
       Object.assign(state.initiative, { projects: {}, pending: {} })
       state.serviceSessions ??= serviceSessionsOf(state.runs)
       state.projects ??= []
+      // Whether the last client that attached has the Air support (`chat.html` `auto` reads it). An earlier build has none.
+      state.airSupport ??= false
       state.projectCreations ??= {}
       // The outcomes of the writes of the tool agents_memory by the request ID. A state of an earlier build has none.
       state.memoryWrites ??= {}
@@ -372,6 +374,11 @@ export class MegachatState {
 
   async watch() {
     return this.harness.watchDoc(MegachatDoc, this.root.id, BACKGROUND_CONTEXT)
+  }
+
+  /** Keeps the Air support of the client that attached last. An automatic turn and a restart use it until the next attach. */
+  async setAirSupport(support) {
+    await this.change(state => { state.airSupport = support })
   }
 
   async addWorkspace(cwd) {

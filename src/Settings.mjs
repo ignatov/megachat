@@ -27,6 +27,10 @@ export const SUGGESTIONS_VARIABLE = 'MEGACHAT_SUGGESTIONS'
  * prompt input of Air.
  */
 export const SUGGESTION_MODES = ['off', 'reply', 'ghost']
+/** The modes of `chat.html`: the `air-html` rules in the instructions of the main agent. */
+export const HTML_MODES = ['auto', 'on', 'off']
+/** True when the instructions of the main agent hold the `air-html` rules: the [values] of the settings and the Air [support]. */
+export const htmlOn = (values, support) => values['chat.html'] === 'on' || (values['chat.html'] === 'auto' && support === true)
 export const DEFAULT_MODEL = 'anthropic/claude-opus-5-5'
 /** The model of a pi child: small and cheap, for a task that only reads files. */
 export const DEFAULT_PI_MODEL = 'anthropic/claude-haiku-5-5'
@@ -228,6 +232,8 @@ export const SETTINGS = [
     allowed: () => ({ values: ['auto'], other: message('settings.language.other') }) },
   { key: 'reply.length', default: 'short', applies: 'nextTurn',
     validate: choice(['short', 'normal', 'detailed']), allowed: () => ({ values: ['short', 'normal', 'detailed'] }) },
+  // `auto` gives the page rules to the main agent only for a client with the Air support (see `chat-view`).
+  { key: 'chat.html', default: 'auto', applies: 'nextTurn', validate: choice(HTML_MODES), allowed: () => ({ values: HTML_MODES }) },
   { key: 'reply.quoteRequest', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   { key: 'children.agent', default: 'claude', applies: 'nextChild', project: true, validate: choice(CHILD_AGENTS), allowed: () => ({ values: CHILD_AGENTS }) },
   // The value 1 runs one child at a time, as the builds up to v0.3.0 did.

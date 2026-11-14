@@ -27,6 +27,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | `serviceSessions` | Air | Megachat records each delegated session with `_session/service/record`. |
 | `workspaces` | Air | Megachat asks for the open projects with `_workspaces/list`. |
 | `persistentSession` | Megachat, always | Air sends no `session/cancel` and no `session/close` when it releases the runtime. Air loads the session again on each attach. Air sends `clientMessageId` with each prompt. |
+| `htmlFence` | Air (read only, no Air release sends it yet) | Air draws an `air-html` code fence of a reply as a page. Megachat gives the page rules to the main agent (setting `chat.html`). Until Air sends the name, `auto` takes each client with `version` 1 or more. The daemon keeps the answer of the last view that attached. See "The pages in the chat" below. |
 | `asyncTasks` | Megachat, when Air sent it | Air lists the background tasks of the session. |
 
 ## The requests
@@ -344,3 +345,17 @@ What Megachat does:
   The daemon refuses each later answer, also one that comes before that update, and it sends no signal.
 - The main agent waits in the turn for the answer, at most 5 minutes. In the view that sent the prompt, the dialog
   belongs to the turn, so a Stop of the turn closes it, and the daemon closes the request.
+
+## The pages in the chat
+
+This is no extension. Air draws a code fence with the language `air-html` in the text of a reply as a page in a sandboxed
+frame: no network, the colors of the IDE, a switch to the code, and an open in an editor tab. No ACP content type and no
+tool belong to it. Megachat sends the fence as plain text in `agent_message_chunk`, also in the replay.
+
+- The skill `air-html` of Air describes the fence. Megachat has a short copy of the rules in `resources/air-html.md`. It
+  does not read the cache of Air at run time.
+- Each view tells the daemon with its attach (`POST /client`) whether the client has the Air support. The daemon adds the
+  rules to the instructions of the main agent when `chat.html` is `on`, or is `auto` and the last view that attached has
+  the support. A child never gets the rules.
+- Open for Air (the three points of the IJAI ticket): a capability `htmlFence` in `initialize`, whether a custom ACP agent
+  gets `additionalDirectories` with the skill directory, and a public contract of the fence.
