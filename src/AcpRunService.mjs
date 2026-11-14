@@ -241,11 +241,13 @@ export class AcpRunService {
     let completed = false
     // The text of the first limit that the run reached, or null.
     let limited = null
+    // The class of the first limit for the log: `timeout` or `outputLimit`.
+    let limitClass
     let waitingPermissions = 0
-    const limit = text => { limited ??= text; stop() }
+    const limit = (text, kind) => { if (limited === null) { limited = text; limitClass = kind } stop() }
     // The time limit of the run: the value of `children.timeoutMinutes` at its start, 0 for no limit. A test gives it.
     let deadlineMs = 0
-    const timeLimit = () => limit(message('error.limit', minutesOf(deadlineMs)))
+    const timeLimit = () => limit(message('error.limit', minutesOf(deadlineMs)), 'timeout')
     const armDeadline = () => { if (deadlineMs > 0) timer = setTimeout(timeLimit, deadlineMs) }
     try {
       // The time of the start shows which children ran at the same time.
@@ -294,7 +296,7 @@ export class AcpRunService {
       const decoder = new StringDecoder('utf8')
       child.stderr.on('data', chunk => {
         stderrBytes += chunk.length
-        if (stderrBytes > MAX_STDERR_MB * 1024 * 1024) limit(message('error.outputLimit', MAX_STDERR_MB))
+        if (stderrBytes > MAX_STDERR_MB * 1024 * 1024) limit(message('error.outputLimit', MAX_STDERR_MB), 'outputLimit')
         keepErrorOutput(errorOutput, decoder.write(chunk))
         agentEnded()
       })
@@ -448,6 +450,9 @@ export class AcpRunService {
       const answer = answerOf(error)
       const reason = failed && child && (answer || !(error instanceof MegachatError))
         ? await this.childFailure(run.id, child, closed, { answer, request, dispatched, errorOutput }) : undefined
+      // The class of the error for the log. `spawn` is an agent process that ended before it got the task.
+      const errorClass = limitClass ?? (this.closing ? 'daemonStop' : error instanceof MegachatError ? error.code
+        : answer?.code === AUTH_REQUIRED ? 'login' : answer ? 'agentAnswer' : reason ? (dispatched ? 'agentExit' : 'spawn') : 'other')
       await this.state.transition(run.id, ['launching', 'ready', 'dispatched', 'running', 'approval'], {
         status: current.cancelRequested ? 'cancelled' : 'interrupted',
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message
@@ -455,7 +460,7 @@ export class AcpRunService {
         // A login does not come back by itself, so a run that asks for one gets no continuation.
         autoResume: !limited && !(error instanceof MegachatError) && answer?.code !== AUTH_REQUIRED,
         ...(this.closing ? { plannedStop: true } : {}),
-      })
+      }, { errorClass })
     }
     finally {
       // The word `clean` goes before the abort of the lifetime, whose stop has no word.

@@ -217,7 +217,8 @@ export class PiRunService {
       const unhandled = error !== undefined && !continued && work.withdrawn > 0
       await this.state.transition(run.id, ['dispatched'], { status, stopReason: reason,
         ...(error === undefined ? {} : { error: unhandled ? `${error} ${message('error.pi.unhandledSteers', work.withdrawn)}` : error }),
-        ...(status === 'interrupted' && !restarted ? { autoResume: !limited } : {}) })
+        ...(status === 'interrupted' && !restarted ? { autoResume: !limited } : {}) },
+      { errorClass: error === undefined ? undefined : limited ? 'timeout' : status === 'failed' ? 'piStopped' : 'interrupted' })
     }
     catch (error) {
       work.ended = true
@@ -233,7 +234,7 @@ export class PiRunService {
         error: current.cancelRequested ? null : error instanceof MegachatError ? error.message : message('error.interrupted'),
         autoResume: !(error instanceof MegachatError),
         ...(this.closing ? { plannedStop: true } : {}),
-      })
+      }, { errorClass: limited || error?.code === 'limit' ? 'timeout' : this.closing ? 'daemonStop' : error instanceof MegachatError ? error.code : 'other' })
     }
     finally {
       work.lifetime.abort()

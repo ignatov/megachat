@@ -269,7 +269,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `memory-versions/` | The newest 20 versions of `memory.md` before each write of Megachat, the newest 5 texts that an undo replaced, and the digest of the file after the last write. A forget deletes the versions. |
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
-| `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For a failed child run, it holds the answer of the agent and the end of its error output, without the known secrets. |
+| `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For each child run, it holds a line for the start, a line for the end, and for an error a line with its class. For a failed child run, it also holds the answer of the agent and the end of its error output, without the known secrets. No line holds a prompt. |
 
 Each directory has the mode 0700, and each file has the mode 0600. When the shared directory has no conversation, the
 daemon copies it once from `~/Library/Application Support/JetBrains/AirMegachat`. `MEGACHAT_LEGACY_DIRS` replaces that

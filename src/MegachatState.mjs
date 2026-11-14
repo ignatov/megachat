@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, InboxDoc, LiveDoc } from '@earendil-works/pi-durable'
 import { message, requireCondition } from './messages.mjs'
+import { endOf, logRunEnd, logRunStart } from './RunLog.mjs'
 import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
 import { STOPPED_KIND } from './ReplyStream.mjs'
 import { forgottenTopic } from './MegachatMemory.mjs'
@@ -193,16 +194,16 @@ function dropCarriedOutput(run) {
  * A stop for a message of the user (`steerRestart`) is no failure either. Its continuation starts at once, also after
  * the last attempt, because the message must reach the child. The limit of the messages limits these continuations.
  */
-function scheduleResume(state, run, previousStatus, delayMs) {
+function scheduleResume(state, run, previousStatus, delayMs, recovered = false) {
   const attempt = run.resumeAttempt ?? 0
   if (run.status !== 'interrupted' || run.cancelRequested || run.closed || run.autoResume === false || run.resumedBy
-    || attempt >= maxAutomaticResumes && !run.steerRestart) return
+    || attempt >= maxAutomaticResumes && !run.steerRestart) return undefined
   const sent = run.dispatched || sentStates.has(previousStatus)
-  if (sent && !run.providerSessionId) return
+  if (sent && !run.providerSessionId) return undefined
   // A pi child only reads, so its text names no git status and no file that it created.
   const prompt = !sent ? run.prompt : message(`${run.steerRestart ? 'child.steer.restarted' : 'child.continue'}${run.agent === 'pi' ? '.pi' : ''}`)
-  addContinuation(state, run, {
-    prompt, task: run.task ?? (sent ? run.prompt : undefined), steered: run.steerRestart ? 'restarted' : null, sent,
+  return addContinuation(state, run, {
+    prompt, task: run.task ?? (sent ? run.prompt : undefined), steered: run.steerRestart ? 'restarted' : null, sent, recovered,
     resumeAttempt: run.plannedStop || run.steerRestart ? attempt : attempt + 1,
     notBefore: Date.now() + (run.steerRestart ? 0 : delayMs * 4 ** attempt),
   })
@@ -214,9 +215,9 @@ function scheduleResume(state, run, previousStatus, delayMs) {
  * stored the turn, so the continuation starts at once in the same session, and it does not count as an attempt.
  */
 function followSteers(state, run) {
-  if (run.status !== 'completed' || run.cancelRequested || run.closed || run.resumedBy || !run.providerSessionId) return
-  if (!run.steers?.some(item => item.delivery === 'pending')) return
-  addContinuation(state, run, { prompt: message('child.steer.followUp'), task: run.task ?? run.prompt, steered: 'followUp',
+  if (run.status !== 'completed' || run.cancelRequested || run.closed || run.resumedBy || !run.providerSessionId) return undefined
+  if (!run.steers?.some(item => item.delivery === 'pending')) return undefined
+  return addContinuation(state, run, { prompt: message('child.steer.followUp'), task: run.task ?? run.prompt, steered: 'followUp',
     sent: true, resumeAttempt: run.resumeAttempt ?? 0, notBefore: Date.now() })
 }
 
@@ -225,7 +226,7 @@ function followSteers(state, run) {
  * user that the provider session may not have, and its dispatch quotes them. After a stop for a message, and after a follow-up for one ([steered]),
  * the main agent gets one report: the report of the last run, with the output of the earlier run before its own.
  */
-function addContinuation(state, run, { prompt, task, steered, sent, resumeAttempt, notBefore }) {
+function addContinuation(state, run, { prompt, task, steered, sent, resumeAttempt, notBefore, recovered = false }) {
   retain(state)
   const next = {
     id: randomUUID(), childSessionId: run.childSessionId, mainRunId: run.mainRunId, agent: run.agent ?? 'claude',
@@ -245,6 +246,10 @@ function addContinuation(state, run, { prompt, task, steered, sent, resumeAttemp
   run.status = 'resumed'
   run.resumedBy = next.id
   if (steered) run.reported = true
+  // The caller writes the log line after the commit, because a commit can run its function again.
+  return { id: next.id, kind: steered === 'restarted' ? 'steer-restart' : steered === 'followUp' ? 'steer-followup' : recovered ? 'recovery' : 'continue',
+    run: { id: next.id, resumeOf: run.id, childSessionId: next.childSessionId, providerSessionId: next.providerSessionId,
+      agent: next.agent, cwd: next.cwd, title: next.title } }
 }
 
 /**
@@ -1031,7 +1036,10 @@ export class MegachatState {
     requireCondition(typeof args.prompt === 'string' && args.prompt.length > 0 && args.prompt.length <= 64000)
     requireCondition(args.title === undefined || typeof args.title === 'string' && args.title.trim().length > 0 && args.title.length <= 60)
     const hash = digest(args)
-    return this.change(state => {
+    // The log line of the start. A repeated request makes no line, and a commit that runs again makes one.
+    let started
+    const admitted = await this.change(state => {
+      started = undefined
       const old = Object.values(state.runs).find(run => run.requestId === requestId)
       if (old) {
         requireCondition(old.digest === hash, 'conflict')
@@ -1074,8 +1082,11 @@ export class MegachatState {
         cancelRequested: false, createdAt: Date.now(), closed: false,
       }
       state.runs[run.id] = run
+      started = { kind: args.childSessionId ? 'send' : args.providerSessionId ? 'resume' : 'spawn', run: plain(run) }
       return plain(run)
     })
+    if (started) logRunStart(started.run, started.kind)
+    return admitted
   }
 
   /**
@@ -1145,7 +1156,12 @@ export class MegachatState {
     })
   }
 
-  async transition(runId, expected, changes) {
+  /**
+   * Changes the run [runId] when its status is one of [expected]. [errorClass] says why the run ended on an error (see
+   * `logRunEnd`). A run that gets a terminal status writes the lines for its end to the log, and its continuation, when
+   * it has one, writes the line of its start.
+   */
+  async transition(runId, expected, changes, { errorClass } = {}) {
     // The error text of a run can hold a text of the child.
     if (typeof changes.error === 'string') changes = { ...changes, error: redactOwnSecrets(changes.error, this.secrets) }
     const filter = this.childTexts.get(runId)
@@ -1153,8 +1169,13 @@ export class MegachatState {
     // continuation and the report get the whole output.
     const settle = run => { if (filter?.generation === run.generation) appendOutput(run, filter.text.end()) }
     let finished
+    // The data of the log lines. A commit can run its function again, so the lines go out after the commit.
+    let ending
+    let continuation
     const changed = await this.change(state => {
       finished = false
+      ending = undefined
+      continuation = undefined
       const run = state.runs[runId]
       requireCondition(run, 'missing')
       if (!expected.includes(run.status)) return false
@@ -1162,6 +1183,7 @@ export class MegachatState {
         settle(run)
         run.status = 'cancelled'
         finished = true
+        ending = endOf(run, 'cancelled')
         return false
       }
       const previousStatus = run.status
@@ -1173,8 +1195,9 @@ export class MegachatState {
         finished = true
         run.finishedAt = Date.now()
         dropCarriedOutput(run)
-        scheduleResume(state, run, previousStatus, this.resumeDelayMs)
-        followSteers(state, run)
+        ending = endOf(run, run.status, { errorClass })
+        continuation = scheduleResume(state, run, previousStatus, this.resumeDelayMs) ?? followSteers(state, run)
+        if (continuation) ending.resumedBy = continuation.id
         for (const permission of Object.values(state.permissions)) {
           if (permission.runId === runId && permission.status === 'pending') permission.status = 'stale'
         }
@@ -1182,6 +1205,8 @@ export class MegachatState {
       return true
     })
     if (finished && this.childTexts.get(runId) === filter) this.childTexts.delete(runId)
+    if (ending) logRunEnd(ending)
+    if (continuation) logRunStart(continuation.run, continuation.kind)
     return changed
   }
 
@@ -1245,7 +1270,9 @@ export class MegachatState {
   }
 
   async cancel(mainRunId, runId = null) {
+    let ended
     await this.change(state => {
+      ended = []
       requireCondition(state.current?.id === mainRunId, 'inactive')
       if (runId === null) state.current.cancelling = true
       if (runId !== null) {
@@ -1257,10 +1284,14 @@ export class MegachatState {
       for (const run of Object.values(state.runs)) {
         if ((runId === null ? run.mainRunId === mainRunId : run.id === runId) && !terminalStates.has(run.status)) {
           run.cancelRequested = true
-          if (run.status === 'admitted') run.status = 'cancelled'
+          if (run.status === 'admitted') {
+            run.status = 'cancelled'
+            ended.push(endOf(run, 'cancelled'))
+          }
         }
       }
     })
+    for (const end of ended) logRunEnd(end)
   }
 
   /**
@@ -1270,7 +1301,9 @@ export class MegachatState {
    * report gives `cancelled`. Tells whether the stop is accepted: an unknown run and a finished run give `false`.
    */
   async stopChild(runId) {
-    return this.change(state => {
+    let ending
+    const stopped = await this.change(state => {
+      ending = undefined
       let run = Object.hasOwn(state.runs, runId) ? state.runs[runId] : null
       // A report can keep a run while `retain` drops its continuation. So the walk stops at a dropped run.
       while (run && state.runs[run.resumedBy]) run = state.runs[run.resumedBy]
@@ -1279,9 +1312,12 @@ export class MegachatState {
       if (run.status === 'admitted') {
         run.status = 'cancelled'
         run.finishedAt = Date.now()
+        ending = endOf(run, 'cancelled')
       }
       return true
     })
+    if (ending) logRunEnd(ending)
+    return stopped
   }
 
   async closeChild(childSessionId) {
@@ -1295,7 +1331,10 @@ export class MegachatState {
   }
 
   async recover() {
+    // The data of the log lines of the runs that the restart ended, in the order of the runs.
+    let lines
     await this.change(state => {
+      lines = []
       for (const run of Object.values(state.runs)) {
         if (terminalStates.has(run.status)) dropCarriedOutput(run)
         if (terminalStates.has(run.status) || run.status === 'admitted') continue
@@ -1304,14 +1343,22 @@ export class MegachatState {
         const previousStatus = run.status
         run.status = run.cancelRequested ? 'cancelled' : 'interrupted'
         run.finishedAt = Date.now()
+        const line = { end: endOf(run, run.status) }
         if (run.status === 'interrupted') {
           run.error ??= message('error.interrupted')
-          scheduleResume(state, run, previousStatus, this.resumeDelayMs)
+          line.end = endOf(run, run.status, { errorClass: 'daemonRestart' })
+          line.continuation = scheduleResume(state, run, previousStatus, this.resumeDelayMs, true)
+          if (line.continuation) line.end.resumedBy = line.continuation.id
         }
+        lines.push(line)
       }
       for (const permission of Object.values(state.permissions)) {
         if (permission.status === 'pending') permission.status = 'stale'
       }
     })
+    for (const { end, continuation } of lines) {
+      logRunEnd(end)
+      if (continuation) logRunStart(continuation.run, continuation.kind)
+    }
   }
 }
