@@ -35,8 +35,11 @@ change, because Megachat writes the marks that Air reads.
 - **The close of the process.** A live session with the owner `terminal` or `multiplexer` gets SIGTERM, then SIGKILL,
   after the confirmation, as an orphan does now. A session of an IDE or of a Megachat run is not stopped: the card
   is written, and the answer tells the user to archive it in its owner.
-- **The hide.** After the process is gone: `codex archive <id>` for Codex; the title record `[archived] <title>` for
-  Claude Code and pi, in the format of Air. `restore` reverses the hide and keeps the card.
+- **The hide, in the format of Air.** After the process is gone: `codex archive <id>` for Codex; the title records
+  `[archived] <title>` for Claude Code and pi, byte for byte as Air writes them. `restore` reverses the hide and keeps
+  the card.
+- **Sync with Air in both directions.** The session index reads the archive state of Air: a session that Air archived
+  is `archived` in Megachat, and `restore` works for it. A session that Megachat archived shows as Done in Air.
 - **The safety rules.** A session that works, has an open step, waits for a permission, or runs a tool is refused.
   Uncommitted files, unpushed commits, another live session in the same directory, and an activity in the last hour
   give a warning in the dialog.
@@ -57,13 +60,15 @@ change, because Megachat writes the marks that Air reads.
 ## ACP and Air
 
 No ACP extension changes, and `docs/air-contract.md` does not change, because the dialog is the present
-`session/request_permission`. Air needs no change for phase 1. An IJAI ticket asks Air to keep the title prefix
-`[archived] ` as a contract that an ACP agent may write, and to refresh its list on that record (see the brief).
+`session/request_permission`. Air needs no change. The decision "own label or a request of Air" is closed: the `_session/archive` of Air goes from
+Air to an agent for the sessions of that agent, so it does not reach a session of a CLI. Megachat writes the title
+records that Air itself writes (see `design.md`, decisions 3 and 8). An IJAI ticket asks Air to keep the prefix as a
+contract and to document the records.
 
 ## Impact
 
 - Code: a new `src/SessionArchive.mjs` (card, checks, hide, restore); the tool in `src/PiMegachatService.mjs`;
-  `src/AgentStop.mjs` takes the archive route; the rule in `resources/instructions.md`.
+  `src/AgentStop.mjs` takes the archive route; the sources of Claude Code and pi give `archived` to the index; the rule in `resources/instructions.md`.
 - State: a new file `session-archive.jsonl` in the state directory. An older state directory has no file, and the
   first archive makes it.
 - Strings: the tool, the dialog and the warnings in `resources/Megachat.properties`.

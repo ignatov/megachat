@@ -268,6 +268,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `memory.md` | The learned memory: the facts about you and the working notes that the main agent and the reflection saved, and the topics that it must not save again. You can edit it. The first write makes it. See [The learned memory](#the-learned-memory). |
 | `memory-versions/` | The newest 20 versions of `memory.md` before each write of Megachat, the newest 5 texts that an undo replaced, and the digest of the file after the last write. A forget deletes the versions. |
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
+| `session-archive.jsonl` | The cards of the archived sessions (see "Archive a session"), one JSON line for each step. The first archive makes the file. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
 | `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For each child run, it holds a line for the start, a line for the end, and for an error a line with its class. For a failed child run, it also holds the answer of the agent and the end of its error output, without the known secrets. No line holds a prompt. |
 
@@ -750,6 +751,30 @@ The daemon checks the sessions every minute while the notes are on, with the sam
 
 Megachat 0.3.0 opens a state with a note: it shows the note as a message of the assistant, and it keeps the records.
 
+## Archive a session
+
+Ask the agent "archive these sessions" (for example, the idle sessions that you named), or "restore the session 7a2f". The
+main agent calls its tool `agents_archive` with the action `archive` (1 to 50 sessions), `restore`, `list` or `search`.
+The tool needs the setting `sessions.index` on. Megachat archives as Air does, so the two stay in sync:
+
+- **The dialog.** The chat shows one dialog for the whole batch, with a line for each session: its agent, project, last
+  activity, the action and the warnings. Only your answer `Archive` there starts the steps. An automatic turn cannot ask.
+- **The card.** Before each other step, Megachat saves a card of the session in `session-archive.jsonl`: the title, the
+  project, the dates, the first and the last prompt, the last answer, the commits, the tickets and the changed files that
+  the log names, and the command to continue. No model makes it, and the secret filter runs on each text.
+- **The stop.** An idle session that runs in a terminal or in a multiplexer gets `SIGTERM`, then `SIGKILL` after 10
+  seconds. A session in an IDE gets no signal: use Done in Air. A session that works, waits for a permission, runs a
+  tool or has a Megachat run is refused. Uncommitted files, unpushed commits, another session in the same directory and
+  a last activity less than 1 hour ago give a warning in the dialog.
+- **The hide.** When no process of the session runs, Megachat writes the records that Air writes for Done: for Claude
+  Code a `custom-title` and an `agent-name` line with the title `[archived] <title>`, for pi a `session_info` line, and for
+  Codex it runs `codex archive`. Air then shows the session as Done. A session that you archived in Air counts as
+  archived in Megachat, and `restore` brings it back with the title records that Air writes for Reopen, or with
+  `codex unarchive`. The tool never writes while a process of the session runs.
+
+`list` and `search` give the cards, also after a restore. A card is never deleted. Air can keep its own state for a
+session that it ran and that you reopened in Air. Such a row can stay active in Air after an archive of Megachat.
+
 ## Stop an orphan session
 
 Ask the agent "stop the orphan sessions" or "stop PID 4242". The main agent calls its tool `agents_stop`, and the
@@ -843,6 +868,7 @@ The session text is data for the agent, not instructions.
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
+| `src/SessionArchive.mjs` | The tool `agents_archive`: the checks and the warnings, the card, the stop of the process, the hide and the restore in the format of Air. |
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |

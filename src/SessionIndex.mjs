@@ -76,7 +76,9 @@ const keyset = ({ updated, id } = {}) => updated === undefined
 const keysetNext = rows => rows.length > PAGE ? { updated: rows[PAGE - 1].updated_at, id: rows[PAGE - 1].id } : undefined
 const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
 const sessionInfo = row => ({ sessionId: row.session_id, title: row.title ?? undefined, cwd: row.cwd, updatedAt: iso(row.updated_at),
-  ...(Number.isFinite(row.started_at) ? { startedAt: iso(row.started_at) } : {}) })
+  ...(Number.isFinite(row.started_at) ? { startedAt: iso(row.started_at) } : {}),
+  // Air archives a Claude Code or a pi session with a prefix in its title (see the capability `session-archive`).
+  ...(row.title?.startsWith('[archived] ') ? { archived: true } : {}) })
 
 /**
  * The index of the past sessions of Claude Code, Codex and pi in `sessions.sqlite`, apart from the conversation. It

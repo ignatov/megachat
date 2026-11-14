@@ -255,3 +255,15 @@ These checks need the author by hand. Each one names its OpenSpec change.
   agent still replies. Let the reply end, and do not answer. Verify that the dialog closes and shows again about 2
   seconds after the end of the reply, with no warning row about a cancelled request, and that the answer `Allow` then
   reaches the child. Repeat with a Stop of the reply while the dialog shows, for a child of an earlier turn.
+- `session-archive` (task 1.1, open): on copies of the logs in a temporary `MEGACHAT_HOME`, check what Claude Code and
+  the Codex TUI write on SIGTERM in a terminal, and whether `codex archive <id>` hides a thread in the Codex app and in
+  Air. Record the results here.
+- `session-archive` (task 3.2, open): on a real Air build, archive a copy of 3 Claude Code logs with `agents_archive` in
+  a temporary `MEGACHAT_HOME`, then record how many seconds Air needs to move each row to Done (the file watch of Air),
+  whether a session that Air ran and reopened stays active in Air, and a restore in Air of an archived row.
+- `session-archive` (checked on 2026-11-14, read-only on copies in `/tmp`): the title records of Megachat equal the
+  records of Air byte for byte. The check took the 13 Claude Code logs of `~/.claude/projects` whose last two lines are
+  Air records with the prefix, copied each, restored it and archived it again, and compared the last two lines with the
+  originals: 13 of 13 equal. The 16 logs have no sidecar `custom-title.json`, as `ClaudeCustomTitleSidecarWrite.WHEN_PRESENT`
+  of Air gives.
+

@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import * as fsPromises from 'node:fs/promises'
 import { readFile, realpath } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { calculateContextTokens, estimateMessageTokens } from '@earendil-works/pi-ai/utils/estimate'
 import { CompactionTask, createRegistry, DEFAULT_COMPACTION_POLICY, defineExtension, defineTool, GenerationTask, Harness, hook, InboxDoc, LiveDoc, ProviderDoc, ToolTask } from '@earendil-works/pi-durable'
@@ -19,6 +22,7 @@ import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { replyText, STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
 import { AgentStop } from './AgentStop.mjs'
+import { SessionArchive } from './SessionArchive.mjs'
 import { CACHE_RETENTION, CHILD_STEPS, environmentSetting, MegachatSettings, modelRef, notesOn, PROJECT_SETTINGS, SETTINGS, SettingsStore, suggestionMode } from './Settings.mjs'
 import { isNoteMessage, SessionNotes } from './SessionNotes.mjs'
 import { waitForState } from './waitForState.mjs'
@@ -199,7 +203,7 @@ export class PiMegachatService {
    * `agents_memory` and no reflection, for a test. [memory] gives the hooks of the memory, for a test.
    * [centralFailure] gives the last failure of Central, `{ cause, at }`, as `CentralConfigurationService.lastFailure`.
    */
-  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, archive: archiveOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -241,6 +245,10 @@ export class PiMegachatService {
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
     service.stopper = new AgentStop(state, { table: service.running.table, running: service.running, clock, ...stopOptions })
+    // The archive of sessions (see the capability `session-archive`) uses the dialog of the stopper and the live table.
+    service.archiver = new SessionArchive({ state, running: service.running, stopper: service.stopper, catalog: () => service.sessionIndex?.logs,
+      directory: stateDirectory, fs: fsPromises, secrets, clock,
+      codexArchive: join(environment.CODEX_HOME || join(home ?? homedir(), '.codex'), 'archived_sessions'), ...archiveOptions })
     // The keys of the settings that the main agent offered. The rules section shows only the other offers.
     service.offered = new Set(Object.keys((await state.snapshot()).initiative.offers))
     service.adopt(values)
@@ -578,6 +586,10 @@ export class PiMegachatService {
       // wait. The call does not run again after a restart of the daemon, and a restart removes each stop request.
       tool('stop', obj({ pids: arr(int(), { maxItems: 20 }), signal: opt(str({ maxLength: 10 })) }),
         async (args, api, callContext) => result(await this.stopper.call(args, { abortSignal: callContext?.abortSignal })), undefined, 'unsafe'),
+      // Like `stop`, the call waits in the turn for the answer of the user in the dialog, and a restart does not run it again.
+      tool('archive', obj({ action: str({ maxLength: 10 }), sessions: opt(arr(obj({ agent: str({ maxLength: 10 }), sessionId: str({ maxLength: 100 }) }), { maxItems: 50 })),
+        query: opt(str({ maxLength: 200 })), cursor: opt(str({ maxLength: 10 })) }),
+        async (args, api, callContext) => result(await this.archiver.call(args, { abortSignal: callContext?.abortSignal })), undefined, 'unsafe'),
       // The suggestion tools exist only in the modes `reply` and `ghost`. The stored suggestion state stays without them.
       // In the `ghost` mode the result tells the agent that the client shows the text, so the reply does not repeat it.
       ...(this.suggestions !== 'off' ? [

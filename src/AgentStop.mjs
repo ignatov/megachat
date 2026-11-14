@@ -12,6 +12,10 @@ export const STOP_MAX_PIDS = 20
 export const SIGNALS = ['SIGTERM', 'SIGKILL']
 /** The options of the dialog: `stop` sends the signal one time, `keep` sends none. There is no option for always. */
 export const STOP_OPTIONS = ['stop', 'keep']
+/** The options of the archive dialog (see the capability `session-archive`). `archive` is the answer that starts the steps. */
+export const ARCHIVE_OPTIONS = ['archive', 'keep']
+/** The owners whose idle session an archive can stop, besides an orphan. */
+export const ARCHIVE_OWNERS = new Set(['terminal', 'multiplexer'])
 /** The count of the closed requests that the view keeps, so a client can close its dialog with the outcome. */
 const KEPT_CLOSED = 32
 const systemClock = { now: () => Date.now() }
@@ -138,9 +142,9 @@ export class AgentStop {
    * Makes a request for the dialog. It replaces each open request: the client cannot remove a dialog that it shows, so
    * the answer to an earlier dialog must find no open request.
    */
-  open(signal, turnId, targets) {
+  open(signal, turnId, targets, { kind = 'stop', rows } = {}) {
     for (const old of this.requests.values()) this.close(old, 'replaced')
-    const request = { id: randomUUID(), turnId, signal, createdAt: this.clock.now(), delivered: false,
+    const request = { id: randomUUID(), turnId, signal, kind, rows, createdAt: this.clock.now(), delivered: false,
       targets: targets.map(({ pid, startedAt, identity, agent, cwd }) => ({ pid, startedAt, identity, agent, cwd })) }
     request.answer = new Promise(resolve => { request.settle = resolve })
     request.cancelTimer = this.timer(() => this.close(request, 'expired'), STOP_REQUEST_MS)
@@ -179,14 +183,16 @@ export class AgentStop {
    * a restart) is refused, and it sends no signal.
    */
   answer(id, optionId) {
-    requireCondition(typeof id === 'string' && id.length <= 100 && STOP_OPTIONS.includes(optionId))
+    requireCondition(typeof id === 'string' && id.length <= 100 && (STOP_OPTIONS.includes(optionId) || ARCHIVE_OPTIONS.includes(optionId)))
     const request = this.requests.get(id)
     if (request && this.clock.now() - request.createdAt >= STOP_REQUEST_MS) this.close(request, 'expired')
     if (!this.requests.has(id)) {
       logEvent('log.stop.late')
       throw new MegachatError('stopClosed')
     }
-    this.close(request, optionId === 'stop' ? 'allowed' : 'declined')
+    // The answer of a dialog must be an option of that dialog: `archive` does not start a stop, and `stop` no archive.
+    requireCondition((request.kind === 'archive' ? ARCHIVE_OPTIONS : STOP_OPTIONS).includes(optionId))
+    this.close(request, optionId === 'stop' || optionId === 'archive' ? 'allowed' : 'declined')
     return { accepted: true }
   }
 
@@ -234,14 +240,71 @@ export class AgentStop {
   }
 
   /**
+   * The dialog of an archive (see the capability `session-archive`): one request for all [rows]. It waits for the answer
+   * in the turn, as `call` does, and sends no signal. It gives `{ answer, turnId }`: `stop` when the user answered
+   * `archive`, else `declined`, `expired`, `replaced` or `cancelled`. Only a turn of the user can ask.
+   */
+  async confirm(kind, rows, abortSignal) {
+    requireCondition(kind === 'archive' && Array.isArray(rows) && rows.length >= 1)
+    const state = await this.state.snapshot()
+    if (state.current?.kind !== 'user' || state.current.cancelling) throw new MegachatError('archiveEvent')
+    const request = this.open('ARCHIVE', state.current.id, [], { kind, rows })
+    const answer = await this.wait(request, abortSignal)
+    return { answer, turnId: request.turnId }
+  }
+
+  /** Fails when the turn of a confirmed archive is not the current one any more, or when it stops. */
+  async ensureTurn(turnId, abortSignal) {
+    abortSignal?.throwIfAborted()
+    const state = await this.state.snapshot()
+    if (state.current?.id !== turnId || state.current.cancelling) throw new MegachatError('archiveEvent')
+  }
+
+  /**
+   * One signal of a confirmed archive to each of [targets], `{ pid, startedAt, identity }`. Directly before it, a new
+   * read of the table: a process that is not the same process, or that is not an orphan or a session of a terminal or a
+   * multiplexer any more, gets no signal. SIGKILL goes only to a process that got SIGTERM from this tool. Gives the
+   * outcome of each PID.
+   */
+  async terminate(targets, signal) {
+    requireCondition(SIGNALS.includes(signal))
+    const processes = await this.table.processes()
+    const pids = targets.map(target => target.pid)
+    this.checkOwners(pids, processes)
+    const sessions = this.sessions(processes, await this.state.snapshot())
+    const byPid = new Map(processes.map(item => [item.pid, item]))
+    const outcomes = []
+    for (const target of targets) {
+      const current = byPid.get(target.pid)
+      const session = sessions.get(target.pid)
+      const same = current && current.startedAt === target.startedAt && identityOf(current) === target.identity
+      const allowed = session && (session.ownership === 'orphan' || session.ownership === 'owned' && ARCHIVE_OWNERS.has(session.parent.kind))
+      if (!same || !allowed) { outcomes.push({ pid: target.pid, outcome: current ? 'changed' : 'ended' }); continue }
+      if (signal === 'SIGKILL') {
+        const sent = this.terminated.get(target.pid)
+        if (!sent || sent.startedAt !== target.startedAt || sent.identity !== target.identity) { outcomes.push({ pid: target.pid, outcome: 'refused' }); continue }
+      }
+      let outcome = 'sent'
+      try { this.kill(target.pid, signal) }
+      catch (error) { outcome = error?.code === 'ESRCH' ? 'ended' : error?.code === 'EPERM' ? 'denied' : 'failed' }
+      if (outcome === 'sent' && signal === 'SIGTERM') this.terminated.set(target.pid, { startedAt: target.startedAt, identity: target.identity })
+      if (signal === 'SIGKILL') this.terminated.delete(target.pid)
+      outcomes.push({ pid: target.pid, outcome })
+    }
+    logEvent('log.archive.signal', signal, outcomes.map(item => `${item.pid}:${item.outcome}`).join(','))
+    return outcomes
+  }
+
+  /**
    * The requests for the clients: each open request with its PIDs, agents and project directories, and the status of the
    * last closed requests. It holds no command line and no session content.
    */
   view() {
     return {
-      requests: [...this.requests.values()].map(request => ({ id: request.id, signal: request.signal,
+      requests: [...this.requests.values()].map(request => ({ id: request.id, signal: request.signal, kind: request.kind,
         expiresAt: iso(request.createdAt + STOP_REQUEST_MS),
-        targets: request.targets.map(({ pid, agent, cwd }) => ({ pid, agent, cwd })) })),
+        targets: request.targets.map(({ pid, agent, cwd }) => ({ pid, agent, cwd })),
+        ...(request.kind === 'archive' ? { rows: request.rows } : {}) })),
       closed: [...this.closed].map(([id, status]) => ({ id, status })),
     }
   }

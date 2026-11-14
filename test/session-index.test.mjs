@@ -985,6 +985,24 @@ function liveSource(cwd) {
     close() {} }
 }
 
+test('a Claude Code and a pi session that Air archived show archived: true, and a session that Air reopened does not', async t => {
+  const directories = await fixture(t)
+  const { home, project } = directories
+  const record = (type, field, title) => `${JSON.stringify({ type, [field]: title, sessionId: 's' })}\n`
+  await claudeSession(home, project, 'done', [claudeLine('d1', 'user', 'about juniper', project), record('custom-title', 'customTitle', '[archived] Fix the build'),
+    record('agent-name', 'agentName', '[archived] Fix the build')])
+  await claudeSession(home, project, 'reopened', [claudeLine('r1', 'user', 'about juniper', project), record('custom-title', 'customTitle', '[archived] Old'),
+    record('custom-title', 'customTitle', 'Old')])
+  const state = fakeState({ workspaces: [project] })
+  const { index } = await service(t, directories, state)
+  const sessions = new SessionHistoryService(state, { claude: liveSource(project), codex: liveSource(project) }, index)
+  await index.apply(ON)
+  await index.idle()
+  const listed = await sessions.search({ cwd: project, agent: 'claude' })
+  const flags = Object.fromEntries(listed.pages[0].matches.map(match => [match.sessionId, match.archived === true]))
+  assert.deepEqual(flags, { done: true, reopened: false })
+})
+
 test('the tools answer from the index, page through it, and fall back to the live source', async t => {
   const directories = await fixture(t)
   const { home, project } = directories

@@ -237,7 +237,7 @@ export class SessionHistoryService {
     requireCondition(this.index?.logs === logs, 'sessionsLogsOff')
     return {
       agent, source: 'log', order: 'newest',
-      session: { sessionId, cwd: record.cwd ?? null, title: record.title ?? null,
+      session: { sessionId, cwd: record.cwd ?? null, title: record.title ?? null, ...(record.title?.startsWith('[archived] ') ? { archived: true } : {}),
         lastActivityAt: Number.isFinite(record.mtimeMs) ? new Date(record.mtimeMs).toISOString() : null },
       entries: page.entries.map(({ key, timestamp, clipped, ...entry }) => {
         const excerpt = this.excerpt({ id: key, ...entry, timestamp: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null }, query)

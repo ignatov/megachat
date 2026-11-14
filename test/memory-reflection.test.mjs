@@ -405,7 +405,9 @@ test('a completed summary makes a pass due, and no pass starts while the convers
   const clock = fakeClock('2026-11-11T22:00:00Z')
   const fixture = await open(t, { clock, compactTokens: 30000,
     values: { 'workday.enabled': true, 'workday.timezone': 'UTC', 'workday.idleMinutes': 0, 'report.morning': false } })
-  const large = word => `${word} `.repeat(40000 / (word.length + 1))
+  // The three messages stay below the 30000 tokens of the compaction with the system prompt and the tools: a new tool
+  // adds tokens, so the size keeps a margin.
+  const large = word => `${word} `.repeat(38000 / (word.length + 1))
   for (const word of ['alpha', 'beta', 'gamma']) await fixture.say(word, large(word))
   assert.equal((await fixture.reflection()).due, false)
   assert.deepEqual(await fixture.service.compact(), { compacted: true })

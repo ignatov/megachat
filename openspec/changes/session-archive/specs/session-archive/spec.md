@@ -47,6 +47,32 @@ Tests: `test/archive.test.mjs`, `test/session-logs.test.mjs`
 - **WHEN** a session gets SIGTERM and SIGKILL, and its process still lives after 10 seconds
 - **THEN** the card has `hidden` `pending`, and the log of the session keeps its size
 
+### Requirement: Format of Air
+The title records of an archive and a restore MUST be the records that Air writes: for Claude Code a `custom-title` line and an `agent-name` line with the same title, and for pi a `session_info` line. The title MUST be the prefix and the normalized title, at most 200 characters. Megachat MUST write nothing when the state already matches.
+
+Tests: `test/archive.test.mjs`
+
+#### Scenario: A fixture of Air
+- **WHEN** Megachat archives a copy of a Claude Code log with the title `Fix the  build`
+- **THEN** the log ends with the two lines `{"type":"custom-title","customTitle":"[archived] Fix the build","sessionId":"<id>"}` and the same with `agent-name` and `agentName`
+
+#### Scenario: Archive twice
+- **WHEN** Megachat archives a session whose log already ends with the archived title
+- **THEN** the log keeps its size, and the answer is `already archived`
+
+### Requirement: State of Air
+`agents_archive` MUST treat a Claude Code or pi session as archived when its title has the prefix `[archived] `, and a Codex session when its log is in `archived_sessions`. `archive` MUST write nothing for such a session. `restore` MUST work for it, with no card. The tools that list sessions MUST give `archived: true` for a Claude Code or pi session with the prefix.
+
+Tests: `test/archive.test.mjs`, `test/session-index.test.mjs`
+
+#### Scenario: A session that Air reopened
+- **WHEN** a log ends with the title `[archived] Old`, and later with the title `Old`
+- **THEN** the tool that lists sessions gives no `archived` for it, and `restore` is refused as not archived
+
+#### Scenario: A session that Air archived
+- **WHEN** a log ends with the records `[archived] Fix the build` that Air wrote, and the user restores the session
+- **THEN** the log gets the title `Fix the build`, and the result gives `claude --resume <id>`
+
 ### Requirement: Restore of an archived session
 `restore` MUST reverse the hide: `codex unarchive <id>`, or a title record without the prefix. It MUST keep the card with `restoredAt`, and MUST start no process. The result MUST give the command to continue.
 

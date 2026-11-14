@@ -37,6 +37,7 @@ const permissionMeta = fields => ({ jetbrains: { air: { permission: { version: 1
  * in a code viewer that scrolls, so the list of the processes is there, one line for each process.
  */
 export function stopPermission(request) {
+  if (request.kind === 'archive') return archivePermission(request)
   const count = request.targets.length
   const title = message(count === 1 ? 'stop.dialog.title.one' : 'stop.dialog.title.many', request.signal, count)
   const lines = request.targets.map(target => target.cwd ? message('stop.dialog.line', target.pid, sessionAgentName(target.agent), basename(target.cwd))
@@ -49,6 +50,30 @@ export function stopPermission(request) {
       { optionId: 'keep', kind: 'reject_once', name: message('stop.option.keep'), _meta: permissionMeta({ description: message('stop.option.keep.description') }) },
     ],
     _meta: permissionMeta({ title, description: message(`stop.dialog.description.${request.signal}`, Math.max(1, Math.ceil((Date.parse(request.expiresAt) - Date.now()) / 60000))) }),
+  }
+}
+
+/**
+ * The dialog of an archive: one line for each session with its agent, project, age, action and warnings, and the options
+ * `archive` and `keep`. It uses the same method and the same answer route as the stop dialog.
+ */
+function archivePermission(request) {
+  const count = request.rows.length
+  const title = message(count === 1 ? 'archive.dialog.title.one' : 'archive.dialog.title.many', count)
+  const lines = request.rows.map(row => {
+    const age = row.lastActivityAt ? message('archive.dialog.age', row.lastActivityAt.replace('T', ' ').slice(0, 16)) : message('archive.dialog.age.unknown')
+    const action = message(`archive.dialog.action.${row.action}`, row.owner ?? '')
+    const line = row.cwd ? message('archive.dialog.line', sessionAgentName(row.agent), basename(row.cwd), age, action)
+      : message('archive.dialog.line.noProject', sessionAgentName(row.agent), age, action)
+    return row.warnings.length ? `${line}. ${message('archive.dialog.warnings', row.warnings.join(' '))}` : line
+  })
+  return {
+    toolCall: { toolCallId: stopToolCallId(request.id), title, kind: 'execute', status: 'pending', rawInput: { command: lines.join('\n') } },
+    options: [
+      { optionId: 'archive', kind: 'allow_once', name: message('archive.option.archive'), _meta: permissionMeta({ description: message('archive.option.archive.description') }) },
+      { optionId: 'keep', kind: 'reject_once', name: message('archive.option.keep'), _meta: permissionMeta({ description: message('archive.option.keep.description') }) },
+    ],
+    _meta: permissionMeta({ title, description: message('archive.dialog.description', Math.max(1, Math.ceil((Date.parse(request.expiresAt) - Date.now()) / 60000))) }),
   }
 }
 
