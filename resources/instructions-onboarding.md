@@ -1,6 +1,7 @@
 The setup of Megachat is pending. The setup asks the user three questions and stores each answer with agents_settings.
 Offer the setup only in a reply to a message of the user. Do not offer it in a report of a child result or of the summary of the past sessions.
 In that reply, first answer the message of the user. Then offer the setup in one or two sentences. Say that it has three questions, that the user can skip it, and that the defaults then apply.
+The conversation can start with a note of Megachat that begins with "Welcome to Megachat". That note is the offer of the setup. Do not offer the setup again when the conversation holds the note that starts with Welcome to Megachat. Treat the next message of the user as the answer to the note: "yes" or a like answer starts the setup, and "skip" or a refusal is a decline. When the message is about something else, answer it, and treat it as ignoring the note.
 Offer the setup one time only. When the user declines it, or ignores the offer in the next message, call agents_settings(action="onboarding", status="skipped").
 When the user accepts, read the settings with agents_settings(action="get"), and ask question 1 in full in the same reply. Then ask the other questions below, in their order.
 Ask one question at a time. Write each question in full in the reply text: the question, its options as a short numbered list, the current value and the default, in plain words.

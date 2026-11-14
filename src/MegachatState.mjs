@@ -316,8 +316,12 @@ export class MegachatState {
   async initialize() {
     // The first pass of the reflection after the upgrade does not read the conversation of an earlier build.
     const newest = (await this.snapshot())?.memoryReflection ? undefined : await this.newestEntryId()
+    const conversationStarted = (await this.newestEntryId()) > 0
     await this.change(state => {
       requireCondition(state.schema === 1, 'schema')
+      // The setup note on its own: `null` before it, `offered` after it, `dropped` when the user wrote first. A state of
+      // an earlier build with a conversation gets `dropped`, so it gets no note.
+      state.onboardingOffer ??= conversationStarted || Object.keys(state.inputs ?? {}).length > 0 ? 'dropped' : null
       state.initiative ??= { declines: 0, silenced: false, suggestion: null, decisions: {} }
       // The prompt suggestion of the `ghost` mode. A state of an earlier build has none.
       state.initiative.promptSuggestion ??= null
@@ -592,6 +596,8 @@ export class MegachatState {
       requireCondition(state.current === null, 'busy')
       retain(state)
       this.endPromptSuggestion(state, requestId)
+      // The user wrote first: the setup note never comes, and the setup rules offer the setup in the reply.
+      state.onboardingOffer ??= 'dropped'
       const mainRunId = randomUUID()
       // The root keeps each request ID forever. A dropped input must start a new turn, so each admission has its own ID.
       const submissionId = await this.root.submit(tx, { type: 'input', content: text, requestId: `input:${mainRunId}` })
@@ -863,6 +869,26 @@ export class MegachatState {
       await this.root.submit(tx, { type: 'write', requestId: `update:${randomUUID()}`,
         entry: { kind: NOTE_KIND, data: { type: 'update', from: notice.from, to: notice.to }, model: [noteMessage(updateNoteText(plain(notice)), Date.now())] } })
       state.update.notice = null
+      return true
+    })
+  }
+
+  /**
+   * Writes the note that offers the setup, on its own, for a fresh conversation (see the capability `settings`). The
+   * note is a fixed text without a model request. It goes out only when no turn runs, no run is live and the inbox is
+   * empty. The write and the field `onboardingOffer` are one commit, so the note comes once. Gives `true` when no note
+   * is left to write (it went out, or the user wrote first, or the setup is not pending), and `false` when the note
+   * waits for an idle conversation. [pending] tells whether the onboarding is pending.
+   */
+  async writeOnboardingNote(pending) {
+    if (!pending() || (await this.snapshot())?.onboardingOffer !== null) return true
+    return this.change(async (state, tx) => {
+      if (state.onboardingOffer !== null || !pending()) return true
+      if (state.current || (await tx.doc(LiveDoc, this.root.id)).run !== undefined
+        || (await tx.doc(InboxDoc, this.root.id)).items.length > 0) return false
+      await this.root.submit(tx, { type: 'write', requestId: `onboarding:${randomUUID()}`,
+        entry: { kind: NOTE_KIND, data: { type: 'onboarding' }, model: [noteMessage(message('onboarding.offer'), Date.now())] } })
+      state.onboardingOffer = 'offered'
       return true
     })
   }

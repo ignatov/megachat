@@ -229,6 +229,8 @@ This is no extension of Megachat, and no ACP message changes. It describes what 
 - After the update, the new daemon writes a note of Megachat on its own, with no prompt of the user: "Megachat updated
   from <old> to <new>.", and at most 4 lines of release notes (5 lines in all). It is a message of its own, as the notes
   about the sessions that wait, and it goes out when no turn runs. A view that is not connected gets it with the replay.
+- On a fresh conversation with a pending setup, the daemon writes one note of Megachat on its own: "Welcome to Megachat." It
+  offers the setup. It is the same kind of note, and it comes once. The first prompt of the user drops it.
 
 ## The permissions
 

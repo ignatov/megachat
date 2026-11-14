@@ -21,6 +21,7 @@ import { restrictFileMask } from './fileMask.mjs'
 import { daemonBuild, megachatVersion, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
 import { install } from './MegachatInstall.mjs'
+import { startOnboardingNote } from './MegachatOnboarding.mjs'
 import { ANNOUNCE_MS, listRelease, npxCopy, recordVersion, startDelay, UpdateCheck } from './MegachatUpdate.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { PiRunService } from './PiRunService.mjs'
@@ -60,12 +61,14 @@ async function daemon() {
   let starting
   let update
   let versionRecord
+  let onboardingNote
   // A stop in the start waits for the end of the start, so it closes each part that the start opened. The start ends at
   // its next step, and it cannot publish the connection file after the stop released the lock.
   const shutdown = () => stopping ??= (async () => {
     await starting?.catch(() => {})
     update?.close()
     versionRecord?.close()
+    onboardingNote?.close()
     try { await server?.close() }
     finally {
       try { await children?.close(); await piChildren?.close(); await transcripts?.close() }
@@ -124,6 +127,8 @@ async function daemon() {
     proceed()
     // The version of this daemon goes to the state at the start. The message of an update goes out on its own, as a note.
     versionRecord = await recordVersion(service.state, megachatVersion())
+    // A fresh conversation with a pending setup gets the note that offers the setup, on its own.
+    onboardingNote = startOnboardingNote(service.state, () => service.settings.onboarding === 'pending')
     proceed()
     await owner.publish(descriptor)
     // The check of a release starts after the publish, so it does not delay the start. Only a copy of npx stops itself

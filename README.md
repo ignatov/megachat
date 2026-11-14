@@ -477,7 +477,9 @@ at any time.
 Each environment variable still works, and it wins over the stored value. The agent tells you when a variable hides
 a stored value. A daemon reads the variables at its start.
 
-Without `settings.json`, the setup of Megachat is pending. In its next reply to you, the main agent answers your
+Without `settings.json`, the setup of Megachat is pending. When you open Megachat for the first time, the daemon writes
+a note on its own, "Welcome to Megachat", which offers the setup. It comes once, and it needs no message of yours. Answer
+"yes" to start or "skip". When you write another message first, the note does not come: the main agent answers your
 message and then offers the setup. The setup asks three questions, one at a time. Each reply holds the full question,
 its options as a numbered list, the current value and the default, also with the short answer length:
 
