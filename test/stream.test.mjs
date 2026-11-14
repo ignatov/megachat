@@ -52,6 +52,12 @@ async function attach(t, daemon, cwd) {
 
 const chunks = updates => updates.filter(event => event.update.sessionUpdate === 'agent_message_chunk')
   .map(event => ({ id: event.update.messageId, text: event.update.content.text, replay: event._meta?.loadSessionReplayIndex !== undefined, at: event.at }))
+/**
+ * The distinct phases of the `agent_message_chunk` updates. The phase is on the update, so a phase on the params of the
+ * notification gives the value `params`.
+ */
+const phases = updates => [...new Set(updates.filter(event => event.update.sessionUpdate === 'agent_message_chunk')
+  .map(event => event._meta?.jetbrains?.air?.phase !== undefined ? 'params' : event.update._meta?.jetbrains?.air?.phase))]
 /** The text of each message, as Air joins the chunks: one message for each message ID. */
 const messages = list => {
   const joined = new Map()
@@ -161,6 +167,7 @@ test('a reply that fails in the middle keeps its partial text one time, and the 
   const texts = messages(viewer.chunks())
   assert.equal(texts.at(-1), message('error.model'))
   assert.deepEqual(texts.slice(0, -1), await assistantTexts(service))
+  assert.deepEqual(phases(viewer.updates), ['final_answer'])
   assert.ok(texts.length <= 2 && texts.join('').split('word7 ').length <= 2)
   // The next reply is a new message.
   assert.equal((await viewer.prompt('Again')).stopReason, 'end_turn')
@@ -196,6 +203,12 @@ test('the text before a tool call is a stream, and the tool call stays hidden', 
   assert.ok(viewer.chunks().filter(chunk => chunk.text !== before && before.startsWith(chunk.text)).length >= 1, 'the first text arrived in parts')
   assert.deepEqual([...new Set(viewer.updates.map(event => event.update.sessionUpdate))].sort(),
     ['agent_message_chunk', 'session_info_update'])
+  // Each message of the main agent has the phase of an answer, so Air infers no block "Worked for" for the turn.
+  assert.deepEqual(phases(viewer.updates), ['final_answer'])
+  const later = await attach(t, daemon, cwd)
+  await until(() => messages(later.chunks()).length === 2, 'no replay of the two messages')
+  assert.ok(later.chunks().every(chunk => chunk.replay))
+  assert.deepEqual(phases(later.updates), ['final_answer'])
 })
 
 const SHORT = 'A short reply. It has about one hundred characters, so the model writes it in less than a second.'

@@ -312,11 +312,14 @@ test('a note reaches an open view at once and the replay of a new view, as a mes
   const live = await until(() => viewer.updates.find(chunk))
   assert.match(live.update.messageId, /^megachat-entry-\d+$/)
   assert.equal(live._meta?.loadSessionReplayIndex, undefined)
+  assert.equal(live.update._meta?.jetbrains?.air?.phase, 'final_answer')
+  assert.equal(live._meta?.jetbrains, undefined)
   const replayed = await attach()
   const shown = replayed.updates.find(chunk)
   assert.ok(shown)
   assert.equal(typeof shown._meta.loadSessionReplayIndex, 'number')
   assert.equal(shown.update.messageId, live.update.messageId)
+  assert.equal(shown.update._meta?.jetbrains?.air?.phase, 'final_answer')
 })
 
 test('a daemon of v0.3.0 opens a state with a note and its records, and this build then sends no second note', { timeout: 30000 }, async t => {

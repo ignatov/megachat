@@ -181,7 +181,8 @@ Megachat replays the conversation on `session/new` and on `session/load`. Each r
 ## The reply stream
 
 Megachat sends the text of the main agent as `agent_message_chunk` with the ACP field `messageId`. Air appends a chunk
-to the message with the same ID, and a new ID starts a new message. This needs no change in Air.
+to the message with the same ID, and a new ID starts a new message. Air reads each key of this section today, so it
+needs no change.
 
 | Message ID | Chunks |
 |---|---|
@@ -196,6 +197,14 @@ to the message with the same ID, and a new ID starts a new message. This needs n
   sends the entry as a second message with the ID `megachat-entry-<entry>`.
 - A partial text without an entry stays in the open chat, and the next replay does not show it. This can occur when the
   daemon stops in the middle of a reply.
+- Each `agent_message_chunk` of the main session has `_meta.jetbrains.air.phase` with the value `final_answer` on the
+  update object, live and in the replay: each message ID of the table above, and each note. The `_meta` of the
+  `session/update` parameters gets no phase. At the end of a completed turn, Air folds each message before the last
+  agent text into a closed block "Worked for", but not in a turn with a message that has a phase
+  (`InferredWorkingGroupReducer.kt`, line 60, "An agent that sends phases groups its own work"). So no turn of Megachat
+  folds, also in the replay, where Air ends each replayed turn as completed. Air ignores the phase of a live chunk after
+  the end of the last prompt turn, such as the reply of an automatic turn, and it folds no such chunk.
+- Megachat sends no phase `commentary`, because Air puts a message with that phase into an explicit block "Worked for".
 - Megachat sends no `agent_thought_chunk`.
 - Megachat sends at most 20 chunks of a stream in a second.
 
@@ -207,8 +216,9 @@ This uses the updates of the reply stream above. It is not an extension of Megac
   machine waits for the user for a long time. A note is an entry of the conversation with one message of the
   assistant, and no model request and no turn makes it.
 - Megachat sends the note to each view at once as an `agent_message_chunk` with the message ID `megachat-entry-<entry>`,
-  so it is a message of its own and never continues the message of a stream. No prompt of the view and no background
-  task goes with it. The replay sends it again, as each other entry.
+  so it is a message of its own and never continues the message of a stream. The note has the phase `final_answer` of
+  the reply stream above, so a turn with a note shows open, live and in the replay. No prompt of the view and no
+  background task goes with it. The replay sends it again, as each other entry.
 - Air takes a live update outside a prompt turn (`AcpSessionRuntimeOwner.kt`, `followBackgroundWorkEnd`), and the
   reply of an automatic turn of Megachat, such as a child result, comes to Air in the same way. Megachat sends no task
   of the type `turn` for a note.
@@ -232,6 +242,9 @@ This is no extension of Megachat, and no ACP message changes. It describes what 
   about the sessions that wait, and it goes out when no turn runs. A view that is not connected gets it with the replay.
 - On a fresh conversation with a pending setup, the daemon writes one note of Megachat on its own: "Welcome to Megachat." It
   offers the setup. It is the same kind of note, and it comes once. The first prompt of the user drops it.
+- Each of these notes has the phase `final_answer` of the reply stream above. A live note that comes when no prompt
+  turn runs shows open as before. In the replay, the note joins the turn before it, and the phase keeps that turn open,
+  outside a block "Worked for".
 
 ## The permissions
 

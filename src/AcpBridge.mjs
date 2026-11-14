@@ -28,6 +28,15 @@ function runTitle(state, run) {
 /** The name of an agent of `agents_running` for the stop dialog. */
 const sessionAgentName = agent => ({ claude: 'Claude Code', codex: 'Codex', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
 
+/**
+ * An `agent_message_chunk` of the main session. Each chunk has the phase `final_answer` of Air on the update
+ * (`_meta.jetbrains.air.phase`). At the end of a completed turn, Air folds each message before the last agent text into
+ * a block "Worked for", but not in a turn with a message that has a phase. So no turn of Megachat folds. No chunk has
+ * the phase `commentary`, because that value makes an explicit block.
+ */
+const agentChunk = (messageId, text) => ({ sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text },
+  _meta: { jetbrains: { air: { phase: 'final_answer' } } } })
+
 /** The presentation of Air for a permission request or an option (`_meta.jetbrains.air.permission`, version 1). */
 const permissionMeta = fields => ({ jetbrains: { air: { permission: { version: 1, ...fields } } } })
 
@@ -369,7 +378,7 @@ class AcpBridgeSession {
         // The notice is a message of its own. It does not continue the partial reply that the chat shows.
         const central = Object.hasOwn(CENTRAL_CAUSES, settled.cause ?? '') ? CENTRAL_CAUSES[settled.cause] : undefined
         const text = message(central ? `error.central.${central}` : settled.reason === 'model_error' ? 'error.model' : 'error.interrupted')
-        await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-notice-${receipt.mainRunId}`, content: { type: 'text', text } })
+        await this.notify(agentChunk(`megachat-notice-${receipt.mainRunId}`, text))
       }
       return { stopReason: settled.status === 'completed' ? 'end_turn' : 'cancelled' }
     }
@@ -378,8 +387,7 @@ class AcpBridgeSession {
       // The daemon stopped, for example for a restart. The daemon keeps an admitted turn and continues it after its
       // next start, so the prompt ends with a notice and not with the error of the connection.
       if (!receipt) throw new MegachatError('unavailable')
-      await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-notice-${receipt.mainRunId}`,
-        content: { type: 'text', text: message('error.daemonLost') } }).catch(() => {})
+      await this.notify(agentChunk(`megachat-notice-${receipt.mainRunId}`, message('error.daemonLost'))).catch(() => {})
       return { stopReason: 'cancelled' }
     }
     finally { this.promptInFlight = false; this.promptRunId = null; this.cancelPending = false }
@@ -534,7 +542,7 @@ class AcpBridgeSession {
     const text = event.text.slice(this.reply.sent.length - event.offset)
     if (event.offset > this.reply.sent.length || !text) return
     this.reply.sent += text
-    await this.notify({ sessionUpdate: 'agent_message_chunk', messageId: this.reply.messageId, content: { type: 'text', text } })
+    await this.notify(agentChunk(this.reply.messageId, text))
   }
 
   /**
@@ -542,18 +550,17 @@ class AcpBridgeSession {
    * the text that the stream did not send, with the message ID of the stream. Each other entry is a message of its own.
    */
   replyChunks(entry, model) {
-    const chunk = (messageId, text) => ({ sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text } })
     const reply = this.reply
     // The main agent has one model request at a time. So an entry without a task is the entry of the open stream.
     const streamed = reply && (entry.byTaskId === undefined || entry.byTaskId === reply.taskId)
     this.lastReplyTask = Math.max(this.lastReplyTask, entry.byTaskId ?? 0, streamed ? reply.taskId : 0)
     if (reply && reply.taskId <= this.lastReplyTask) this.reply = null
     const blocks = model.content.filter(block => block.type === 'text' && block.text)
-    if (!streamed || !reply.sent) return blocks.map(block => chunk(`megachat-entry-${entry.id}`, block.text))
+    if (!streamed || !reply.sent) return blocks.map(block => agentChunk(`megachat-entry-${entry.id}`, block.text))
     const text = replyText(model)
-    if (text.startsWith(reply.sent)) return text.length > reply.sent.length ? [chunk(reply.messageId, text.slice(reply.sent.length))] : []
+    if (text.startsWith(reply.sent)) return text.length > reply.sent.length ? [agentChunk(reply.messageId, text.slice(reply.sent.length))] : []
     // The provider changed the text at its end. Air cannot replace the sent text, so the entry is a second message.
-    return text ? [chunk(`megachat-entry-${entry.id}`, text)] : []
+    return text ? [agentChunk(`megachat-entry-${entry.id}`, text)] : []
   }
 
   async conversation(view, replayUsers, endReplay = false) {
@@ -573,7 +580,7 @@ class AcpBridgeSession {
         // A note about the waiting sessions is no reply of the main agent, so it never continues the message of a stream.
         if (model.role === 'assistant' && entry.kind === NOTE_KIND) {
           for (const block of model.content.filter(item => item.type === 'text' && item.text)) {
-            updates.push({ sessionUpdate: 'agent_message_chunk', messageId: `megachat-entry-${entry.id}`, content: { type: 'text', text: block.text } })
+            updates.push(agentChunk(`megachat-entry-${entry.id}`, block.text))
           }
         }
         else if (model.role === 'assistant') updates.push(...this.replyChunks(entry, model))

@@ -246,6 +246,12 @@ These checks need the author by hand. Each one names its OpenSpec change.
   what Air shows at the exit of the agent, whether Air starts `npx` again at the next message or attach, whether it
   loads the session, and whether the next reply starts with "Megachat updated from". When Air does not start the agent
   again, file the Air side as an IJAI ticket.
+- `answer-phase` (tasks 4.1 and 4.2): build a daemon with this change, and run it with a temporary `MEGACHAT_HOME`. On a
+  real IDE build with the Air support, send a message that makes the main agent write a text, call `agents_list`, and
+  then reply. Verify that the chat shows both messages open with no block "Worked for", and record what the log line
+  `[AIR_WORKING_GROUP]` gives and what the replay of a new view shows. Check the first turn after an update (a state
+  with the field `update.version` set to an earlier version, such as `0.6.1`) and the turn of the morning report the
+  same way.
 - `name-central-failure` (task 4.2): with a Central login that expired, or after `central logout` on a machine where
   the author allows it, run `central run pi` and record its exit code, its time and its error output, without a key
   or a URL of Central. Send "Hello" in Air, and record the text of the chat. When Central gives a fixed exit code for

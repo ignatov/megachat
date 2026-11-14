@@ -18,6 +18,8 @@ import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
+import { client, methods } from '@agentclientprotocol/sdk/unstable'
+import { AcpBridge } from '../src/AcpBridge.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
@@ -399,6 +401,39 @@ test('a turn that runs holds the message back until the turn ends, and then it g
   await endTurn(service)
   await noteEntry(entries)
   assert.equal((await service.state.snapshot()).update.notice, null)
+})
+
+test('in a view, the message after an update and a later reply are messages with the phase of an answer, live and in the replay', { timeout: 20000 }, async t => {
+  const { service, daemon } = await open(t)
+  const attach = async () => {
+    const updates = []
+    const connection = client({ name: 'test-air' }).onNotification('*', ({ params }) => { updates.push(params) }).connect(new AcpBridge(daemon).app())
+    t.after(() => connection.close())
+    await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} })
+    const { sessionId } = await connection.agent.request(methods.agent.session.new, { cwd: REPOSITORY, mcpServers: [] })
+    const prompt = text => connection.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: 'text', text }] })
+    const chunks = () => updates.filter(event => event.update.sessionUpdate === 'agent_message_chunk')
+    return { prompt, chunks }
+  }
+  const viewer = await attach()
+  await recordVersion(service.state, '0.4.0')
+  const result = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => [{ version: '0.5.0', text: '- Five' }] })
+  t.after(() => result.close())
+  const ids = list => [...new Set(list.map(event => event.update.messageId))]
+  const textOf = (list, id) => list.filter(event => event.update.messageId === id).map(event => event.update.content.text).join('')
+  for (let attempt = 0; attempt < 200 && viewer.chunks().length === 0; attempt++) await delay(25)
+  const [note] = ids(viewer.chunks())
+  assert.match(note, /^megachat-entry-\d+$/)
+  assert.equal(textOf(viewer.chunks(), note), 'Megachat updated from 0.4.0 to 0.5.0.\n- Five')
+  assert.equal((await viewer.prompt('hello')).stopReason, 'end_turn')
+  const live = viewer.chunks()
+  assert.equal(ids(live).length, 2)
+  assert.equal(textOf(live, ids(live)[1]), 'Answer 1.')
+  // Air infers no block "Worked for" for a turn with a message that has a phase.
+  assert.ok(live.every(event => event.update._meta?.jetbrains?.air?.phase === 'final_answer'))
+  const replayed = (await attach()).chunks()
+  assert.deepEqual(ids(replayed), ids(live))
+  assert.ok(replayed.every(event => event.update._meta?.jetbrains?.air?.phase === 'final_answer'))
 })
 
 test('a message that waits is kept when no client is connected, and a daemon that stops sends no second message', { timeout: 20000 }, async t => {
