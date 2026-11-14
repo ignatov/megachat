@@ -257,7 +257,7 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 
 | File | Content |
 |---|---|
-| `conversation.sqlite` | The conversation, the child runs and the permission requests. It also records the version of the last daemon, for the message after an update. |
+| `conversation.sqlite` | The conversation, the child runs and the permission requests. It also records the version of the last daemon, for the message after an update, which the daemon writes into the chat on its own, in 5 lines at most. |
 | `owner.sqlite` | The lock of the daemon. One daemon owns the directory. |
 | `search.sqlite` | The search index. The daemon builds it again from the conversation when necessary. |
 | `workspace/` | The workspace of Megachat. A task without a project works there. |

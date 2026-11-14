@@ -341,62 +341,93 @@ test('the state records the version, and a state without the field gets it with 
   assert.equal((await service.state.snapshot()).update.stop, null)
 })
 
-test('the next turn of the user starts with the message after an update and the notes, and a later turn gets none', { timeout: 20000 }, async t => {
+/** Ends the turn that `state.submit` admitted: no service follows it in these tests. */
+async function endTurn(service) {
+  await service.state.change(state => { state.current = null })
+}
+
+/** Waits until the conversation has the note after an update. */
+async function noteEntry(entries) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const note = (await entries()).find(entry => entry.kind === NOTE_KIND && entry.data?.type === 'update')
+    if (note) return note
+    await delay(25)
+  }
+  assert.fail('The note after the update did not arrive.')
+}
+
+test('the message after an update comes on its own, with no input, and goes out once', { timeout: 20000 }, async t => {
   const { service, say, entries } = await open(t)
   await recordVersion(service.state, '0.4.0')
-  const result = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => [{ version: '0.5.0', text: '- The daemon finds a new release' }] })
+  const result = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => [{ version: '0.5.0', text: '## New\n\n- The daemon finds a new release' }] })
+  t.after(() => result.close())
   await result.notes
+  const note = await noteEntry(entries)
+  assert.deepEqual(note.data, { type: 'update', from: '0.4.0', to: '0.5.0' })
+  assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\n- The daemon finds a new release')
+  assert.equal((await service.state.snapshot()).update.notice, null)
+  assert.equal((await service.state.snapshot()).current, null)
+  assert.equal(Object.keys((await service.state.snapshot()).inputs).length, 0)
+  // A turn of the user adds no second message, and it did not wait for one.
   await say('hello', 'hello')
-  await say('again', 'again')
-  const items = await entries()
-  const notes = items.filter(entry => entry.kind === NOTE_KIND)
-  assert.equal(notes.length, 1)
-  assert.deepEqual(notes[0].data, { type: 'update', from: '0.4.0', to: '0.5.0' })
-  assert.equal(text(notes[0]), 'Megachat updated from 0.4.0 to 0.5.0.\n\nWhat is new in 0.5.0:\n- The daemon finds a new release')
-  // The message comes directly before the input of the turn of the user.
-  const index = items.indexOf(notes[0])
-  assert.match(text(items[index + 1]), /hello/)
+  assert.equal((await entries()).filter(entry => entry.kind === NOTE_KIND).length, 1)
+})
+
+test('a turn of the user does not wait for the notes, and the message follows when the notes end', { timeout: 20000 }, async t => {
+  const { service, say, entries } = await open(t)
+  await recordVersion(service.state, '0.4.0')
+  const result = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => { await delay(1500); return [{ version: '0.5.0', text: '- Late' }] }, retryMs: 50 })
+  t.after(() => result.close())
+  const started = Date.now()
+  await say('hello', 'hello')
+  assert.ok(Date.now() - started < 1400, `the input waited ${Date.now() - started} ms`)
+  assert.equal((await entries()).filter(entry => entry.kind === NOTE_KIND).length, 0)
+  const note = await noteEntry(entries)
+  assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\n- Late')
+})
+
+test('a turn that runs holds the message back until the turn ends, and then it goes out without an input', { timeout: 20000 }, async t => {
+  const { service, entries } = await open(t)
+  await recordVersion(service.state, '0.4.0')
+  await service.state.submit('hello', 'hello')
+  assert.notEqual((await service.state.snapshot()).current, null)
+  const result = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => [{ version: '0.5.0', text: '- Five' }], retryMs: 50 })
+  t.after(() => result.close())
+  await delay(200)
+  assert.equal((await service.state.snapshot()).update.notice.to, '0.5.0')
+  assert.equal((await entries()).filter(entry => entry.kind === NOTE_KIND).length, 0)
+  await endTurn(service)
+  await noteEntry(entries)
   assert.equal((await service.state.snapshot()).update.notice, null)
 })
 
-test('the first turn after an update waits for notes that come after its input', { timeout: 20000 }, async t => {
-  const { service, say, entries } = await open(t)
-  await recordVersion(service.state, '0.4.0')
-  // The notes come 500 ms after the start of the daemon, and the user sends the first input before that.
-  await recordVersion(service.state, '0.5.0', { fetchNotes: async () => { await delay(500); return [{ version: '0.5.0', text: '- The notes came late' }] } })
-  await say('hello', 'hello')
-  const note = (await entries()).find(entry => entry.kind === NOTE_KIND)
-  assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\n\nWhat is new in 0.5.0:\n- The notes came late')
-})
-
-test('the first turn after an update waits for the notes at most until the time limit of the request ends', { timeout: 20000 }, async t => {
-  const { service, say, entries } = await open(t)
-  await recordVersion(service.state, '0.4.0')
-  const started = Date.now()
-  // The request never ends. Its time limit is 300 ms from the start of the daemon.
-  await recordVersion(service.state, '0.5.0', { timeoutMs: 300, fetchNotes: () => new Promise(() => {}) })
-  await service.submit('hello', 'hello')
-  const waited = Date.now() - started
-  assert.ok(waited >= 250 && waited < 5000, `the input waited ${waited} ms`)
-  const items = await entries()
-  const note = items.findIndex(entry => entry.kind === NOTE_KIND)
-  assert.equal(text(items[note]), 'Megachat updated from 0.4.0 to 0.5.0.\nMegachat could not get the release notes. The notes are at https://github.com/ignatov/megachat/releases/tag/v0.5.0')
-  assert.match(text(items[note + 1]), /hello/)
-  await waitForState(service.state, state => state.current === null ? true : undefined)
-})
-
-test('the message after an update comes directly before the turn of the morning report', { timeout: 20000 }, async t => {
+test('a message that waits is kept when no client is connected, and a daemon that stops sends no second message', { timeout: 20000 }, async t => {
   const { service, entries } = await open(t)
   await recordVersion(service.state, '0.4.0')
-  await (await recordVersion(service.state, '0.5.0', { fetchNotes: async () => { throw new Error('offline') } })).notes
-  // The daemon starts the turn of a report that waits, as at workday.start.
-  await service.state.morningReportReady('2026-11-12', { period: 'test' })
-  await waitForState(service.state, state => state.current === null && !state.morningReport.pending && !state.morningReport.running ? true : undefined)
-  const items = await entries()
-  const note = items.findIndex(entry => entry.kind === NOTE_KIND)
-  assert.ok(note >= 0)
-  assert.deepEqual(items[note].data, { type: 'update', from: '0.4.0', to: '0.5.0' })
-  assert.equal(items[note + 1].data?.type, 'morning')
+  await service.state.submit('hello', 'hello')
+  const first = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => [{ version: '0.5.0', text: '- Five' }], retryMs: 50 })
+  await delay(150)
+  // The daemon stops while the message waits. The state keeps the message for the next daemon of the same version.
+  first.close()
+  await first.notes
+  assert.equal((await service.state.snapshot()).update.notice.to, '0.5.0')
+  await endTurn(service)
+  const second = await recordVersion(service.state, '0.5.0', { fetchNotes: async () => [{ version: '0.5.0', text: '- Five' }] })
+  t.after(() => second.close())
+  assert.equal(second.notice, null)
+  assert.equal(await service.state.writeUpdateNote(), true)
+  await noteEntry(entries)
+  assert.equal(await service.state.writeUpdateNote(), true)
+  assert.equal((await entries()).filter(entry => entry.kind === NOTE_KIND).length, 1)
+})
+
+test('a request for the notes that never ends gives the message with the address at its time limit', { timeout: 20000 }, async t => {
+  const { service, entries } = await open(t)
+  await recordVersion(service.state, '0.4.0')
+  const result = await recordVersion(service.state, '0.5.0', { timeoutMs: 300, fetchNotes: ({ timeoutMs }) => new Promise((resolve, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)) })
+  t.after(() => result.close())
+  const note = await noteEntry(entries)
+  assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\nMegachat could not get the release notes. The notes are at https://github.com/ignatov/megachat/releases/tag/v0.5.0')
 })
 
 test('the notes come from each release after the recorded version, the newest first, with the limits', { timeout: 20000 }, async t => {
@@ -408,13 +439,17 @@ test('the notes come from each release after the recorded version, the newest fi
   const environment = { MEGACHAT_RELEASE_NOTES_URL: `http://127.0.0.1:${server.address().port}/releases` }
   const notes = await fetchReleaseNotes({ from: '0.4.0', to: '0.6.0', environment })
   assert.deepEqual(notes, [{ version: '0.6.0', text: '- Six' }, { version: '0.5.0', text: '- Five\r\n- More five' }])
-  assert.equal(updateNoteText({ from: '0.4.0', to: '0.6.0', notes }),
-    'Megachat updated from 0.4.0 to 0.6.0.\n\nWhat is new in 0.6.0:\n- Six\n\nWhat is new in 0.5.0:\n- Five\n- More five')
+  // Two releases: the lines of the newest release come first, with no heading and no blank line.
+  assert.equal(updateNoteText({ from: '0.4.0', to: '0.6.0', notes }), 'Megachat updated from 0.4.0 to 0.6.0.\n- Six\n- Five\n- More five')
+  // Long notes: the title, 3 lines of notes and the address. The message has at most 5 lines.
   const long = updateNoteText({ from: '0.4.0', to: '0.5.0', notes: [{ version: '0.5.0', text: Array.from({ length: 60 }, (_, index) => `- Line ${index}`).join('\n') }] })
-  const lines = long.split('\n')
-  assert.equal(lines.at(-1), message('update.more', 'https://github.com/ignatov/megachat/releases/tag/v0.5.0'))
-  assert.equal(lines.length, 1 + NOTES_LINES + 2)
-  assert.ok(updateNoteText({ from: '0.4.0', to: '0.5.0', notes: [{ version: '0.5.0', text: 'x'.repeat(9000) }] }).length < 8200)
+  assert.equal(long, 'Megachat updated from 0.4.0 to 0.5.0.\n- Line 0\n- Line 1\n- Line 2\nMore: https://github.com/ignatov/megachat/releases/tag/v0.5.0')
+  // Four lines of notes fit with the title in 5 lines, five lines do not.
+  const four = text => updateNoteText({ from: '0.4.0', to: '0.5.0', notes: [{ version: '0.5.0', text }] }).split('\n')
+  assert.equal(four('- a\n- b\n- c\n- d').length, NOTES_LINES)
+  assert.equal(four('- a\n- b\n- c\n- d\n- e').length, NOTES_LINES)
+  // A long line is cut.
+  assert.ok(four('x'.repeat(9000))[1].length <= 160)
 })
 
 test('without an answer of the server, the message gives the address of the release, and the log gets one line', { timeout: 20000 }, async t => {
@@ -424,14 +459,14 @@ test('without an answer of the server, the message gives the address of the rele
   t.after(() => { server.closeAllConnections(); server.close() })
   const environment = { MEGACHAT_RELEASE_NOTES_URL: `http://127.0.0.1:${server.address().port}/releases` }
   await assert.rejects(fetchReleaseNotes({ from: '0.4.0', to: '0.5.0', environment, timeoutMs: 300 }))
-  const { service, say, entries } = await open(t)
+  const { service, entries } = await open(t)
   await recordVersion(service.state, '0.4.0')
   let calls = 0
   const result = await recordVersion(service.state, '0.5.0', { environment, fetchNotes: options => { calls++; return fetchReleaseNotes({ ...options, timeoutMs: 300 }) } })
+  t.after(() => result.close())
   await result.notes
   assert.equal(calls, 1)
   assert.equal(lines.filter(line => line.includes('could not get the release notes of 0.5.0')).length, 1)
-  await say('hello', 'hello')
-  const note = (await entries()).find(entry => entry.kind === NOTE_KIND)
+  const note = await noteEntry(entries)
   assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\nMegachat could not get the release notes. The notes are at https://github.com/ignatov/megachat/releases/tag/v0.5.0')
 })

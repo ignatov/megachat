@@ -202,7 +202,7 @@ The state document of `conversation.sqlite` (the root document of `MegachatState
 - `version`: the version of the last daemon that opened the state, as `megachatVersion()` gives it.
 - `stop`: the last automatic stop, or `null`.
 - `failed`: the release for which an automatic stop gave no update, or `null`.
-- `notice`: the message that waits for the next turn of the user or for the morning report, or `null`.
+- `notice`: the message that waits for an idle conversation, or `null`.
 
 An older state directory has no field. At the start, before the publish of the connection file, the daemon calls
 `recordVersion` of `MegachatState`. Without the field, it sets `update` to
@@ -228,19 +228,20 @@ The base version decides, so a pull of a checkout with a new commit gives no mes
   of 10 seconds, without a key. It takes each release whose tag is a release version higher than the earlier version
   and not higher than its own version, and its `body`, the newest first. The variable `MEGACHAT_RELEASE_NOTES_URL`
   replaces the address. `test/state-guard.mjs` sets it to a local address that gives no answer.
-- The message has at most 40 lines of notes and at most 8000 characters. Longer notes end with the line of the message
-  `update.more` and the address of the release.
+- The message has at most 5 lines: the title, the first lines of the notes (no heading, no blank line, at most 160
+  characters in a line), and, when the notes need more than 4 lines, 3 lines of notes and the line `update.more` with
+  the address of the release.
 - A failure, such as no network, an HTTP status other than 200, invalid JSON or the time limit, gives the message
   without the notes and with the address of the release: `update.noNotes`. The log gets one line. The daemon does not
   ask again.
 - The message is a note of the daemon, as the notes about the waiting sessions (see the capability `session-notes`):
   an entry of the kind `air.megachat.note` with the data `{"type":"update","from":"0.4.0","to":"0.5.0"}`, and a fixed
-  text without a model request. The daemon writes it directly before the admission of the input of the next turn of
-  the user or of the turn of the morning report. Pi Durable admits one submission in each commit, so the message has
-  its own commit before the commit of the input, and it goes out only when no turn runs, no run is live and the inbox
-  is empty, as a note about the sessions does. So the chat shows the message, then the reply, and the main agent sees
-  the message in its context. The daemon then sets `notice` to `null`. A turn of a child result
-  does not take the message, because the issue names the reply to the user and the morning report.
+  text without a model request. The daemon writes it on its own after its start, when the request for the notes ends or
+  its time limit ends, and no input of the user triggers it. It goes out only when no turn runs, no run is live and the
+  inbox is empty, as a note about the sessions does. Else the daemon tries again every 10 seconds. The write and the
+  set of `notice` to `null` are one commit, so the message goes out once, and the conversation keeps it when no client
+  is connected. The first turn of the user does not wait for the notes. The main agent sees the message in its next
+  context.
 
 Alternatives:
 

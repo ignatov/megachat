@@ -59,11 +59,13 @@ async function daemon() {
   let stopping
   let starting
   let update
+  let versionRecord
   // A stop in the start waits for the end of the start, so it closes each part that the start opened. The start ends at
   // its next step, and it cannot publish the connection file after the stop released the lock.
   const shutdown = () => stopping ??= (async () => {
     await starting?.catch(() => {})
     update?.close()
+    versionRecord?.close()
     try { await server?.close() }
     finally {
       try { await children?.close(); await piChildren?.close(); await transcripts?.close() }
@@ -120,8 +122,8 @@ async function daemon() {
     proceed()
     await service.resume()
     proceed()
-    // The version of this daemon goes to the state before the first turn, so that turn gets the message of an update.
-    await recordVersion(service.state, megachatVersion())
+    // The version of this daemon goes to the state at the start. The message of an update goes out on its own, as a note.
+    versionRecord = await recordVersion(service.state, megachatVersion())
     proceed()
     await owner.publish(descriptor)
     // The check of a release starts after the publish, so it does not delay the start. Only a copy of npx stops itself

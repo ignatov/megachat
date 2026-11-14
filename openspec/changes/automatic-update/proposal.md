@@ -47,8 +47,8 @@ Where it shows: the output of the command `status`, a fixed message in the chat 
 - **A copy that does not update itself.** A git checkout, the bundle and a copy outside `_npx` never stop themselves.
   With `update.auto` off, a copy of npx also does not. They only show the notice in `status`.
 - **The message after the update.** The daemon records its version in the state. When the version is higher than the
-  recorded version, the next turn of the user or the next morning report, whichever comes first, starts with a fixed
-  message of Megachat in the chat: "Megachat updated from 0.4.0 to 0.5.0.", and the release notes of each release after
+  recorded version, the daemon writes on its own, after its start and with no input of the user, a fixed message of Megachat of at most 5
+  lines in the chat: "Megachat updated from 0.4.0 to 0.5.0.", and the release notes of each release after
   the earlier version. The notes come from the GitHub releases of the repository, with a time limit of 10 seconds.
   Without an answer, the message gives the address of the release instead. A state without a recorded version gets
   the version with no message.
@@ -68,7 +68,7 @@ Where it shows: the output of the command `status`, a fixed message in the chat 
   a daemon after its own start.
 
 `workday`, `morning-report` and `release` are not modified. The automatic stop reads the decision of the sleep of
-`workday`, and the message comes before the turn of the morning report without a change of its data or its prompt.
+`workday`, and the message does not depend on the turn of the morning report.
 The release notes stay the GitHub release of `npm run release`.
 
 ## ACP and Air

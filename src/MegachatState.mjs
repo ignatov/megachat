@@ -304,8 +304,6 @@ export class MegachatState {
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
     this.eventSuffix = suggestions === 'off' ? '' : '.suggest'
     this.promptSuggestionLifetimeMs = promptSuggestionLifetimeMs
-    // The request for the notes of the waiting message after an update, and the time at which its limit ends.
-    this.notesRequest = null
     this.workspace = workspace
     this.repositoryOptions = { stateDirectory, home, roots: projectRoots }
     this.home = home
@@ -585,7 +583,6 @@ export class MegachatState {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
     requireCondition(typeof text === 'string' && text.length > 0 && text.length <= 100000)
     const hash = digest(text)
-    await this.writeUpdateNote()
     return this.change(async (state, tx) => {
       const old = Object.hasOwn(state.inputs, requestId) ? state.inputs[requestId] : null
       if (old) {
@@ -804,7 +801,7 @@ export class MegachatState {
   /**
    * Records the version [version] of the daemon at its start (see the capability `update`). The field `update` holds
    * the version of the last daemon, the last automatic stop, the release for which a stop gave no update, and the
-   * message that waits for the next turn of the user or for the morning report. A state of an earlier build has no
+   * message that waits for an idle conversation. A state of an earlier build has no
    * field: it gets the version with no message. Gives `{ notice, failed }`: the new message and the release of a stop
    * without an update, or `null`.
    */
@@ -849,51 +846,29 @@ export class MegachatState {
   }
 
   /**
-   * Writes the waiting message after an update into the conversation, directly before the admission of the input of a
-   * turn of the user or of the morning report. One commit admits one submission, so the message has its own commit
-   * before the commit of the input. The message is a note of Megachat: a fixed text without a model request. It goes
-   * out only when no turn runs, no run is live and the inbox is empty, as a note about the sessions does, so it never
-   * lands inside a run. The message waits for the request of its notes first, at most until the time limit of that
-   * request ends (see `waitForNotes`).
+   * Writes the waiting message after an update into the conversation, on its own: the daemon calls it after the start,
+   * and no input of the user triggers it. The message is a note of Megachat: a fixed text without a model request. It
+   * goes out only when no turn runs, no run is live and the inbox is empty, as a note about the sessions does, so it
+   * never lands inside a run. The write and the clear of the waiting message are one commit, so the message goes out
+   * once, also with no client connected: the conversation keeps it, and a client that connects later gets it with the
+   * replay. Gives `true` when no message waits any more, and `false` when the message waits for an idle conversation.
    */
   async writeUpdateNote() {
-    if (!(await this.snapshot())?.update?.notice) return
-    await this.notesArrived()
-    await this.change(async (state, tx) => {
+    if (!(await this.snapshot())?.update?.notice) return true
+    return this.change(async (state, tx) => {
       const notice = state.update?.notice
-      if (!notice || state.current || (await tx.doc(LiveDoc, this.root.id)).run !== undefined
-        || (await tx.doc(InboxDoc, this.root.id)).items.length > 0) return
+      if (!notice) return true
+      if (state.current || (await tx.doc(LiveDoc, this.root.id)).run !== undefined
+        || (await tx.doc(InboxDoc, this.root.id)).items.length > 0) return false
       await this.root.submit(tx, { type: 'write', requestId: `update:${randomUUID()}`,
         entry: { kind: NOTE_KIND, data: { type: 'update', from: notice.from, to: notice.to }, model: [noteMessage(updateNoteText(plain(notice)), Date.now())] } })
       state.update.notice = null
+      return true
     })
-  }
-
-  /**
-   * Makes the waiting message after an update wait for the request of its notes [request], at most until the time
-   * [deadline] (ms since the epoch). The request starts with the daemon, so the first turn waits only for the rest of
-   * its time limit.
-   */
-  waitForNotes(request, deadline) {
-    this.notesRequest = { request, deadline }
-  }
-
-  /** Ends when the request of the notes ends or its time limit ends. The request never rejects. */
-  async notesArrived() {
-    const pending = this.notesRequest
-    if (!pending) return
-    const left = pending.deadline - Date.now()
-    if (left > 0) {
-      let timer
-      await Promise.race([pending.request, new Promise(resolve => { timer = setTimeout(resolve, left) })])
-      clearTimeout(timer)
-    }
-    if (this.notesRequest === pending) this.notesRequest = null
   }
 
   /** Starts the turn of the morning report that waits. The turn runs only when no other turn runs. */
   async nextMorningReport() {
-    await this.writeUpdateNote()
     return this.change(async (state, tx) => {
       const pending = state.morningReport?.pending
       if (state.current || !pending) return null

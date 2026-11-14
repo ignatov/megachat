@@ -165,7 +165,8 @@ test('a prompt during the result report that the next daemon sends again after i
     }))
     const service = await PiMegachatService.open(storage, models, { provider: model.provider, modelId: model.id }, {},
       { suggestions: 'off', keepAlive: { enabled: false }, reportRetryDelayMs: 20 })
-    await recordVersion(service.state, version, { fetchNotes: async () => null })
+    const record = await recordVersion(service.state, version, { fetchNotes: async () => null, retryMs: 50 })
+    t.after(() => record.close())
     return { service, requests }
   }
   const report = state => state.current?.kind === 'report' ? state.current : undefined
@@ -191,9 +192,9 @@ test('a prompt during the result report that the next daemon sends again after i
   // The daemon refuses no prompt here: it stops the report for the prompt of the user.
   const viewer = await view(t, daemon, cwd)
   assert.equal((await viewer.prompt('Start a new onboarding', 'turn-1')).stopReason, 'end_turn')
-  const texts = viewer.texts()
-  const note = texts.findIndex(text => text.startsWith(updateNoteText({ from: '0.6.1', to: '0.6.2', notes: null }).slice(0, 40)))
-  assert.ok(note >= 0, texts.join('\n'))
-  assert.ok(texts.indexOf('The onboarding starts now.') > note, texts.join('\n'))
+  // The note after the update goes out on its own when the turn is over, and the viewer gets it live.
+  const prefix = updateNoteText({ from: '0.6.1', to: '0.6.2', notes: null }).slice(0, 40)
+  await until(() => viewer.texts().some(text => text.startsWith(prefix)), 'The viewer got no note after the update.')
+  assert.ok(viewer.texts().includes('The onboarding starts now.'), viewer.texts().join('\n'))
   assert.equal((await next.service.state.snapshot()).inputs['turn-1'].status, 'completed')
 })

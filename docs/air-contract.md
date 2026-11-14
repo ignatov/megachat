@@ -226,8 +226,9 @@ This is no extension of Megachat, and no ACP message changes. It describes what 
 - Megachat expects Air to start the agent command again at the next attach or the next prompt, and to load the
   persistent session (`persistentSession`) again. Nobody checked this on an IDE build yet (`docs/manual-checks.md`,
   open checks). If Air does not start the agent again, that is a request to Air.
-- After the update, the next prompt of the user or the morning report starts with a note of Megachat, "Megachat updated
-  from <old> to <new>.", as a message of its own, as the notes about the sessions that wait.
+- After the update, the new daemon writes a note of Megachat on its own, with no prompt of the user: "Megachat updated
+  from <old> to <new>.", and at most 4 lines of release notes (5 lines in all). It is a message of its own, as the notes
+  about the sessions that wait, and it goes out when no turn runs. A view that is not connected gets it with the replay.
 
 ## The permissions
 

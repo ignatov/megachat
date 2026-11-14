@@ -126,30 +126,51 @@ Tests: `test/update.test.mjs`
 - **THEN** the state records the version with no message each time, and the turn "hello" gets no note
 
 ### Requirement: Message after an update
-When the base version of the daemon is higher than the recorded version, the next turn of the user or the next morning report, whichever comes first, MUST start with a fixed message: "Megachat updated from <old> to <new>.", then the release notes. A turn of a child result MUST NOT take it.
+When the base version of the daemon is higher than the recorded version, the daemon MUST write one fixed message into the conversation on its own after its start: "Megachat updated from <old> to <new>.", then the release notes. No input of the user and no morning report triggers it, and no input waits for it. It MUST go out once, when no turn runs, no run is live and no input waits. Else the daemon MUST try again, also with no client connected.
 
 Tests: `test/update.test.mjs`
 
-#### Scenario: The next turn of the user
-- **WHEN** a daemon of `0.5.0` opens a state that recorded `0.4.0`, and then the user sends "hello"
-- **THEN** the conversation has a note "Megachat updated from 0.4.0 to 0.5.0." with "What is new in 0.5.0:" and its notes, directly before the input "hello", and the turn "again" gets no second note
+#### Scenario: The message comes on its own
+- **WHEN** a daemon of `0.5.0` opens a state that recorded `0.4.0`, the notes of `0.5.0` have the line "- The daemon finds a new release", and no turn runs
+- **THEN** the conversation gets the note "Megachat updated from 0.4.0 to 0.5.0." with the line "- The daemon finds a new release", the state has no input, and a later turn of the user gets no second note
 
-#### Scenario: The morning report comes first
-- **WHEN** a daemon of `0.5.0` opens a state that recorded `0.4.0`, and the morning report is the next turn
-- **THEN** the message comes directly before the turn of the report
+#### Scenario: The first turn does not wait
+- **WHEN** a daemon of `0.5.0` opens a state that recorded `0.4.0`, the request for the notes ends after 1.5 seconds, and the user sends "hello" before that
+- **THEN** the turn starts at once, and the note comes after the notes arrived and the turn ended
+
+#### Scenario: A turn runs
+- **WHEN** a turn runs while the message is due, and then the turn ends
+- **THEN** the message goes out after the end of the turn, without a new input, and once
+
+#### Scenario: The daemon stops while the message waits
+- **WHEN** the daemon stops while the message waits
+- **THEN** the state keeps the message, and the conversation has no second message after the next write
 
 ### Requirement: Source of the release notes
-The daemon MUST take the notes from the `body` of each GitHub release after the recorded version up to its own version, the newest first, from `MEGACHAT_RELEASE_NOTES_URL` or the API of the repository, with a time limit of 10 seconds and at most 40 lines and 8000 characters.
+The daemon MUST take the notes from the `body` of each GitHub release after the recorded version up to its own version, the newest first, from `MEGACHAT_RELEASE_NOTES_URL` or the API of the repository, with a time limit of 10 seconds.
 
 Tests: `test/update.test.mjs`
 
 #### Scenario: Two releases
 - **WHEN** the recorded version is `0.4.0`, the daemon has `0.6.0`, and the server gives the releases `v0.6.0`, `v0.5.0`, `v0.4.0` and the pre-release `v0.7.0-rc.1`
-- **THEN** the message has the notes of `0.6.0` and then of `0.5.0`, and no other notes
+- **THEN** the message has the lines of the notes of `0.6.0` and then of `0.5.0`, and no other notes
 
 #### Scenario: Long notes
 - **WHEN** the notes of `0.5.0` have 60 lines
-- **THEN** the message has 40 lines of notes and then "The notes are longer. All notes: https://github.com/ignatov/megachat/releases/tag/v0.5.0"
+- **THEN** the message has 5 lines: the title, 3 lines of notes and "More: https://github.com/ignatov/megachat/releases/tag/v0.5.0"
+
+### Requirement: Compact message after an update
+The message after an update MUST have at most 5 lines: the title, the first lines of the notes, newest first, without a heading and without a blank line, and each line cut to 160 characters. When the notes need more than 4 lines, the message MUST have 3 lines of notes and then the line "More: <address of the release>".
+
+Tests: `test/update.test.mjs`
+
+#### Scenario: Four lines of notes
+- **WHEN** the notes have 4 lines
+- **THEN** the message has 5 lines: the title and the 4 lines
+
+#### Scenario: Five lines of notes
+- **WHEN** the notes have 5 lines
+- **THEN** the message has 5 lines: the title, the first 3 lines of notes and the line with the address of the release
 
 ### Requirement: Message without release notes
 When the server of the notes gives no valid answer in 10 seconds, the message MUST give the address of the release instead of the notes, and the log MUST get one line. The daemon MUST NOT ask again.

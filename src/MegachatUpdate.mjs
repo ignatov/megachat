@@ -39,9 +39,11 @@ export const CONDITION_INTERVAL_MS = 10 * 60000
 export const GIT_TIMEOUT_MS = 30000
 /** The time limit of the request for the release notes. */
 export const NOTES_TIMEOUT_MS = 10000
-/** The limits of the notes in the message after an update. */
-export const NOTES_LINES = 40
-export const NOTES_CHARACTERS = 8000
+/** The most lines of the message after an update, with the title line. A line has at most [NOTES_LINE_CHARACTERS] characters. */
+export const NOTES_LINES = 5
+export const NOTES_LINE_CHARACTERS = 160
+/** The time between two tries to write the message after an update while a turn or an input blocks it. */
+export const NOTE_RETRY_MS = 10000
 /** The night window when `workday.enabled` is off: from 01:00 to before 05:00 local time. */
 export const NIGHT_START_MINUTE = 60
 export const NIGHT_END_MINUTE = 5 * 60
@@ -157,7 +159,9 @@ export async function fetchReleaseNotes({ from, to, environment = process.env, t
 
 /**
  * The fixed text of the message after an update of [notice]: `{ from, to, notes }`. `notes` is `null` when the notes
- * are not available. The notes have at most [NOTES_LINES] lines and [NOTES_CHARACTERS] characters.
+ * are not available. The text has at most [NOTES_LINES] lines: the title, and the first lines of the notes of the
+ * newest release first, without the blank lines and the headings. When the notes are longer, the last line gives the
+ * address of the release.
  */
 export function updateNoteText({ from, to, notes }) {
   const lines = [message('update.done', baseVersion(from), baseVersion(to))]
@@ -165,21 +169,11 @@ export function updateNoteText({ from, to, notes }) {
     lines.push(message('update.noNotes', releaseUrl(to)))
     return lines.join('\n')
   }
-  const body = []
-  for (const item of notes) {
-    body.push('', message('update.notesOf', item.version), ...item.text.replace(/\r\n?/g, '\n').split('\n').filter(line => line.trim() !== ''))
-  }
-  let length = 0
-  let count = 0
-  for (const line of body) {
-    if (count >= NOTES_LINES || length + line.length + 1 > NOTES_CHARACTERS) {
-      lines.push('', message('update.more', releaseUrl(to)))
-      return lines.join('\n')
-    }
-    lines.push(line)
-    length += line.length + 1
-    count++
-  }
+  const body = notes.flatMap(item => item.text.replace(/\r\n?/g, '\n').split('\n')).map(line => line.trim())
+    .filter(line => line !== '' && !line.startsWith('#'))
+    .map(line => line.length > NOTES_LINE_CHARACTERS ? `${line.slice(0, NOTES_LINE_CHARACTERS - 1)}…` : line)
+  if (body.length <= NOTES_LINES - 1) lines.push(...body)
+  else lines.push(...body.slice(0, NOTES_LINES - 2), message('update.more', releaseUrl(to)))
   return lines.join('\n')
 }
 
@@ -274,23 +268,33 @@ export class UpdateCheck {
 }
 
 /**
- * The record of the version at the start of the daemon (see `MegachatState.recordVersion`), and the request for the
- * notes of an update. The record comes before the publish of the connection file, so the first turn gets the message.
- * The request for the notes runs in the background, and `notes` of the result ends with it. The message waits for it
- * at most for its time limit [timeoutMs] from its start. [fetchNotes] replaces the request, for a test.
+ * The record of the version at the start of the daemon (see `MegachatState.recordVersion`), and the delivery of the
+ * message after an update. The record comes before the publish of the connection file. The request for the notes and
+ * the write of the message run in the background: the message goes out on its own when the request ends, or at its
+ * time limit [timeoutMs], and when the conversation is idle. A turn of the user does not wait for it. While a turn or an
+ * input blocks the write, the daemon tries again each [retryMs]. `notes` of the result ends with the write, and `close()`
+ * ends the tries. [fetchNotes] replaces the request, for a test.
  */
-export async function recordVersion(state, version, { environment = process.env, fetchNotes = fetchReleaseNotes, timeoutMs = NOTES_TIMEOUT_MS } = {}) {
+export async function recordVersion(state, version, { environment = process.env, fetchNotes = fetchReleaseNotes, timeoutMs = NOTES_TIMEOUT_MS, retryMs = NOTE_RETRY_MS } = {}) {
   const result = await state.recordVersion(version)
   if (result.failed) logEvent('log.update.failed', result.failed, baseVersion(version))
   const notice = result.notice
+  let closed = false
+  let timer
+  let wake
+  result.close = () => { closed = true; clearTimeout(timer); wake?.() }
   result.notes = !notice ? Promise.resolve() : (async () => {
     let notes
     try { notes = await fetchNotes({ from: notice.from, to: notice.to, environment, timeoutMs }) }
-    catch (error) { logFailure('log.update.notes', error, notice.to); return }
-    // The daemon can stop during the request. Then the message goes out without the notes.
-    try { await state.updateNotes(notice, notes) }
-    catch { /* The state is closed. */ }
+    catch (error) { logFailure('log.update.notes', error, notice.to) }
+    try {
+      if (notes !== undefined) await state.updateNotes(notice, notes)
+      // The message waits for an idle conversation, also when no client is connected: the conversation keeps it.
+      while (!closed && !(await state.writeUpdateNote())) {
+        await new Promise(resolve => { wake = resolve; timer = setTimeout(resolve, retryMs); timer.unref() })
+      }
+    }
+    catch (error) { if (!closed) logFailure('log.update.noteFailed', error) }
   })()
-  if (notice) state.waitForNotes(result.notes, Date.now() + timeoutMs)
   return result
 }

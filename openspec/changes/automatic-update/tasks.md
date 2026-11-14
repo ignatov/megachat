@@ -29,9 +29,9 @@
 
 ## 6. The state and the message after an update
 
-- [x] 6.1 In `src/MegachatState.mjs`, add the field `update` with the migration of decision 6, the steps at the start, and the note before the input of a turn of the user and of the morning report.
+- [x] 6.1 In `src/MegachatState.mjs`, add the field `update` with the migration of decision 6, the steps at the start, and the note that the daemon writes on its own after its start (no wait of the first turn).
 - [ ] 6.2 Manual check of the author on a real IDE build: with a copy of npx and a temporary new tag, let the daemon stop itself, then send a message in Air. Record what Air shows at the exit of the agent, whether it starts `npx` again at the next message or attach, and whether it loads the session. Record the result in `docs/manual-checks.md`. When Air does not start the agent again, the author files the Air side as an IJAI ticket.
-- [x] 6.3 In `src/MegachatUpdate.mjs`, get the notes with `fetch`, `MEGACHAT_RELEASE_NOTES_URL`, the time limit of 10 seconds and the limits of 40 lines and 8000 characters. Add `update.done`, `update.more` and `update.noNotes` and the log line to `resources/Megachat.properties`.
+- [x] 6.3 In `src/MegachatUpdate.mjs`, get the notes with `fetch`, `MEGACHAT_RELEASE_NOTES_URL`, the time limit of 10 seconds and the limit of 5 lines. Add `update.done`, `update.more` and `update.noNotes` and the log line to `resources/Megachat.properties`.
 - [x] 6.4 Cover "Stop without an update", "Recorded version", "Message after an update", "Source of the release notes" and "Message without release notes" in `test/update.test.mjs`, with a local HTTP server. Run `npm test`.
 
 ## 7. Documents and the end
