@@ -43,6 +43,10 @@ When no process of the session lives, Megachat MUST hide it: `codex archive <id>
 
 Tests: `test/archive.test.mjs`, `test/session-logs.test.mjs`
 
+#### Scenario: A Codex session with a compressed log
+- **WHEN** the user archives a Codex session whose only log is `rollout-*.jsonl.zst` in the sessions folder, and the live table holds no record of it
+- **THEN** Megachat finds the log by the session ID and runs `codex archive <id>`
+
 #### Scenario: A process that does not end
 - **WHEN** a session gets SIGTERM and SIGKILL, and its process still lives after 10 seconds
 - **THEN** the card has `hidden` `pending`, and the log of the session keeps its size

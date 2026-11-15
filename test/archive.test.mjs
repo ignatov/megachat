@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { appendFile, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises'
 import * as fs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { zstdCompressSync } from 'node:zlib'
 import { stopPermission } from '../src/AcpBridge.mjs'
 import { AgentStop } from '../src/AgentStop.mjs'
 import { ClaudeSessionSource } from '../src/ClaudeSessionSource.mjs'
@@ -358,6 +359,21 @@ test('a Codex session runs codex archive, and restore runs codex unarchive for a
   assert.deepEqual([restored.restored[0].resume, context.commands.at(-1)], [`codex resume ${IDS.codex}`, ['unarchive', IDS.codex]])
   const again = await context.archive.call({ action: 'archive', sessions: [item('codex', IDS.codex)] })
   assert.equal(again.outcome, 'none')
+})
+
+test('a Codex session with a compressed log only, which the live table lacks, runs codex archive', async () => {
+  const context = await rig()
+  const folder = join(context.home, '.codex', 'sessions', '2026', '10', '17')
+  await mkdir(folder, { recursive: true })
+  const file = join(folder, `rollout-2026-10-17T17-00-32-${IDS.codex}.jsonl.zst`)
+  await writeFile(file, zstdCompressSync(JSON.stringify({ type: 'session_meta', payload: { id: IDS.codex, cwd: '/work/json' } }) + '\n'))
+  await utimes(file, (NOW - 3600000 * 5) / 1000, (NOW - 3600000 * 5) / 1000)
+  const other = join(folder, 'rollout-2026-10-17T17-00-33-77777777-7777-4777-8777-777777777777.jsonl.zst')
+  await writeFile(other, zstdCompressSync(JSON.stringify({ type: 'session_meta', payload: { id: '77777777-7777-4777-8777-777777777777', cwd: '/work/json' } }) + '\n'))
+  const { result } = await answered(context, { action: 'archive', sessions: [item('codex', IDS.codex)] })
+  assert.deepEqual([result.archived[0].hidden, context.commands], ['codex', [['archive', IDS.codex]]])
+  const unknown = await context.archive.call({ action: 'archive', sessions: [item('codex', '88888888-8888-4888-8888-888888888888')] })
+  assert.deepEqual(unknown.refused.map(row => row.reason), [message('archive.refused.unknown', 'codex', '88888888-8888-4888-8888-888888888888')])
 })
 
 test('search finds a card by its ticket only, and list pages the cards newest first', async () => {

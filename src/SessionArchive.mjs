@@ -250,10 +250,21 @@ export class SessionArchive {
     return { title: visibleTitle(title ?? '', item.sessionId), label: sessionLabel(title, item.sessionId), resume: resumeCommand(item.agent, item.sessionId) }
   }
 
-  /** The log record of a session from the live table, read now. */
+  /**
+   * The log record of a session from the live table, read now. The live table has no compressed Codex file
+   * (`rollout-*.jsonl.zst`), so for Codex the folder of the sessions gives the file, and `codex archive` takes it.
+   */
   async record(catalog, { agent, sessionId }) {
     const known = catalog.session(agent, sessionId)
-    return known ? (await catalog.ensure(known.path)) ?? known : undefined
+    if (known) return (await catalog.ensure(known.path)) ?? known
+    const source = agent === 'codex' ? catalog.source(agent) : undefined
+    if (!source) return undefined
+    for (const { path } of await source.files(undefined, this.fs).catch(() => [])) {
+      if (source.nameId(path) !== sessionId) continue
+      const stat = await this.fs.stat(path).catch(() => undefined)
+      if (stat?.isFile()) return { path, agent, nameId: sessionId, mtimeMs: stat.mtimeMs, read: false }
+    }
+    return undefined
   }
 
   /** The live rows of a session now, with the owner of each process, from one read of the table. */
