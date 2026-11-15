@@ -250,7 +250,8 @@ export class PiMegachatService {
     // The archive of sessions (see the capability `session-archive`) uses the dialog of the stopper and the live table.
     service.archiver = new SessionArchive({ state, running: service.running, stopper: service.stopper, catalog: () => service.sessionIndex?.logs,
       directory: stateDirectory, fs: fsPromises, secrets, clock,
-      codexArchive: join(environment.CODEX_HOME || join(home ?? homedir(), '.codex'), 'archived_sessions'), ...archiveOptions })
+      codexArchive: join(environment.CODEX_HOME || join(home ?? homedir(), '.codex'), 'archived_sessions'),
+      airCaches: process.platform === 'darwin' ? join(home ?? homedir(), 'Library', 'Caches', 'JetBrains') : undefined, ...archiveOptions })
     // The keys of the settings that the main agent offered. The rules section shows only the other offers.
     service.offered = new Set(Object.keys((await state.snapshot()).initiative.offers))
     // The Air support of the last client that attached. `chat.html` `auto` uses it until the next attach.

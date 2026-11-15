@@ -19,6 +19,13 @@
 - [ ] 3.2 Live check in a temporary `MEGACHAT_HOME` on copies of 3 logs: archive a batch, restore one, search a ticket. Record it in `docs/manual-checks.md`.
 - [ ] 3.3 Run `npm test` and `openspec validate session-archive --strict`.
 
+## 4. Check of Air and names
+
+- [x] 4.1 Add `src/AirArchive.mjs` (read only) and give `air` and `airHint` to the result of `archive` and to the cards of `list` and `search`.
+- [x] 4.2 Do not write the store of Air for a session with its own thread: the hint says Done in Air. Record the reason in `docs/air-contract.md`, and draft the ticket in `air-ticket.md`.
+- [x] 4.3 Give `label`, the full ID and the command to each entry and card, and update `tool.archive` and the rules.
+- [x] 4.4 Add the cases to `test/archive.test.mjs` on copies of a store of Air.
+
 ## Workflow follow-up
 
 - Archive this change after `session-triage`.

@@ -104,6 +104,12 @@ No field of `conversation.sqlite` or `settings.json` changes. No ACP message and
 - A session that a process of Air runs: the owner `ide`. Megachat writes no mark and sends no signal, so it never fights Air. The answer says to use Done in Air.
 - Restore in Air of a session that Megachat archived: Air appends the title without the prefix. The card keeps `hidden: title`; `list` reads the current state from the log and shows the session as active.
 
+### 9. Check of Air, no write to its store, names with the short ID
+
+- After the hide, `agents_archive` reads the store of Air (read only) and gives `air` and `airHint` for each session, and `list` and `search` do the same for each card that is hidden now. The thread is found by `association.agentSessionId`, in the stores whose `store.json` has the `projectDirectory` of the session (the hash can collide). The state is `summary.archived`, else the last archive event of `events.jsonl`, else the state of the log. A session that Air still shows gets one second check after 1.5 seconds. Nothing waits for minutes.
+- Air archives a thread of its own with `sessionLog.recordEvent(ThreadArchived)` inside its process. An external append is not safe: Air holds the next sequence number and the projection in memory, and has no lock. So Megachat writes nothing to the store of Air. A thread that Air shows still gives `still shown` and the hint "press Done in Air". The reason is in `docs/air-contract.md`, and the text of the ticket is in `air-ticket.md` (not filed).
+- Titles repeat, so each entry of a result and each card has `label` (`title (short ID)`), the full `sessionId` and the command to continue.
+
 ## Risks / Trade-offs
 
 - The title record couples Megachat to a format of Air. The format is the one that Claude Code writes for `/rename`, it has a spec and tests in Air, and the CLI integration test of Air reads it with a real `claude`. The IJAI ticket (task 1.2) asks to keep it as a contract. A test reads a fixture in that format.

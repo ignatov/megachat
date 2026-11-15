@@ -55,7 +55,7 @@ const claudeLog = (id, { prompt = 'Fix IJAI-6285', title, reply = 'Done, committ
  * The rig: logs in a temporary home, a fake process table, a fake state with a turn, a fake live view, and the real
  * stopper and archive. [signals] lists each signal. A signal ends the process, unless the PID is in `stubborn`.
  */
-async function rig({ processes = BASE(), sessions = {}, git = async () => '', codex } = {}) {
+async function rig({ processes = BASE(), sessions = {}, git = async () => '', codex, airCaches } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'megachat-archive-'))
   const directory = join(home, 'state')
   await mkdir(directory)
@@ -101,7 +101,7 @@ async function rig({ processes = BASE(), sessions = {}, git = async () => '', co
   }
   stopper.running = running
   const archive = new SessionArchive({ state, running, stopper, catalog: () => catalog, directory, codexArchive: join(home, '.codex', 'archived_sessions'), fs,
-    clock, sleep: async () => { context.slept = (context.slept ?? 0) + 1; clock.now = () => NOW + 11000 * context.slept }, git,
+    clock, airCaches: airCaches === null ? undefined : join(home, 'caches'), sleep: async () => { context.slept = (context.slept ?? 0) + 1; clock.now = () => NOW + 11000 * context.slept }, git,
     codex: codex ?? (async args => { context.commands.push(args) }), exitWaitMs: 10000 })
   Object.assign(context, { stopper, archive, views: [], timers })
   stopper.watch(view => context.views.push(view))
@@ -382,4 +382,76 @@ test('the arguments are checked, the consent is needed, and a batch has at most 
   await assert.rejects(context.archive.call({ action: 'delete' }), { code: 'invalid' })
   const off = new SessionArchive({ ...context.archive, catalog: () => undefined, directory: context.directory })
   await assert.rejects(off.call({ action: 'archive', sessions: [item('claude', IDS.one)] }), { code: 'archiveConsent' })
+})
+
+// The Air fixtures: `<caches>/<IDE>/acp/projects/<hash>/store.json` and `threads/<id>/summary.json` and `events.jsonl`.
+async function airThread(context, { hash = 'aaaa1111', project = '/work/json', sessionId, summary = {}, events, ide = 'IntelliJIdea2027.1' }) {
+  const root = join(context.home, 'caches', ide, 'acp', 'projects', hash)
+  const directory = join(root, 'threads', `local%3A${hash}-${sessionId.slice(0, 4)}`)
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(root, 'store.json'), JSON.stringify({ schemaVersion: 1, projectDirectory: project }))
+  await writeFile(join(directory, 'summary.json'), JSON.stringify({ schemaVersion: 12, threadId: 'local:x', association: { namespaceId: 'claude', agentSessionId: sessionId }, ...summary }))
+  if (events) await writeFile(join(directory, 'events.jsonl'), events.map((type, index) => line({ id: `x#${index}`, threadId: 'local:x', seq: index, timestamp: 1, source: 'Ide', type, payload: type === 'ThreadArchiveStateChanged' ? { archived: true } : {}, version: 1 })).join(''))
+  return directory
+}
+const archiveOne = async (context, id) => (await answered(context, { action: 'archive', sessions: [item('claude', id)] })).result.archived[0]
+const snapshot = async directory => (await Promise.all(['summary.json', 'events.jsonl'].map(name => readFile(join(directory, name), 'utf8').catch(() => null)))).join('|')
+
+test('the result names a session by its title and short ID, with the full ID and the command', async () => {
+  const context = await rig()
+  await context.add('claude', IDS.one, { text: claudeLog(IDS.one), title: 'Fix the build' })
+  await context.add('claude', IDS.two, { text: claudeLog(IDS.two), title: 'Fix the build' })
+  const { result } = await answered(context, { action: 'archive', sessions: [item('claude', IDS.one), item('claude', IDS.two), item('claude', 'nope')] })
+  assert.deepEqual(result.archived.map(row => row.label), ['Fix the build (11111111)', 'Fix the build (22222222)'])
+  assert.equal(result.archived[0].sessionId, IDS.one)
+  assert.equal(result.archived[0].resume, `claude --resume ${IDS.one}`)
+  assert.equal(result.refused[0].label, 'Session nope (nope)')
+  assert.equal(result.refused[0].resume, 'claude --resume nope')
+  const listed = await context.archive.call({ action: 'list' })
+  assert.deepEqual(listed.cards.map(card => card.label).sort(), ['Fix the build (11111111)', 'Fix the build (22222222)'])
+  assert.equal(listed.cards[0].resume.command.startsWith('claude --resume '), true)
+  assert.match(message('tool.archive'), /label/)
+})
+
+test('a session without a thread of Air says no Air thread, and a store of another project is not matched', async () => {
+  const context = await rig()
+  await context.add('claude', IDS.one, { text: claudeLog(IDS.one), title: 'Old' })
+  await airThread(context, { hash: 'bbbb2222', project: '/work/other', sessionId: IDS.one, summary: { archived: false } })
+  const row = await archiveOne(context, IDS.one)
+  assert.equal(row.hidden, 'title')
+  assert.equal(row.air, 'no Air thread')
+  assert.match(row.airHint, /Refresh/)
+})
+
+test('a thread of Air gives hidden or still shown from its summary, its events, then the log, and Megachat never writes the store', async () => {
+  const context = await rig()
+  const cases = [
+    [IDS.one, { summary: { archived: true } }, 'hidden'],
+    [IDS.two, { summary: { archived: false } }, 'still shown'],
+    [IDS.three, { events: ['ThreadCreated', 'ThreadArchived', 'ThreadUnarchived'] }, 'still shown'],
+    [IDS.ide, { events: ['ThreadCreated', 'ThreadArchiveStateChanged'] }, 'hidden'],
+    [IDS.pi, {}, 'hidden'],
+  ]
+  const directories = []
+  for (const [id, air, expected] of cases) {
+    await context.add('claude', id, { text: claudeLog(id), title: `T ${id.slice(0, 2)}` })
+    directories.push([await airThread(context, { sessionId: id, ...air }), expected])
+  }
+  const before = await Promise.all(directories.map(([directory]) => snapshot(directory)))
+  const rows = []
+  for (const [id] of cases) rows.push(await archiveOne(context, id))
+  assert.deepEqual(rows.map(row => row.air), cases.map(([, , expected]) => expected))
+  assert.match(rows[1].airHint, /press Done in Air/)
+  assert.match(rows[4].airHint, /Refresh/)
+  assert.equal(context.slept, 2, 'a session that is still shown gets one short second check')
+  assert.deepEqual(await Promise.all(directories.map(([directory]) => snapshot(directory))), before)
+  const listed = await context.archive.call({ action: 'list' })
+  assert.deepEqual(listed.cards.map(card => [card.sessionId, card.air]).sort(), cases.map(([id, , expected]) => [id, expected]).sort())
+})
+
+test('the state of Air is unknown without a store of Air', async () => {
+  const context = await rig({ airCaches: null })
+  await context.add('claude', IDS.one, { text: claudeLog(IDS.one), title: 'Old' })
+  const row = await archiveOne(context, IDS.one)
+  assert.equal(row.air, 'unknown')
 })

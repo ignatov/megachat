@@ -108,3 +108,38 @@ Tests: `test/archive.test.mjs`
 #### Scenario: A search by a ticket
 - **WHEN** two cards exist, and one names `ORDER-389`
 - **THEN** `search` with `ORDER-389` gives that card only
+
+### Requirement: State of Air after the hide
+After the hide, `archive` MUST read the store of Air and MUST give `air` for each session: `hidden`, `still shown`, `no Air thread` or `unknown`, with `airHint`. A session that Air still shows MUST get one short second check, with no wait of minutes. `list` and `search` MUST give `air` for each hidden card.
+
+Tests: `test/archive.test.mjs`
+
+#### Scenario: A thread that the user reopened in Air
+- **WHEN** Megachat archives a session whose thread of Air has `archived: false`
+- **THEN** the result has `air` `still shown`, the hint says to press Done in Air, and the files of the thread keep their content
+
+#### Scenario: A thread in the right project
+- **WHEN** two stores of Air have a thread with the agent session ID, and only one `store.json` names the project directory of the session
+- **THEN** Megachat uses that thread, and its state is `summary.archived`, else the last archive event, else the state of the log
+
+#### Scenario: A session without a thread
+- **WHEN** no store of Air has a thread for the session
+- **THEN** the result has `air` `no Air thread` and the hint to press Refresh in Air
+
+### Requirement: No write to the store of Air
+Megachat MUST NOT write the store of Air, because Air keeps the sequence number and the projection of a thread in memory (see `docs/air-contract.md`). A session with its own thread that Air still shows MUST get the hint to press Done in Air.
+
+Tests: `test/archive.test.mjs`
+
+#### Scenario: Files of the store after an archive
+- **WHEN** Megachat archives sessions that have threads of Air
+- **THEN** each `summary.json` and `events.jsonl` of those threads keeps its content
+
+### Requirement: Name of a session in a result
+Each entry of the result of `agents_archive` and each card MUST have `label`, the title and the short ID of 8 characters in the form `title (short ID)`, and the full `sessionId` and the command to continue. The text of the tool MUST tell the main agent to name a session by its label.
+
+Tests: `test/archive.test.mjs`
+
+#### Scenario: Two sessions with one title
+- **WHEN** two sessions have the title `Fix the build`
+- **THEN** their labels are `Fix the build (11111111)` and `Fix the build (22222222)`

@@ -372,3 +372,36 @@ tool belong to it. Megachat sends the fence as plain text in `agent_message_chun
   the support. A child never gets the rules.
 - Open for Air (the three points of the IJAI ticket): a capability `htmlFence` in `initialize`, whether a custom ACP agent
   gets `additionalDirectories` with the skill directory, and a public contract of the fence.
+
+## The archive of a session that has a thread of Air
+Checked against the Air sources at `b819bcfd4b452` (`plugins/air`) on 2026-11-15.
+
+- Megachat archives a Claude Code or pi session with the title records `[archived] ` in the log of the agent, and Air
+  reads them (see "The hide, in the format of Air" in the change `session-archive`). A session that Air imported or
+  started has its own thread in `<caches>/<IDE>/acp/projects/<hash>/threads/local%3A<id>/`, with `summary.json` and
+  `events.jsonl`. `store.json` of the project holds the `projectDirectory`, and the hash can collide, so a reader matches
+  `projectDirectory`. The thread names the agent session in `association.agentSessionId`.
+- The archive state of such a thread is `summary.archived` when it exists, and else the state of the log of the agent
+  (`AgentSessionCatalogEnrichment.kt`: `summary.archived ?: archived`). The summary mirrors the last event of
+  `ThreadArchived`, `ThreadUnarchived` and `ThreadArchiveStateChanged` (`payload.archived`).
+- Done in Air for such a thread is `StructuredSessionReplicaServiceImpl.setArchived`
+  (`backend/session/catalog`): it waits for the projection, then calls `sessionLog.recordEvent` with the source `Ide` and
+  the type `ThreadArchived` (`ThreadUnarchived` for a Reopen) and an empty payload, then waits for the projection of
+  that sequence number and reports the change to the runtime.
+- Megachat does NOT write that event, because it is not safe while the IDE runs:
+  - The store has no lock, and Megachat found no file watch for the events file. It holds the next
+    sequence number in memory (`StorageSessionState.nextSeq`, `SessionLogState.lastSeq`). A line that Megachat appends
+    has a sequence number of the file, and the next event of Air takes the same number again. The log then has two events
+    with one `seq`. A reader that sees a journal out of order folds it again in `seq` order, so the order of the events
+    is wrong, and the tail reads of Air use offsets that it recorded itself.
+  - Air keeps the projection of a thread in memory (`cachedProjection`) and does not read the file again. So it does
+    not see an event that came from outside, and the next write of its own summary overwrites a `summary.archived` that
+    Megachat wrote.
+  - `StoredSessionLogImpl.eventsFileModified` is a cache too: the catalog does not see a file that changed outside.
+- So Megachat hides such a session only through the log of the agent. Air takes that state on its next refresh of the
+  list, only for a thread without its own `summary.archived`. The result of `agents_archive` has `air`
+  (`hidden`, `still shown`, `no Air thread` or `unknown`) and `airHint`. A thread with `summary.archived: false` (the user
+  reopened it in Air) or with a last event `ThreadUnarchived` shows `still shown`, and the hint says: press Done in Air.
+  Megachat reads the store of Air to tell this, and it never writes it.
+- Open for Air: a public way to archive a thread from outside, for example a command of the ACP extension or an event
+  file that Air reads again. The text of the ticket is in `openspec/changes/session-archive/air-ticket.md` (not filed).

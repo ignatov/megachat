@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { appendFile, chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { AirStore } from './AirArchive.mjs'
 import { message, MegachatError, requireCondition } from './messages.mjs'
 import { OPEN_STEPS } from './SessionStatus.mjs'
 import { parseLine, readLines } from './SessionLog.mjs'
@@ -18,6 +19,8 @@ export const ARCHIVE_FILE = 'session-archive.jsonl'
 export const ARCHIVE_MAX_SESSIONS = 50
 export const PAGE_LIMIT = 20
 export const EXIT_WAIT_MS = 10000
+/** The wait before the second check of the state of Air. */
+export const AIR_RECHECK_MS = 1500
 /** A Codex row with a log write in this time is refused: Codex writes no record of a permission request. */
 export const CODEX_QUIET_MS = 10 * 60 * 1000
 /** A row with a log write in this time gets a warning. */
@@ -50,6 +53,11 @@ export const visibleTitle = (title, sessionId) =>
 export const archivedTitle = (title, sessionId) => cap(ARCHIVED_TITLE_PREFIX + visibleTitle(title, sessionId))
 /** The title that Air stores after a Reopen. */
 export const restoredTitle = (title, sessionId) => cap(visibleTitle(title, sessionId))
+
+/** The short ID of a session, as `Session <id>` of Air shows it. */
+export const shortId = sessionId => String(sessionId).slice(0, 8)
+/** The name of a session for the user: the title and the short ID, because titles repeat. */
+export const sessionLabel = (title, sessionId) => `${visibleTitle(title ?? '', sessionId)} (${shortId(sessionId)})`
 
 /** The command that continues a session. */
 export const resumeCommand = (agent, sessionId) => agent === 'claude' ? `claude --resume ${sessionId}`
@@ -191,9 +199,10 @@ const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
  * `agents_stop`: only the answer `archive` of the user starts the steps. The checks run again after the answer.
  */
 export class SessionArchive {
-  constructor({ state, running, stopper, catalog, directory, codexArchive, fs, secrets, clock = systemClock, sleep = systemSleep, git = defaultGit, codex = defaultCodex, exitWaitMs = EXIT_WAIT_MS }) {
-    Object.assign(this, { state, running, stopper, catalog, codexArchive, fs, secrets, clock, sleep, git, codex, exitWaitMs })
+  constructor({ state, running, stopper, catalog, directory, codexArchive, fs, secrets, clock = systemClock, sleep = systemSleep, git = defaultGit, codex = defaultCodex, exitWaitMs = EXIT_WAIT_MS, airCaches, airRecheckMs = AIR_RECHECK_MS }) {
+    Object.assign(this, { state, running, stopper, catalog, codexArchive, fs, secrets, clock, sleep, git, codex, exitWaitMs, airRecheckMs })
     this.cards = new ArchiveCards(directory)
+    this.air = new AirStore(airCaches)
   }
 
   async call({ action, sessions, query, cursor, ...other } = {}, { abortSignal } = {}) {
@@ -201,7 +210,7 @@ export class SessionArchive {
     requireCondition(['archive', 'restore', 'list', 'search'].includes(action))
     if (action === 'list' || action === 'search') {
       requireCondition(action === 'list' ? query === undefined : typeof query === 'string' && query.trim() && query.length <= 200)
-      return this.cards.page({ query, cursor })
+      return this.named(await this.cards.page({ query, cursor }))
     }
     requireCondition(Array.isArray(sessions) && sessions.length >= 1 && sessions.length <= ARCHIVE_MAX_SESSIONS)
     requireCondition(sessions.every(item => item && ['claude', 'codex', 'pi'].includes(item.agent) && typeof item.sessionId === 'string' && /^[\w.:-]{1,100}$/.test(item.sessionId)))
@@ -209,6 +218,36 @@ export class SessionArchive {
     const catalog = this.catalog()
     if (!catalog) throw new MegachatError('archiveConsent')
     return action === 'archive' ? this.archive(sessions, catalog, abortSignal) : this.restore(sessions, catalog)
+  }
+
+  /** The cards of a page with the label of each one, and the state of Air for each card that is hidden now. */
+  async named({ cards, nextCursor }) {
+    const named = []
+    for (const card of cards) {
+      const entry = { ...card, label: sessionLabel(card.title, card.sessionId) }
+      if (!card.restoredAt && (card.hidden === 'title' || card.hidden === 'codex')) Object.assign(entry, await this.airState(card.agent, card.sessionId, card.cwd, true, false))
+      named.push(entry)
+    }
+    return { cards: named, nextCursor }
+  }
+
+  /**
+   * What Air shows for a session now: `{ air, airHint }`. A session that Air shows still gets a second check after a
+   * short wait ([recheck]), because Air reads the log on a refresh. The wait is short, and it never blocks for minutes.
+   */
+  async airState(agent, sessionId, cwd, logArchived, recheck) {
+    let found = await this.air.check(agent, sessionId, cwd, logArchived)
+    if (recheck && found.air === 'still shown' && this.airRecheckMs > 0) {
+      await this.sleep(this.airRecheckMs)
+      found = await this.air.check(agent, sessionId, cwd, logArchived)
+    }
+    return { air: found.air, airHint: message(`archive.air.${found.hint}`) }
+  }
+
+  /** The title, the label and the command to continue of a session, for each entry of the result. */
+  describe(item, catalog) {
+    const title = catalog.session(item.agent, item.sessionId)?.title
+    return { title: visibleTitle(title ?? '', item.sessionId), label: sessionLabel(title, item.sessionId), resume: resumeCommand(item.agent, item.sessionId) }
   }
 
   /** The log record of a session from the live table, read now. */
@@ -284,8 +323,8 @@ export class SessionArchive {
 
   async archive(sessions, catalog, abortSignal) {
     const prepared = await Promise.all(sessions.map(item => this.prepare(item, catalog)))
-    const refused = prepared.filter(row => row.refused).map(row => ({ ...row.item, reason: row.refused }))
-    const skipped = prepared.filter(row => row.skipped).map(row => ({ ...row.item, reason: row.skipped }))
+    const refused = prepared.filter(row => row.refused).map(row => ({ ...row.item, ...this.describe(row.item, catalog), reason: row.refused }))
+    const skipped = prepared.filter(row => row.skipped).map(row => ({ ...row.item, ...this.describe(row.item, catalog), reason: row.skipped }))
     const rows = prepared.filter(row => row.action)
     if (!rows.length) return { outcome: 'none', archived: [], refused, skipped, note: message('archive.result.none') }
     const dialog = rows.map(row => ({ agent: row.item.agent, cwd: row.record.cwd ?? null, title: row.record.title ?? '', lastActivityAt: iso(row.record.mtimeMs),
@@ -302,7 +341,7 @@ export class SessionArchive {
 
   /** The steps for one confirmed row. A failure stops the steps of this row, and the result names it. */
   async run(item, catalog) {
-    const result = { ...item }
+    const result = { ...item, ...this.describe(item, catalog) }
     try {
       // The checks again: the user answered some time after the dialog.
       const row = await this.prepare(item, catalog)
@@ -325,7 +364,8 @@ export class SessionArchive {
       }
       const hidden = await this.hide(row.item, row.record)
       await this.cards.update(card, { hidden })
-      return { ...result, hidden, resume: card.resume.command }
+      const air = await this.airState(item.agent, item.sessionId, row.record.cwd, true, true)
+      return { ...result, hidden, ...air, resume: card.resume.command }
     }
     catch (error) {
       if (error?.name === 'AbortError') throw error
@@ -359,7 +399,7 @@ export class SessionArchive {
   async restore(sessions, catalog) {
     const restored = []
     const refused = []
-    const refuse = (item, reason) => refused.push({ ...item, reason })
+    const refuse = (item, reason) => refused.push({ ...item, ...this.describe(item, catalog), reason })
     for (const item of sessions) {
       // A Codex log of the folder of archived sessions is in no live table, so only the folder tells that it exists.
       const record = item.agent === 'codex' ? {} : await this.record(catalog, item)
@@ -381,7 +421,7 @@ export class SessionArchive {
         const card = (await this.cards.all()).find(found => found.agent === item.agent && found.sessionId === item.sessionId && !found.restoredAt)
         const restoredAt = new Date(this.clock.now()).toISOString()
         if (card) await this.cards.update(card, { restoredAt })
-        restored.push({ ...item, restoredAt, resume: resumeCommand(item.agent, item.sessionId) })
+        restored.push({ ...item, ...this.describe(item, catalog), restoredAt, resume: resumeCommand(item.agent, item.sessionId) })
       }
       catch (error) { refuse(item, message('archive.error.step', String(error?.code ?? error?.message ?? error).slice(0, 200))) }
     }
