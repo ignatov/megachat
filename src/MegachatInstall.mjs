@@ -197,5 +197,7 @@ export async function install({ environment = process.env, platform = process.pl
     }
     print(message('install.release', root, megachatVersion()))
   }
+  // An exit code 1 always has a reason on the screen: the lines above name each failed check.
+  if (!(passed && placed)) print(message('install.failed'))
   return passed && placed ? 0 : 1
 }

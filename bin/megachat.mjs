@@ -22,4 +22,12 @@ if (older(found, needed)) {
   process.stderr.write(`${line.slice(key.length).replace('{0}', found).replace('{1}', needed)}\n`)
   process.exitCode = 1
 }
-else import('../src/main.mjs')
+else {
+  // A failed import of Megachat (a missing file of an old npx copy, for example) must not end with no text.
+  import('../src/main.mjs').catch(error => {
+    const key = 'node.crashed='
+    const line = read('../resources/Megachat.properties').split('\n').filter(item => item.indexOf(key) === 0)[0]
+    process.stderr.write(`${line.slice(key.length).replace('{0}', found).replace('{1}', String(error && error.stack || error))}\n`)
+    process.exitCode = 1
+  })
+}

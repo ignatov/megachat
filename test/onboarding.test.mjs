@@ -22,6 +22,10 @@ const RULES = new URL('../resources/instructions-onboarding.md', import.meta.url
 async function open(t, { onboarding } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'megachat-onboarding-')))
   t.after(() => rm(root, { force: true, recursive: true }))
+  // The retry timer of the driver is unref'd, as in the daemon. Node.js 22 fails a test that awaits it while nothing
+  // else holds the event loop, so the test holds the loop itself.
+  const hold = setInterval(() => {}, 1000)
+  t.after(() => clearInterval(hold))
   const settingsPath = join(root, 'settings.json')
   if (onboarding) await writeFile(settingsPath, JSON.stringify({ schema: 1, onboarding, defaults: 2, values: {} }), { mode: 0o600 })
   const fake = fauxProvider()

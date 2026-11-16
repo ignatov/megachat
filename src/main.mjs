@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './quietSqliteWarning.mjs'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -300,6 +301,7 @@ try {
 catch (error) {
   // The daemon writes to its log, so the reason of its stop goes there. Each other command writes for the user.
   if (command === 'daemon' && !(error instanceof MegachatError)) logFailure('log.daemon', error)
-  process.stderr.write(`${error instanceof MegachatError ? error.message : message('error.unavailable')}\n`)
+  if (command === 'install') process.stderr.write(`${message('install.crashed', error?.message ?? String(error))}\n`)
+  else process.stderr.write(`${error instanceof MegachatError ? error.message : message('error.unavailable')}\n`)
   process.exitCode = command === 'daemon' && error.code === 'lock' ? LOCK_EXIT_CODE : 1
 }

@@ -46,6 +46,10 @@ curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh
 3. In the IDE, select Megachat in the agent list of Air. The IDE reads the change of `~/.jetbrains/acp.json` itself,
    so it needs no restart.
 
+Megachat needs Node.js 22.19 or later, and any newer Node.js works (22, 24 and 25 are tested). When the `PATH` has
+no such Node.js, the script downloads one. When the line fails, read `$TMPDIR/megachat-setup.log`, and try
+`rm -rf ~/.npm/_npx` for a stale npx cache.
+
 The IDE needs a build with the Air support for Megachat (see "The machine needs" below). The first start of Megachat
 in the IDE takes about 30 to 100 seconds, and each start needs the network.
 
@@ -65,6 +69,9 @@ one line for each step, and stops with a message at the first step that fails:
    child uses the pi route of Central.
 7. When `~/.jetbrains/acp.json` is empty, it writes `{}` to it, because the install line refuses an empty file.
 8. It runs the install line of the next section. The exit code of the install line is the exit code of the script.
+
+The script writes the output of the install line to `$TMPDIR/megachat-setup.log`. When the install line fails, it
+prints the path of the log and the last 20 lines of the log.
 
 The script changes no shell file, and it shows no output of Central that can hold a key. A second run on a ready
 machine changes nothing. The script runs no `central add codex` (see "The machine needs").
@@ -111,7 +118,10 @@ The machine needs:
   keeps that output in its log. When the policy of the organization does not allow custom agents, the IDE does not show
   Megachat.
 - git, and access to `github.com`. The repository is public, so the line needs no GitHub account.
-- Node.js 22.19 or later for the install line. The IDE runs Megachat with its own Node.js.
+- Node.js 22.19 or later for the install line, with no upper bound: Node.js 22, 24 and 25 work. The IDE runs Megachat
+  with its own Node.js.
+- Troubleshooting: when the install line fails with no text, read `$TMPDIR/megachat-setup.log`. A stale npx cache can
+  cause such a failure. Run `rm -rf ~/.npm/_npx`, then run the setup line again.
 - The Central command at `~/.local/bin/central`, with a login: `~/.local/bin/central login`. The installer of Central
   does not put `~/.local/bin` on the `PATH`, so each text of Megachat gives a Central command with its full path. When a
   reply fails because of Central, the chat names the cause and the command for the next step: a missing Central command

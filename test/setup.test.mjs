@@ -17,7 +17,7 @@ const NODE_VERSION = '24.22.3'
 const SECRET = 'secret-key-of-the-test'
 const GOOD_HASH = 'a'.repeat(64)
 /** The tools of the system that the script and the fake commands use. */
-const SYSTEM_TOOLS = ['bash', 'tar', 'gzip', 'grep', 'awk', 'mktemp', 'cat', 'cp', 'mkdir', 'chmod', 'dirname', 'touch', 'env', 'tr']
+const SYSTEM_TOOLS = ['bash', 'tar', 'gzip', 'grep', 'awk', 'mktemp', 'cat', 'cp', 'mkdir', 'chmod', 'dirname', 'touch', 'env', 'tr', 'tee', 'tail']
 
 async function executable(path, text) {
   await writeFile(path, text)
@@ -182,6 +182,10 @@ test('a ready machine runs only the checks and the install line, also in a secon
   delete before[mac.log]
   const after = await snapshot(mac.root)
   delete after[mac.log]
+  // The only new file is the log of the install line. Each run replaces it.
+  const setupLog = join(mac.root, 'tmp', 'megachat-setup.log')
+  assert.match(after[setupLog], /The output of the install line\./)
+  delete after[setupLog]
   assert.deepEqual(after, before)
 })
 
@@ -303,4 +307,17 @@ test('the exit code of a failed install line is the exit code of the setup', asy
   assert.match(output, /The output of the install line\./)
   assert.match(output, /The install line failed with the exit code 3\./)
   assert.doesNotMatch(output, /agent list of Air/)
+  // The failure names the log, shows its last lines and names the stale npx cache.
+  const log = output.match(/The log is (\S+)\./)?.[1]
+  assert.ok(log, output)
+  assert.match(await readFile(log, 'utf8'), /The output of the install line\./)
+  assert.match(output, /The last lines of the log:\n\[megachat\] The output of the install line\./)
+  assert.match(output, /rm -rf ~\/\.npm\/_npx/)
+})
+
+test('a Node.js 25 on the PATH is new enough, and the script has no upper bound', async t => {
+  const mac = await machine(t, { node: '25.6.0', central: true, login: true, claudeEntry: true })
+  const { code, commands } = await setup(mac)
+  assert.equal(code, 0)
+  assert.deepEqual(ran(commands, 'npx '), ['npx -y github:ignatov/megachat#semver:x install'])
 })

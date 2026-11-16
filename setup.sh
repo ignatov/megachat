@@ -102,7 +102,7 @@ claude_entry_present() {
 }
 
 main() {
-  local platform terminal acp_config npx_command npx_path code
+  local platform terminal acp_config npx_command npx_path code log
 
   # 1. The platform.
   platform=$(uname -s 2>/dev/null)
@@ -171,12 +171,19 @@ main() {
     say "$acp_config was empty. Megachat wrote {} to it."
   fi
 
-  # 8. The install line. Its exit code is the exit code of the script.
+  # 8. The install line. Its exit code is the exit code of the script. The output goes to the screen and to a log, so
+  # a failure that prints nothing on the screen still leaves the reason, or its absence, in a file.
   say "Megachat runs the install line: npx -y \"$INSTALL_SPEC\" install"
-  PATH=$npx_path "$npx_command" -y "$INSTALL_SPEC" install </dev/null
-  code=$?
+  # A fixed name in the private temporary directory of the user: each run replaces the log, so a second run adds no file.
+  log="${TMPDIR:-/tmp}/megachat-setup.log"
+  # `tee` keeps the output on the screen. The code of the install line is the first code of the pipe.
+  PATH=$npx_path "$npx_command" -y "$INSTALL_SPEC" install </dev/null 2>&1 | tee "$log"
+  code=${PIPESTATUS[0]}
   if [ "$code" -ne 0 ]; then
-    printf '[megachat setup] %s\n' "The install line failed with the exit code $code. Read its lines above, repair the problem, then run the setup line again." >&2
+    printf '[megachat setup] %s\n' "The install line failed with the exit code $code. The log is $log." >&2
+    printf '[megachat setup] %s\n' "The last lines of the log:" >&2
+    tail -n 20 "$log" >&2
+    printf '[megachat setup] %s\n' "A stale npx cache can cause a failure with no text. Run \"rm -rf ~/.npm/_npx\", then run the setup line again." >&2
     exit "$code"
   fi
 

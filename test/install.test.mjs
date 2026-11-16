@@ -375,6 +375,7 @@ test('install in a copy without .git writes the npx entry of the last release, a
   const install = () => run(['install', join(directory, 'state')], env, [], join(copy, 'bin', 'megachat.mjs'))
   const ide = 'The IDE starts Megachat with npx and with its own Node.js, not with the Node.js of this terminal.'
   const last = `This install ran Megachat ${manifest.version} from ${copy}. The IDE uses a copy of its own in its npm cache.`
+  const failed = 'The install has a failed check, so it exits with the code 1. Read the lines above, repair the first problem, then run the install line again.'
   const macOS = process.platform === 'darwin'
 
   const first = await install()
@@ -434,6 +435,17 @@ test('install in a copy without .git writes the npx entry of the last release, a
   assert.ok(!different.stdout.includes(ide), different.stdout)
   assert.ok(!different.stdout.includes(network), different.stdout)
   assert.ok(different.stdout.includes(air), different.stdout)
-  assert.equal(different.stdout.trimEnd().split('\n').at(-1), last)
+  // The install exits with 1, so its last line names the reason, and the line about the copy comes before it.
+  assert.equal(different.stdout.trimEnd().split('\n').at(-1), failed)
+  assert.equal(different.stdout.trimEnd().split('\n').at(-2), last)
   assert.equal(await readFile(path, 'utf8'), checkout)
+})
+
+test('the launcher prints the reason when Megachat fails to load, and a failed install prints its error', async t => {
+  const directory = await temporary(t)
+  const copy = await releaseCopy(directory)
+  await writeFile(join(copy, 'src', 'main.mjs'), "throw new Error('broken copy')\n")
+  const result = await run(['status', join(directory, 'state')], {}, [], join(copy, 'bin', 'megachat.mjs'))
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /Megachat could not start on Node\.js .*rm -rf ~\/\.npm\/_npx.*broken copy/s)
 })

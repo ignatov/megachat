@@ -7,13 +7,18 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Readable, Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { client, methods, ndJsonStream } from '@agentclientprotocol/sdk/unstable'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { megachatVersion } from '../src/MegachatBuild.mjs'
 import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { message as continuationPrompt } from '../src/messages.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
+
+// The timers of the bridge and of the daemon are unref'd. Node.js 22 fails a test that waits for them while nothing else
+// holds the event loop, so this file holds the loop until its last test ends.
+const hold = setInterval(() => {}, 1000)
+after(() => clearInterval(hold))
 
 async function poll(select, attempts = 200) {
   for (let attempt = 0; attempt < attempts; attempt++) {
