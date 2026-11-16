@@ -118,14 +118,22 @@ export function rowRunId(asyncTaskId) {
 }
 
 /**
- * The text of a prompt for the main agent, one line for each block in the order of the blocks. ACP says that each agent
- * must accept the blocks `text` and `resource_link`. A link becomes a Markdown link with its name and its URI, so the
- * main agent can give it to a child. Each other block type is refused. The daemon refuses a text that is too long.
+ * The text and the images of a prompt for the main agent. The text has one line for each block `text` or `resource_link`
+ * in the order of the blocks. A link becomes a Markdown link with its name and its URI, so the main agent can give it
+ * to a child. Each `image` block gives an image with its MIME type and base64 data. Megachat announces
+ * `promptCapabilities.image`. Each other block type is refused. The daemon refuses a text that is too long and applies
+ * the limits of the images.
  */
 function promptText(prompt) {
-  requireCondition(prompt.every(block => block.type === 'text'
+  requireCondition(prompt.every(block => block.type === 'text' || block.type === 'image'
     || (block.type === 'resource_link' && typeof block.name === 'string' && typeof block.uri === 'string')))
-  return prompt.map(block => block.type === 'text' ? block.text : `[${block.name}](${block.uri})`).join('\n')
+  const images = prompt.filter(block => block.type === 'image').map(block => {
+    requireCondition(typeof block.data === 'string' && typeof block.mimeType === 'string')
+    return { mimeType: block.mimeType, data: block.data }
+  })
+  const text = prompt.filter(block => block.type !== 'image')
+    .map(block => block.type === 'text' ? block.text : `[${block.name}](${block.uri})`).join('\n')
+  return { text, images }
 }
 
 /** The limit of the open views of one ACP connection. */
@@ -217,7 +225,7 @@ export class AcpBridge {
         this.airSupport = air?.version >= 1
         return {
           protocolVersion: 1, agentInfo: { name: 'air-megachat', title: message('title'), version: megachatVersion() },
-          agentCapabilities: { loadSession: true, sessionCapabilities: { close: {} } }, authMethods: [],
+          agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, sessionCapabilities: { close: {} } }, authMethods: [],
           _meta: { jetbrains: { air: { version: 1, capabilities: ['persistentSession',
             ...(this.nativeTurns ? ['asyncTasks'] : [])] } } },
         }
@@ -351,7 +359,7 @@ class AcpBridgeSession {
 
   async prompt(ctx) {
     requireCondition(ctx.params.sessionId === this.sessionId)
-    const text = promptText(ctx.params.prompt)
+    const { text, images } = promptText(ctx.params.prompt)
     requireCondition(!this.promptInFlight, 'busy')
     const air = ctx.params._meta?.jetbrains?.air
     const requestId = air?.clientMessageId ?? randomUUID()
@@ -361,7 +369,7 @@ class AcpBridgeSession {
       // A user turn that this view did not start can run: the continuation of a turn after a restart of the daemon, or
       // the turn of another view. The daemon interrupts only an automatic turn for an input, so it refuses the input.
       // The prompt then waits for the end of that turn and starts its own turn.
-      while (!(receipt = await this.admit(requestId, text))) {
+      while (!(receipt = await this.admit(requestId, text, images))) {
         if (await this.untilIdle() === 'cancelled') return { stopReason: 'cancelled' }
       }
       this.promptRunId = receipt.mainRunId
@@ -394,8 +402,8 @@ class AcpBridgeSession {
   }
 
   /** Admits the prompt in the daemon. Gives `null` while another turn runs. */
-  async admit(requestId, text) {
-    try { return await this.daemon.json('/input', { requestId, text }) }
+  async admit(requestId, text, images) {
+    try { return await this.daemon.json('/input', images.length ? { requestId, text, images } : { requestId, text }) }
     catch (error) {
       if (error instanceof MegachatError && error.code === 'busy') return null
       throw error

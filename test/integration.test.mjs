@@ -548,13 +548,13 @@ test('a connection with 32 open views refuses a new view with the text of the vi
   bridge.close()
 })
 
-test('a prompt gives each resource_link block to the main agent as a Markdown link, and refuses an image', { timeout: 10000 }, async t => {
+test('a prompt gives each resource_link block to the main agent as a Markdown link, and refuses an audio block', { timeout: 10000 }, async t => {
   const { daemon, cwd, fake } = await fixture(t)
   fake.setResponses([fauxAssistantMessage('Read.')])
   const viewer = await attach(daemon, cwd)
   t.after(() => viewer.connection.close())
   const prompt = blocks => viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: blocks })
-  await assert.rejects(prompt([{ type: 'text', text: 'Look' }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }]))
+  await assert.rejects(prompt([{ type: 'text', text: 'Listen' }, { type: 'audio', data: 'AAAA', mimeType: 'audio/wav' }]))
   const { stopReason } = await prompt([{ type: 'text', text: 'Read this file:' },
     { type: 'resource_link', name: 'notes.md', uri: 'file:///project/notes.md', mimeType: 'text/markdown' },
     { type: 'text', text: 'and say what it holds.' }])
@@ -563,6 +563,25 @@ test('a prompt gives each resource_link block to the main agent as a Markdown li
   t.after(() => restored.connection.close())
   assert.deepEqual(restored.updates.filter(event => event.update.sessionUpdate === 'user_message_chunk').map(event => event.update.content.text),
     ['Read this file:\n[notes.md](file:///project/notes.md)\nand say what it holds.'])
+})
+
+test('initialize announces the image capability, and an image block reaches the model as an image part', { timeout: 10000 }, async t => {
+  const { daemon, cwd, fake } = await fixture(t)
+  let seen
+  fake.setResponses([async context => { seen = context.messages.findLast(model => model.role === 'user'); return fauxAssistantMessage('I see it.') }])
+  const viewer = await attach(daemon, cwd)
+  t.after(() => viewer.connection.close())
+  const initialized = await viewer.connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: {} })
+  assert.deepEqual(initialized.agentCapabilities.promptCapabilities, { image: true })
+  const png = Buffer.from('89504e470d0a1a0a0000000d', 'hex').toString('base64')
+  const { stopReason } = await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId,
+    prompt: [{ type: 'text', text: 'What is this?' }, { type: 'image', data: png, mimeType: 'image/png' }] })
+  assert.equal(stopReason, 'end_turn')
+  assert.deepEqual(seen.content, [{ type: 'text', text: 'What is this?' }, { type: 'image', data: png, mimeType: 'image/png' }])
+  const restored = await attach(daemon, cwd)
+  t.after(() => restored.connection.close())
+  assert.deepEqual(restored.updates.filter(event => event.update.sessionUpdate === 'user_message_chunk').map(event => event.update.content.text),
+    ['What is this?'])
 })
 
 test('service session registration covers live and restored children only when supported', { timeout: 10000 }, async t => {

@@ -18,6 +18,7 @@ import { childAgent, childEnvironment, childExtension } from './PiChild.mjs'
 import { PiChildHistory } from './PiChildHistory.mjs'
 import { logEvent, logFailure, message, requireCondition } from './messages.mjs'
 import { directoriesOf } from './ProjectDirectories.mjs'
+import { limitImages, promptContent, promptImages } from './PromptImages.mjs'
 import { PromptCacheKeepAlive } from './PromptCacheKeepAlive.mjs'
 import { replyText, STOPPED_KIND, STREAM_INTERVAL_MS, stoppedReplyText } from './ReplyStream.mjs'
 import { RunningAgents } from './RunningAgents.mjs'
@@ -166,7 +167,11 @@ const blockText = content => typeof content === 'string' ? content
 function transcript(messages) {
   const parts = []
   for (const model of messages) {
-    if (model.role === 'user' && blockText(model.content)) parts.push(`[User]: ${blockText(model.content)}`)
+    if (model.role === 'user') {
+      const images = Array.isArray(model.content) ? model.content.filter(block => block.type === 'image').map(() => '[image]') : []
+      const text = [blockText(model.content), ...images].filter(Boolean).join('\n')
+      if (text) parts.push(`[User]: ${text}`)
+    }
     if (model.role === 'assistant') {
       if (blockText(model.content)) parts.push(`[Assistant]: ${blockText(model.content)}`)
       const calls = model.content.filter(block => block.type === 'toolCall')
@@ -187,6 +192,14 @@ export function keepAliveMessages(messages) {
   const last = messages.findLast(model => model.role !== 'system')
   return last === undefined || last.role === 'user' ? [...messages]
     : [...messages, { role: 'user', content: [{ type: 'text', text: message('keepalive.prompt') }], timestamp: Date.now() }]
+}
+
+/** The value [item] without the base64 data of each image: the view of the chat shows the text only. */
+function withoutImageData(item) {
+  if (Array.isArray(item)) return item.map(withoutImageData)
+  if (item === null || typeof item !== 'object') return item
+  if (item.type === 'image' && typeof item.data === 'string') return { ...item, data: '' }
+  return Object.fromEntries(Object.entries(item).map(([key, value]) => [key, withoutImageData(value)]))
 }
 
 export class PiMegachatService {
@@ -560,6 +573,8 @@ export class PiMegachatService {
     ], hooks: [
       // Each reply of the model, also a reply with tool calls, is one request that costs money.
       hook(GenerationTask, { afterResponse: (answer, api) => this.countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
+      // The conversation keeps each image, and a request holds only the images of the last user messages with images.
+      hook(GenerationTask, { beforeRequest: request => ({ messages: limitImages(request.messages) }) }),
       hook(CompactionTask, { beforeCompact: (compaction, api, hookContext) => this.summarize(compaction, api, hookContext) }),
       hook(ToolTask, { afterTool: (call, outcome, api, hookContext) => this.replyEnd(call, outcome, api, hookContext) }),
     ], tools: [
@@ -814,7 +829,7 @@ export class PiMegachatService {
    * A summary replaces the reply with the usage, so the context after a summary has an estimate only.
    */
   async contextTokens() {
-    const { messages } = await this.root.context(context)
+    const messages = limitImages((await this.root.context(context)).messages)
     const measured = messages.findLastIndex(model => model.role === 'assistant' && calculateContextTokens(model.usage) > 0)
     return messages.slice(measured + 1).reduce((sum, model) => sum + estimateMessageTokens(model),
       measured < 0 ? 0 : calculateContextTokens(messages[measured].usage))
@@ -829,8 +844,7 @@ export class PiMegachatService {
    */
   async ping(signal) {
     const model = this.models.getModel(this.model.provider, this.model.modelId)
-    const { messages } = await this.root.context(context)
-    const request = keepAliveMessages(messages)
+    const request = keepAliveMessages(limitImages((await this.root.context(context)).messages))
     const answer = await this.models.completeSimple(model, { messages: request }, {
       timeoutMs: STREAM_TIMEOUT_MS, maxRetries: 0, cacheRetention: this.cacheRetention, maxTokens: 1, signal,
       // Pi Durable sends no reasoning option for the level `off`, so the keep-alive request does the same.
@@ -1007,7 +1021,13 @@ export class PiMegachatService {
     return this.state.withdrawPromptSuggestion(id)
   }
 
-  async submit(requestId, text) {
+  /**
+   * Admits a prompt of the user. [images] are the image blocks of the prompt. The images of the files that the text
+   * names join them (see `promptImages`).
+   */
+  async submit(requestId, text, images = []) {
+    requireCondition(Array.isArray(images) && images.length <= 16 && images.every(image => typeof image?.data === 'string'
+      && typeof image.mimeType === 'string' && image.mimeType.length <= 100))
     // A message of the user stops the timer of the reflection, and a turn starts. A request that runs does not stop.
     this.reflection?.turnStarted()
     this.pendingUserInputs++
@@ -1019,7 +1039,9 @@ export class PiMegachatService {
         await waitForState(this.state, state => !state.current ? true : undefined,
           { signal: this.lifetime.signal, timeoutMs: 60000 })
       }
-      const receipt = await this.state.submit(requestId, text)
+      requireCondition(typeof text === 'string')
+      const resolved = await promptImages(text, images, { home: this.home })
+      const receipt = await this.state.submit(requestId, text, { content: promptContent(text, resolved), images })
       if (receipt.status === 'running') this.follow(receipt)
       started = receipt.status === 'running'
       return receipt
@@ -1183,7 +1205,7 @@ export class PiMegachatService {
     const watch = await this.root.watch(context, { min: 100, max: 200 })
     const value = watch.value
     await watch.stop()
-    return value
+    return withoutImageData(value)
   }
 
   async close() {

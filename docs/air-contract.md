@@ -56,10 +56,17 @@ one attach can send 5,000 requests. Nobody measured that time in Air. `docs/road
   input. A repeated ID returns the first admission, so a retry of Air admits the message once.
 - `session/cancel` cancels the current main task and each child that it owns. While no turn runs, it withdraws the
   prompt suggestion that the view showed.
-- Megachat accepts the content blocks `text` and `resource_link` in `session/prompt`. This is the base protocol: ACP
-  requires these two types of each agent, and Megachat announces no other prompt capability. The main agent gets each
-  link as the Markdown link `[name](uri)` on a line of its own, in the order of the blocks. Megachat refuses each other
-  block type. The input of the main agent has at most 100,000 characters, with the links.
+- Megachat announces `agentCapabilities.promptCapabilities.image: true` in the answer of `initialize`. It accepts the
+  content blocks `text`, `resource_link` and `image` in `session/prompt`. The main agent gets each link as the Markdown
+  link `[name](uri)` on a line of its own, in the order of the blocks, and each `image` block (PNG, JPEG, GIF or WebP)
+  as an image. Megachat refuses each other block type. The input of the main agent has at most 100,000 characters of
+  text, with the links.
+- A client that announces no image support, or an older Air, writes the attachment into the text, as `@path` and as
+  `![Image](<path>)`. Megachat reads an existing image file from such a path under the home directory of the user, and
+  gives it to the main agent as an image. The text stays as it is.
+- At most 4 images go with one prompt, and one image has at most 4.5 MB of base64. Megachat skips a larger or
+  unreadable image and adds a note line to the text. A request to the model holds only the images of the last 3
+  messages that have images.
 
 ## The prompt suggestion
 

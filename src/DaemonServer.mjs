@@ -51,16 +51,20 @@ export class DaemonServer {
     return { version: 1, pid: process.pid, ...(this.build ? { build: this.build } : {}), port: this.server.address().port, token: this.token }
   }
 
-  async body(request) {
+  async body(request, limit = 1000000) {
+    const plain = 1000000
     const chunks = []
     let length = 0
     for await (const chunk of request) {
       length += chunk.length
       // An input has at most 100,000 characters, and one character can take 6 bytes in JSON.
-      requireCondition(length <= 1000000)
+      requireCondition(length <= limit)
       chunks.push(chunk)
     }
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    // Only a body with images can pass the plain limit.
+    requireCondition(length <= plain || (Array.isArray(body?.images) && body.images.length > 0))
+    return body
   }
 
   historyConfiguration() {
@@ -118,7 +122,8 @@ export class DaemonServer {
       }
     }
     requireCondition(request.method === 'POST')
-    const body = await this.body(request)
+    // An input can hold images: at most 4 of 4.5 MB of base64.
+    const body = await this.body(request, url.pathname === '/input' ? 20000000 : undefined)
     switch (url.pathname) {
       case '/workspace': {
         requireCondition(typeof body.cwd === 'string')
@@ -135,7 +140,7 @@ export class DaemonServer {
         send({ airSupport: body.airSupport })
         return
       }
-      case '/input': send(await this.service.submit(body.requestId, body.text)); return
+      case '/input': send(await this.service.submit(body.requestId, body.text, body.images)); return
       case '/prompt-suggestion/withdraw': {
         requireCondition(typeof body.id === 'string' && body.id.length <= 200)
         send({ withdrawn: await this.service.withdrawPromptSuggestion(body.id) })

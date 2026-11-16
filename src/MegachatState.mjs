@@ -590,10 +590,13 @@ export class MegachatState {
    * Admits a prompt of the user. A live prompt suggestion ends with the start of the turn, and the prompt records
    * `ignored`, which changes no counter. The client does not tell whether the user took the text of the suggestion.
    */
-  async submit(requestId, text) {
+  async submit(requestId, text, { content = text, images = [] } = {}) {
     requireCondition(typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 200)
-    requireCondition(typeof text === 'string' && text.length > 0 && text.length <= 100000)
-    const hash = digest(text)
+    requireCondition(typeof text === 'string' && text.length <= 100000 && (text.length > 0 || images.length > 0))
+    // An input without an image keeps the digest of its text, so a state of an older build stays valid. The digest of
+    // an input with images does not use the files that the text names, so a retry gets the first admission.
+    const hash = images.length === 0 ? digest(text)
+      : digest({ text, images: images.map(image => createHash('sha256').update(image.mimeType).update(image.data).digest('hex')) })
     return this.change(async (state, tx) => {
       const old = Object.hasOwn(state.inputs, requestId) ? state.inputs[requestId] : null
       if (old) {
@@ -607,7 +610,7 @@ export class MegachatState {
       state.onboardingOffer ??= 'dropped'
       const mainRunId = randomUUID()
       // The root keeps each request ID forever. A dropped input must start a new turn, so each admission has its own ID.
-      const submissionId = await this.root.submit(tx, { type: 'input', content: text, requestId: `input:${mainRunId}` })
+      const submissionId = await this.root.submit(tx, { type: 'input', content, requestId: `input:${mainRunId}` })
       const input = { digest: hash, mainRunId, submissionId, status: 'running', admittedAt: Date.now() }
       state.inputs[requestId] = input
       state.current = { id: mainRunId, requestId, cancelling: false, kind: 'user' }
