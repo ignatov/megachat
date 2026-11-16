@@ -12,7 +12,7 @@ The code today:
 - The numbers of the machine of the author on 2026-11-15: 1960 Claude Code files (7.3 GB, 300 older than 30 days),
   827 Codex files (754 of them `.zst`) in `sessions` and `archived_sessions`, 2 pi files, and 1159 Air threads.
 
-The commit `c3ff63d` fixed one symptom: `SessionArchive.record()` looks for the Codex log by the session ID in the
+The commit `ddfcbd0` fixed one symptom: `SessionArchive.record()` looks for the Codex log by the session ID in the
 folder of Codex. This change removes the cause.
 
 ## Goals / Non-Goals
@@ -88,6 +88,52 @@ decompression. A `.zst` file never changes, so it is read one time.
   `namespaceId` link the thread to a log row (the rule of `AirStore.thread()`). A thread with no matching log row, or
   with no association, makes an Air-only row.
 
+#### 3a. The scan of one project
+
+Before an archive by project (decision 6), the catalog finishes the scan for that `cwd` only. It does not wait for
+the first pass of the machine. Each source has `projectFiles(cwd, fs)`, which gives the files of that project:
+
+- Claude Code: the one directory `<root>/<encoded cwd>/`. When the encoded name is longer than the limit of Claude
+  Code, the name ends with a hash, so the scan reads each directory with the same prefix and keeps a file only when the
+  `cwd` of its head is the project.
+- Codex: `~/.codex/state_5.sqlite` (or `$CODEX_HOME/state_5.sqlite`) is a hint. Megachat opens it read-only and reads
+  `id`, `cwd`, `rollout_path` and `archived` of the table `threads` for the project. The file has no contract. So the
+  scan checks each file of the hint by its first `session_meta` line (the ID and the `cwd`). When `rollout_path`
+  does not exist, the scan takes the `.zst` sibling (`sibling()`), and then the same name in `archived_sessions`.
+  The hint does not give the archive state: the folder and the log give it, as now. On 2026-11-15 the table had 831
+  threads, and only 3 `rollout_path` values named a `.zst` file of the 754 that exist.
+- Codex, the files that the hint does not name: each rollout file that has no catalog row, or a changed
+  `(ino, size, mtime_ms)`, gets a read of its first line only. For a `.zst` file the decompression stops after that
+  line. A file of a row that is already read gives its `cwd` from the row.
+- Codex, no hint: when `state_5.sqlite` is missing, cannot be opened, or has no table `threads` with these columns,
+  the scan reads the first line of each Codex file without a current row. The log records the reason once.
+- pi: the one directory `--<path>--` of the project, as `files()` gives now.
+- Air: `store.json` of each hash directory (`AirStore.projects(cwd)`), and then only the `summary.json` of the threads
+  of the project. On 2026-11-15 there were 33 hash directories.
+
+The rows that this scan reads go into `catalog` with the usual full read (head and tail). The first pass of the machine
+skips them later, because their identity did not change.
+
+The cost on the machine above: with the hint, about 10 Codex files of the project. Without the hint, about 830 `stat`
+calls and the first line of each Codex file without a row. One `zstd -dc` of the first megabyte took 27 ms, so the
+worst case is 10 to 25 seconds, one time. A `.zst` file never changes, so the second scan reads none.
+
+While the scan runs, the tool call of `agents_archive` runs and no dialog shows. The tool sends the counts of the scan
+(`<agent>: <done>/<total>`) to the log and to the progress row of the change `tool-progress-line`. That row has a fixed
+title now, so a text with the counts needs a modification of that change (see the open questions). An abort of the turn
+stops the scan. Then the tool builds no batch, shows no dialog, and the result gives the counts that it read.
+
+A file that the scan cannot read makes the project catalog not complete. The dialog then says how many files were
+not read and the reason of each group (`unreadable` for a file that cannot be opened or decompressed, `no session_meta` for a Codex file without that first line). With each file read, the dialog
+says that the project catalog is complete.
+
+#### 3b. A restart in the middle of the first pass
+
+The pass writes the row of each file into `catalog` when it reads the file, in its own transaction. A restart keeps
+these rows. The next pass reads only the files without a row or with another `(ino, size, mtime_ms)`. `complete` stays
+false until that pass reads each file. The flag is not stored: each start begins with `complete` false, and the
+catch-up sets it.
+
 The first pass on the machine above is bounded: about 2800 files, a head and a tail of at most 1.1 MB each, and the
 decompression of 754 `.zst` files. The task 1.1 measures it before the code. A failure of one file sets `state` to
 `unreadable` and does not stop the pass (as now).
@@ -122,13 +168,13 @@ OpenCode and the generic store are follow-ups: each one is a source with `all` a
 parameter, at most 50). Not both. The new parameters of the project mode are `exclude` (session IDs or short IDs) and
 `updatedWithinHours` (N: skip a session with an activity in the last N hours).
 
-1. The catalog gives the candidates: each row of the project with `archived = 0`, source `log` or `air`.
+1. The catalog finishes the scan of the project (decision 3a). Then it gives the candidates: each row of the project with `archived = 0`, source `log` or `air`.
 2. The checks that exist now remove the refused rows before the dialog (working, stuck, waiting, a tool below, a Megachat
    run, a Codex activity in 10 minutes). The result keeps each refused row with its reason.
 3. The Air-only rows cannot be hidden by Megachat: they are not in the dialog list, and they go to the report with the
    reason `Done in Air`.
-4. One dialog, with the options `archive` and `keep`: the total count, the count of each agent, the count of the
-   warnings, the lines of the first 50 rows (the newest first), and "and N more" for the rest. The batch is frozen at
+4. One dialog, with the options `archive` and `keep`: the state of the project catalog (complete, or the count of the
+   files that were not read and the reasons), the total count, the count of each agent, the count of the warnings, the lines of the first 50 rows (the newest first), and "and N more" for the rest. The batch is frozen at
    this moment: the rows that the user confirmed are the rows that the tool processes, not a new query.
 5. The limit: an explicit `sessions` list stays at 50. A project batch has at most 500 rows, because the dialog
    cannot show more in a form that the user checks. A project with more rows gets a refusal that tells the user to
@@ -142,11 +188,11 @@ parameter, at most 50). Not both. The new parameters of the project mode are `ex
 
 The rule that only a user's turn can archive stays: the tool refuses in an automatic turn. The dialog stays the only way.
 
-### 7. Absorb the fix of `c3ff63d`
+### 7. Absorb the fix of `ddfcbd0`
 
 The `.zst` log of Codex is a catalog row with `form: zst`, so `SessionArchive.record()` needs no look into the folder of
 Codex. The task 3.2 removes that code and keeps its test of the compressed fixtures. `hide()` still runs `codex archive
-<id>`. Order of the work: the commit `c3ff63d` and the change `session-archive` stay as they are; this change replaces the code.
+<id>`. Order of the work: the commit `ddfcbd0` and the change `session-archive` stay as they are; this change replaces the code.
 
 ### 8. Migration of `sessions.sqlite`
 
@@ -175,9 +221,20 @@ rows that have a card and no hide, and the next archive of the project does them
 - **First pass cost.** About 2800 files, 754 decompressions. Mitigation: the newest first, pauses, `progress`, a bounded head
   read, the measure in task 1.1.
 - **A catalog that is not complete** gives a short list. Mitigation: `complete: false` shows in each tool result.
+- **The schema of `state_5.sqlite` can change.** Codex gives no contract for it. Mitigation: read-only, a check of the
+  columns before the read, a check of each file by its first line, and the fallback to the first-line scan.
+- **A hint that is not correct** (a stale `rollout_path`, a `cwd` that the session changed). Mitigation: the file
+  decides, and the scan reads each Codex file without a row that the hint does not name.
 - **Air store format.** `summary.json` has no contract. Mitigation: read only (as now), `air_archived` NULL means unknown, and an unreadable thread is skipped.
 - **A bigger dialog.** The user can approve 500 sessions in one click. Mitigation: the 500 limit, the per-agent counts, the warnings,
   the frozen list, and a card before each hide.
 - **Loss of derived texts** at the change of the default. Mitigation: the data is a cache, and the setting brings it back.
 - **A session without an ID** (an unreadable head) gets the `nameId`. Two forms of one file share it.
 - **Privacy.** The catalog keeps titles and directories of all old sessions in `sessions.sqlite` (mode as today), and the filter cleans titles.
+
+## Open Questions
+
+1. The default of `sessions.days`: 30 removes the texts between 30 and 180 days for a user without a stored value.
+2. The limit of a project batch: 500 rows, with 50 lines in the dialog.
+3. The counts of the scan in the progress row: the change `tool-progress-line` gives the row a fixed title with no
+   output. A text with the counts needs a modification of that change. Without it, the counts go only to the log.

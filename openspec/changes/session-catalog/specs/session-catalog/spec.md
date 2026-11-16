@@ -28,6 +28,31 @@ Tests: `test/session-catalog.test.mjs`
 - **WHEN** 40 of 55 files are read, and the user asks for the sessions of the project
 - **THEN** the result lists the rows that exist and says that the catalog is not complete
 
+#### Scenario: A restart in the middle of the first pass
+- **WHEN** the daemon stops after the first pass read 1200 of 2800 files, and starts again with no file changed
+- **THEN** the catalog keeps the 1200 rows, the pass reads only the other 1600 files, and `complete` is false until it reads them
+
+### Requirement: Scan of one project
+Before an archive by project, the catalog MUST finish the scan of that `cwd` only. For Codex it MUST read `state_5.sqlite` of Codex only as a read-only hint, and MUST check each file by its first `session_meta` line. It MUST read the first line of each Codex file without a row that the hint does not name. Without a usable hint, it MUST read the first line of each Codex file without a row.
+
+Tests: `test/session-catalog.test.mjs`
+
+#### Scenario: A hint with a compressed file
+- **WHEN** `state_5.sqlite` names `rollout-a.jsonl` for `/p/air-audit`, and only `rollout-a.jsonl.zst` exists
+- **THEN** the scan takes the `.zst` file after its first line gives the ID and `/p/air-audit`
+
+#### Scenario: A session that the hint does not name
+- **WHEN** a Codex file of `/p/air-audit` has no catalog row and no row in `state_5.sqlite`
+- **THEN** the scan reads its first line and adds it to the project
+
+#### Scenario: No hint
+- **WHEN** `state_5.sqlite` does not exist
+- **THEN** the scan reads the first line of each Codex file without a row, and the project has the same sessions
+
+#### Scenario: A long project path
+- **WHEN** the Claude Code directory of the project ends with a hash, and another directory has the same prefix
+- **THEN** the scan keeps only the files whose `cwd` is the project
+
 ### Requirement: Sources of the catalog
 Each source MUST list its files with one interface and MUST give the metadata of a session from them. The sources MUST be Claude Code, Codex (`sessions` and `archived_sessions`, plain files and `rollout-*.jsonl.zst` files), pi and the Air-only threads. A Codex session with a plain file and a compressed file MUST be one row.
 
@@ -92,6 +117,19 @@ Tests: `test/archive.test.mjs`
 #### Scenario: A batch of 501
 - **WHEN** a project has 501 sessions to archive
 - **THEN** the tool refuses it before the dialog, and says to use `exclude` or `updatedWithinHours`
+
+### Requirement: Catalog state in the dialog
+The dialog of a project batch MUST say that the catalog of the project is complete, or MUST give the count of the files that the scan did not read and their reasons. When the turn stops the scan, the tool MUST build no batch and show no dialog, and the result MUST give the counts that it read.
+
+Tests: `test/archive.test.mjs`
+
+#### Scenario: An unreadable file
+- **WHEN** one Claude Code file of the project has no read permission
+- **THEN** the dialog says that 1 file was not read, with the reason `unreadable`
+
+#### Scenario: A stopped scan
+- **WHEN** the user stops the turn while the scan read 300 of 830 Codex files
+- **THEN** no dialog shows, nothing is archived, and the result gives `codex: 300/830`
 
 ### Requirement: Report of an archive by project
 After a project batch, the result MUST read the store of Air again, and MUST give each remaining session with its reason: `Done in Air` for an Air thread that still shows or an Air-only thread, `live process`, `refused` with the status, or `failed` with the step. Megachat MUST NOT hide an Air-only thread.

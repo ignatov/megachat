@@ -29,7 +29,9 @@ the log and `README.md`. No ACP extension changes.
 - **One source interface for each agent.** Claude Code, Codex (also `.jsonl.zst` and `archived_sessions`), pi, and the
   Air-only threads. Each row has a `source`. The sources of other agents join later on the same interface.
 - **Archive by project.** `agents_archive` takes a project and optional exclusions. It asks once, archives every
-  session that it can, checks what Air shows, and reports what remains and why.
+  session that it can, checks what Air shows, and reports what remains and why. Before the dialog, the catalog
+  finishes the scan of that project only. For Codex it uses `~/.codex/state_5.sqlite` as a read-only hint, and the
+  first line of each file decides. The dialog says whether the catalog of the project is complete.
 - **The default of `sessions.days` is 30.** A stored value wins.
 
 ## Capabilities
@@ -46,7 +48,7 @@ the log and `README.md`. No ACP extension changes.
 
 The change depends on `session-archive`, which is not archived yet. It adds to the tool `agents_archive` of that
 change, and it keeps its limits and its rules. Archive `session-archive` first. Then archive this change. The fix of
-the commit `c3ff63d` (the Codex `.zst` lookup in `SessionArchive.record()`) is a part of this change: the catalog gives
+the commit `ddfcbd0` (the Codex `.zst` lookup in `SessionArchive.record()`) is a part of this change: the catalog gives
 the path of such a log, so that code goes away (see `design.md`, decision 7).
 
 ## ACP and Air
