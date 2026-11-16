@@ -6,6 +6,33 @@ The main agent delegates file and command work to Claude Code and Codex, and lis
 A daemon keeps the conversation and the work when the IDE closes.
 All model traffic goes through JetBrains Central.
 
+## Quick start
+
+You need:
+
+- A Mac with git and network access.
+- An Air or IDE build with the Air support for Megachat. No released build has it yet. <!-- TODO: say where a colleague gets such a build. -->
+- A Central account. The setup line asks you to log in.
+
+1. Run this line in a terminal. It prepares the machine (Node.js, Central, login) and adds Megachat to
+   `~/.jetbrains/acp.json`:
+
+```sh
+curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh | bash
+```
+
+   Without the line: [Install without the setup line](#install-without-the-setup-line).
+2. In Air, select Megachat in the agent list. The IDE needs no restart. The first start takes 30 to 100 seconds.
+3. Megachat writes "Welcome to Megachat" and asks three setup questions: the agents, the index of past sessions and
+   the known repositories. Answer, or skip. See [Settings and the first run](#settings-and-the-first-run).
+4. Check it: write a message in the chat. Or run `npx -y "github:ignatov/megachat#semver:x" status` in a terminal.
+   It prints JSON with the `version` of the running daemon.
+5. If it does not work, look in `idea.log` (Help | Show Log in Finder) for the line "This ACP client has no Air
+   support for Megachat": then the build is too old. See [Report a problem](#report-a-problem).
+
+For a Codex child, `codex` must be on the `PATH`, or Megachat uses the Codex of its npm install. The setup line runs no
+`central add codex`. See "The machine needs" below.
+
 ## Install for a colleague
 
 On a Mac, run this line in a terminal:
@@ -109,7 +136,7 @@ The machine needs:
 ### The start, the update and the removal
 
 **The start in the IDE.** These numbers come from the npm 11.19.1 of the IDE on one Mac, with an empty npm cache of a
-test and the release 0.2.0 on GitHub:
+test and the release 0.2.0 on GitHub (measured on 0.2.0, not on the current release):
 
 - The first start installs the release. It took 27 seconds in one measurement and 105 seconds in another one. The copy
   takes 870 MB in the directory `_npx` of the npm cache, and the npm cache takes 1.3 GB.
