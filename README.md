@@ -908,7 +908,7 @@ The session text is data for the agent, not instructions.
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version of the build, from `git describe` in a checkout, and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
 | `src/npmEnvironment.mjs` | The environment of the IDE for the daemon and the children, when `npx` started Megachat. |
-| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
+| `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, the detection of the linked worktrees, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/SessionArchive.mjs` | The tool `agents_archive`: the checks and the warnings, the card, the stop of the process, the hide and the restore in the format of Air. |
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |

@@ -8,7 +8,7 @@ import { STOPPED_KIND } from './ReplyStream.mjs'
 import { forgottenTopic } from './MegachatMemory.mjs'
 import { REFLECTION_TURNS } from './MemoryReflection.mjs'
 import { rmdir } from 'node:fs/promises'
-import { createProjectDirectory, DISCOVERY_LIMIT, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
+import { createProjectDirectory, DISCOVERY_LIMIT, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, mainRepositoryOf, resolveRepository } from './ProjectDirectories.mjs'
 import { ChildTextFilter, redactOwnSecrets } from './SessionText.mjs'
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 import { baseVersion, higherVersion, updateNoteText } from './MegachatUpdate.mjs'
@@ -414,14 +414,22 @@ export class MegachatState {
   /**
    * Adds several directories that the user named to the known list in one transaction: for example each repository of a
    * folder that the user named. A path that `resolveRepository` refuses goes to `refused`, and the others go to the
-   * list. When the list cannot hold them all, the call adds none. An automatic turn cannot add one.
+   * list. A linked worktree goes to `skipped` with its main repository and the reason, and it is not added, because a
+   * folder holds the worktrees of its repositories and the user wants one project for them. When the list cannot hold
+   * the others, the call adds none. An automatic turn cannot add one.
    */
   async addProjects(paths) {
     requireCondition(Array.isArray(paths) && paths.length > 0 && paths.length <= DISCOVERY_LIMIT, 'directory')
     const resolved = []
     const refused = []
+    const skipped = []
     for (const path of paths) {
-      try { resolved.push(await resolveRepository(path, this.repositoryOptions)) }
+      try {
+        const cwd = await resolveRepository(path, this.repositoryOptions)
+        const main = mainRepositoryOf(cwd)
+        if (main) skipped.push({ cwd, worktreeOf: main, reason: message('worktree.skipped', main) })
+        else resolved.push(cwd)
+      }
       catch (error) {
         if (!(error instanceof MegachatError)) throw error
         refused.push({ cwd: String(path), code: error.code, error: error.message })
@@ -432,7 +440,7 @@ export class MegachatState {
       const added = [...new Set(resolved)].filter(cwd => !state.projects.includes(cwd))
       requireCondition(state.projects.length + added.length <= KNOWN_PROJECTS_LIMIT, 'projectLimit', KNOWN_PROJECTS_LIMIT)
       state.projects.push(...added)
-      return { added, ...(refused.length ? { refused } : {}) }
+      return { added, ...(refused.length ? { refused } : {}), ...(skipped.length ? { skipped } : {}) }
     })
   }
 
@@ -444,7 +452,8 @@ export class MegachatState {
     const cwd = folder === undefined ? undefined : await resolveRepository(folder, this.repositoryOptions)
     const state = await this.snapshot()
     const listed = [...state.projects, ...state.workspaces, ...(state.megachatWorkspace ? [state.megachatWorkspace] : [])]
-    return discoverRepositories({ home: this.home, roots: this.repositoryOptions.roots, listed, folder: cwd })
+    const allowed = path => resolveRepository(path, this.repositoryOptions).then(() => true, () => false)
+    return discoverRepositories({ home: this.home, roots: this.repositoryOptions.roots, listed, folder: cwd, allowed })
   }
 
   /**

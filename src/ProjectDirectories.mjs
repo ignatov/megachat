@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { lstat, mkdir, readdir, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -142,6 +142,47 @@ export async function createProjectDirectory(root, name, { home = homedir(), roo
   return requireCondition(false, 'projectName')
 }
 
+
+/** The longest `.git` file or `commondir` file that the detection reads. A real one has one short line. */
+const GIT_FILE_LIMIT = 4096
+
+/** The first line of a small file, or `undefined` when the file is missing, too big or not readable. */
+function firstLine(path) {
+  try {
+    const text = readFileSync(path, 'utf8')
+    return text.length <= GIT_FILE_LIMIT ? text.split('\n')[0].trim() : undefined
+  }
+  catch { return undefined }
+}
+
+/**
+ * Gives the real path of the main repository when [directory] is a linked worktree of git, else `undefined`. A linked
+ * worktree has a `.git` file, not a directory, with the line `gitdir: <main>/.git/worktrees/<name>`. The file
+ * `commondir` of that directory names the `.git` directory of the main repository, and the file `gitdir` of it must
+ * name the `.git` file of [directory] again. So a copied or forged `.git` file does not make a worktree. A submodule
+ * has another path and is no worktree, and the `.git` of a bare repository or of a separate git directory gives no main
+ * directory. The check spawns no git, follows no link of the `.git` entry itself, and uses real paths.
+ */
+export function mainRepositoryOf(directory) {
+  try {
+    const entry = join(directory, '.git')
+    if (!lstatSync(entry).isFile()) return undefined
+    const line = firstLine(entry)
+    if (!line?.startsWith('gitdir:')) return undefined
+    const gitdir = realpathSync.native(resolve(directory, line.slice('gitdir:'.length).trim()))
+    if (basename(dirname(gitdir)) !== 'worktrees') return undefined
+    const common = firstLine(join(gitdir, 'commondir'))
+    const back = firstLine(join(gitdir, 'gitdir'))
+    if (!common || !back) return undefined
+    const commonDirectory = realpathSync.native(resolve(gitdir, common))
+    if (basename(commonDirectory) !== '.git' || !lstatSync(commonDirectory).isDirectory()) return undefined
+    if (realpathSync.native(back) !== join(realpathSync.native(directory), '.git')) return undefined
+    const main = dirname(commonDirectory)
+    return main === realpathSync.native(directory) ? undefined : main
+  }
+  catch { return undefined }
+}
+
 /** The time of the last change of the `.git` entry of [directory], or `undefined` without one. It follows no link. */
 async function gitTime(directory) {
   const status = await lstat(join(directory, '.git')).catch(() => undefined)
@@ -157,16 +198,23 @@ async function subdirectories(directory) {
 /**
  * Finds the git repositories in `~/src`, in `~/IdeaProjects` and in each root of `MEGACHAT_PROJECT_ROOTS`, or only in
  * the [folder] that the user named: a directory of a root, or a directory in a directory of a root, that holds a `.git`
- * entry. The scan does not go into a repository, follows no symbolic link and reads no file. It gives at most [limit]
- * repositories that are not in [listed], the newest change of `.git` first, and `truncated` when more exist. A named
- * folder must be a real path that `resolveRepository` gives, and the result tells whether the folder itself is a
- * repository and whether it is listed.
+ * entry. The scan does not go into a repository and follows no symbolic link. It reads no file but the small `.git`
+ * file of a linked worktree (see `mainRepositoryOf`). It gives at most [limit] repositories that are not in [listed],
+ * the newest change of `.git` first, and `truncated` when more exist. A named folder must be a real path that
+ * `resolveRepository` gives, and the result tells whether the folder itself is a repository and whether it is listed.
+ *
+ * A linked worktree is no repository of its own. It goes to `worktrees` with its main repository as `worktreeOf`, and the
+ * main repository gets it in its own `worktrees`. A main repository that the scan did not find is offered too, when it
+ * is not listed and [allowed] accepts it, so the user adds the main repository and not its worktrees.
  */
-export async function discoverRepositories({ home = homedir(), roots = projectRoots(), listed = [], limit = DISCOVERY_LIMIT, folder } = {}) {
+export async function discoverRepositories({ home = homedir(), roots = projectRoots(), listed = [], limit = DISCOVERY_LIMIT, folder,
+  allowed = async () => true } = {}) {
   const skipped = new Set(listed)
   const scanned = new Set()
   const found = []
+  const worktrees = []
   const starts = folder === undefined ? [...DISCOVERY_DIRECTORIES.map(name => join(home, name)), ...roots] : [folder]
+  const folderMain = folder === undefined ? undefined : mainRepositoryOf(folder)
   const repository = folder !== undefined && await gitTime(folder) !== undefined
   for (const start of repository ? [] : starts) {
     const status = await lstat(start).catch(() => undefined)
@@ -181,19 +229,37 @@ export async function discoverRepositories({ home = homedir(), roots = projectRo
         if (changed === undefined || skipped.has(cwd)) continue
         // A root in another root gives the same repository two times.
         skipped.add(cwd)
-        found.push({ cwd, changed })
+        const main = mainRepositoryOf(cwd)
+        if (main) worktrees.push({ cwd, worktreeOf: main, changed })
+        else found.push({ cwd, changed, worktrees: [] })
       }
     }
   }
+  for (const worktree of worktrees) {
+    let entry = found.find(item => item.cwd === worktree.worktreeOf)
+    if (!entry && !skipped.has(worktree.worktreeOf) && await allowed(worktree.worktreeOf)) {
+      skipped.add(worktree.worktreeOf)
+      entry = { cwd: worktree.worktreeOf, changed: await gitTime(worktree.worktreeOf) ?? worktree.changed, worktrees: [] }
+      found.push(entry)
+    }
+    entry?.worktrees.push(worktree.cwd)
+  }
   found.sort((left, right) => right.changed - left.changed)
-  return { ...(folder === undefined ? {} : { folder: { cwd: folder, repository, listed: listed.includes(folder) } }),
-    repositories: found.slice(0, limit).map(({ cwd, changed }) => ({ cwd, changedAt: new Date(changed).toISOString() })),
+  worktrees.sort((left, right) => right.changed - left.changed)
+  return { ...(folder === undefined ? {} : { folder: { cwd: folder, repository, listed: listed.includes(folder),
+      ...(folderMain ? { worktreeOf: folderMain } : {}) } }),
+    repositories: found.slice(0, limit).map(({ cwd, changed, worktrees }) => ({ cwd, changedAt: new Date(changed).toISOString(),
+      ...(worktrees.length ? { worktrees } : {}) })),
+    ...(worktrees.length ? { worktrees: worktrees.map(({ cwd, worktreeOf }) => ({ cwd, worktreeOf })) } : {}),
     truncated: found.length > limit, roots: [...scanned] }
 }
 
 /**
  * The directories where a child can work, each one time, with its origin: `megachat` for the workspace of Megachat,
- * `ide` for a project that an IDE registered, and `known` for a repository of the known list.
+ * `ide` for a project that an IDE registered, and `known` for a repository of the known list. A linked worktree has
+ * `worktreeOf`, the real path of its main repository, and it follows its main repository in the list. A main repository
+ * in the list has `worktrees`, the listed paths of its worktrees. So the reader sees one project with its worktrees.
+ * Each worktree stays a listed directory, because a child can work in it.
  */
 export function directoriesOf(state) {
   const directories = new Map()
@@ -201,7 +267,19 @@ export function directoriesOf(state) {
   if (state.megachatWorkspace) add(state.megachatWorkspace, 'megachat', message('workspace.name'))
   for (const cwd of state.workspaces ?? []) add(cwd, 'ide')
   for (const cwd of state.projects ?? []) add(cwd, 'known')
-  return [...directories.values()]
+  const items = [...directories.values()]
+  const byKey = new Map(items.map(item => [directoryKey(item.cwd), item]))
+  const children = new Map()
+  for (const item of items) {
+    const main = item.origin === 'megachat' ? undefined : mainRepositoryOf(item.cwd)
+    if (!main) continue
+    item.worktreeOf = main
+    const parent = byKey.get(main)
+    if (parent && parent !== item) children.set(parent, [...(children.get(parent) ?? []), item])
+  }
+  for (const [parent, worktrees] of children) parent.worktrees = worktrees.map(item => item.cwd)
+  const glued = new Set([...children.values()].flat())
+  return items.filter(item => !glued.has(item)).flatMap(item => [item, ...(children.get(item) ?? [])])
 }
 
 export function isDirectoryOf(state, cwd) {

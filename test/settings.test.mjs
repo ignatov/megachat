@@ -684,6 +684,9 @@ test('each setup question is in full in the reply, with numbered options, and no
   assert.match(rules, /add all the repositories found in it in one call agents_projects\(action="add", cwds\)/)
   assert.match(rules, /When the folder is a repository or holds no repository, add the folder itself\./)
   assert.match(rules, /Do not refuse a folder because it is out of ~\/src or ~\/IdeaProjects, and do not ask for an environment variable\./)
+  // A worktree is glued to its main repository, and the agent tells the user.
+  assert.match(rules, /"N worktrees are glued to <repository>"/)
+  assert.match(rules, /Add one worktree alone only when the user names it exactly/)
 })
 
 test('the answers of the pair with Codex change only the children, and the main model stays', { timeout: 20000 }, async t => {
