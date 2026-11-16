@@ -498,8 +498,12 @@ the model list of Codex does not hold the model, the task fails before it starts
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.
 The scan follows no symbolic link and reads no file. You choose the repositories, and the agent adds them to the known
-list. When you ask for a new project without a location, the agent makes `<projects.newRoot>/<name>`, with a number at
-the end when the name is taken, and adds it.
+list. You can also name a folder of your own in the chat, such as "my projects are in ~/dev". The agent then scans
+that folder with the same rules and adds the repositories in it in one step, and you can exclude some. A folder that is
+no git repository, or that holds none, becomes a known repository itself. A known repository can be each existing
+directory but the root of the file system, the home directory and the directories that hold it, `~/Library`, a hidden
+directory directly in the home directory, and the state directory of Megachat. When you ask for a new project without
+a location, the agent makes `<projects.newRoot>/<name>`, with a number at the end when the name is taken, and adds it.
 
 Megachat counts the cost of each request of the main agent and of the pi children on the local day: the replies, the
 summaries and the keep-alive requests. The cost of the Claude and Codex children is not in the count, because the

@@ -678,6 +678,12 @@ test('each setup question is in full in the reply, with numbered options, and no
   assert.match(rules, /^1\. The agents\.[^\n]*as a numbered list: 1\. the main model \+ Claude, 2\. the main model \+ Codex on GPT-6 Astra/m)
   assert.match(rules, /^2\. The index of past sessions\.[^\n]*as a numbered list: 1\. on, 2\. off\./m)
   assert.match(rules, /^3\. The known repositories:[^\n]*a short numbered list/m)
+  // The user can name a folder of their own, and the agent scans it and adds its repositories without a refusal.
+  assert.match(rules, /^3\. The known repositories:[^\n]*the user can name a folder of their own, such as ~\/dev/m)
+  assert.match(rules, /call agents_projects\(action="discover", cwd\) with it/)
+  assert.match(rules, /add all the repositories found in it in one call agents_projects\(action="add", cwds\)/)
+  assert.match(rules, /When the folder is a repository or holds no repository, add the folder itself\./)
+  assert.match(rules, /Do not refuse a folder because it is out of ~\/src or ~\/IdeaProjects, and do not ask for an environment variable\./)
 })
 
 test('the answers of the pair with Codex change only the children, and the main model stays', { timeout: 20000 }, async t => {

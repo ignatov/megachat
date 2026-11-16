@@ -145,25 +145,44 @@ test('the main agent gets the limit of one turn, of the unfinished tasks and of 
   assert.equal((await opened.service.state.snapshot()).projects.length, KNOWN_PROJECTS_LIMIT)
 })
 
-test('a known repository is an existing directory in the home directory or in an allowed root', async t => {
-  const { home, repository, outside, stateDirectory } = await tree(t)
-  const options = { home, roots: [], stateDirectory }
+test('a known repository is each existing directory that the user names, but the refused ones', async t => {
+  const { root, home, repository, outside, stateDirectory } = await tree(t)
+  const options = { home, stateDirectory }
   assert.equal(await resolveRepository(repository, options), repository)
   assert.equal(await resolveRepository('~/src/repository', options), repository)
   await symlink(repository, join(home, 'inner-link'))
   assert.equal(await resolveRepository('~/inner-link', options), repository)
+  // A directory out of the home directory is accepted, also through a symbolic link, and also without a root.
   await symlink(outside, join(home, 'escape'))
+  assert.equal(await resolveRepository(outside, options), outside)
+  assert.equal(await resolveRepository('~/escape', options), outside)
+  assert.equal(await resolveRepository(join(repository, '..', '..', '..', 'outside'), options), outside)
   await writeFile(join(home, 'src', 'file.txt'), 'text')
   await mkdir(join(home, 'Library', 'Application Support'), { recursive: true })
   await mkdir(join(home, '.ssh'))
   await mkdir(join(stateDirectory, 'workspace'))
-  const refused = ['~/escape', join(home, 'absent'), join(home, 'src', 'file.txt'), outside, '/', '/etc', 'src/repository', '', '~', home,
-    '~/Library/Application Support', '~/.ssh', stateDirectory, join(stateDirectory, 'workspace'), join(repository, '..', '..', '..', 'outside')]
+  await symlink(join(home, '.ssh'), join(home, 'ssh-link'))
+  const refused = [join(home, 'absent'), join(home, 'src', 'file.txt'), '/', root, 'src/repository', '', '~', home, '~/ssh-link',
+    '~/Library/Application Support', '~/.ssh', stateDirectory, join(stateDirectory, 'workspace'), join(home, '.jetbrains')]
   for (const path of refused) await assert.rejects(resolveRepository(path, options), { code: 'directory' }, path)
   await assert.rejects(resolveRepository(42, options), { code: 'directory' })
-  // An allowed root admits a directory out of the home directory, and a link from the home directory into the root.
-  assert.equal(await resolveRepository(outside, { ...options, roots: [outside] }), outside)
-  assert.equal(await resolveRepository('~/escape', { ...options, roots: [outside] }), outside)
+})
+
+test('in the setup, a folder that the user names gives its repositories to the known list in one turn', { timeout: 20000 }, async t => {
+  const directories = await tree(t)
+  const dev = join(directories.home, 'dev')
+  for (const name of ['app', 'api']) await mkdir(join(dev, name, '.git'), { recursive: true })
+  await mkdir(join(dev, 'notes'))
+  const opened = await open(t, directories)
+  const [found, added] = await turn(opened, 'they are in ~/dev',
+    ['agents_projects', { action: 'discover', cwd: '~/dev' }],
+    ['agents_projects', { action: 'add', cwds: ['~/dev/app', '~/dev/api'] }])
+  assert.deepEqual(found.repositories.map(item => item.cwd).sort(), [join(dev, 'api'), join(dev, 'app')])
+  assert.deepEqual(added.added, [join(dev, 'app'), join(dev, 'api')])
+  assert.deepEqual((await opened.service.state.snapshot()).projects, [join(dev, 'app'), join(dev, 'api')])
+  // A folder without a repository becomes a known repository itself.
+  const [notes] = await turn(opened, 'add ~/dev/notes', ['agents_projects', { action: 'add', cwd: '~/dev/notes' }])
+  assert.equal(notes.added, join(dev, 'notes'))
 })
 
 test('the known list survives a restart, and an automatic turn cannot add a repository', { timeout: 20000 }, async t => {
@@ -172,7 +191,7 @@ test('the known list survives a restart, and an automatic turn cannot add a repo
   let opened = await open(t, directories, await openNodeSqliteStorage(database))
   assert.deepEqual(await opened.service.state.addProject('~/src/repository'), { cwd: directories.repository })
   await opened.service.state.addProject(directories.repository)
-  await assert.rejects(opened.service.state.addProject(directories.outside), { code: 'directory' })
+  await assert.rejects(opened.service.state.addProject(directories.root), { code: 'directory' })
   await opened.close()
   opened = await open(t, directories, await openNodeSqliteStorage(database))
   const state = opened.service.state

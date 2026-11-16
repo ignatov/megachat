@@ -632,10 +632,13 @@ export class PiMegachatService {
         tool('feedback', obj({ decision: str() }), async (args, api) =>
           result(await this.state.feedback(`tool:${api.taskId}:feedback`, args.decision))),
       ] : []),
-      tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })), name: opt(str({ maxLength: 100 })) }), async (args, api) => {
+      // `cwds` adds several directories in one call, such as the repositories of a folder that the user named.
+      tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })), cwds: opt(arr(str({ maxLength: 4096 }), { maxItems: 200 })),
+        name: opt(str({ maxLength: 100 })) }), async (args, api) => {
         requireCondition(['list', 'add', 'remove', 'discover', 'create'].includes(args.action))
-        if (args.action === 'discover') return result(await this.state.discoverProjects())
-        const changed = args.action === 'add' ? { added: (await this.state.addProject(args.cwd)).cwd }
+        if (args.action === 'discover') return result(await this.state.discoverProjects(args.cwd))
+        const changed = args.action === 'add' && args.cwds ? await this.state.addProjects(args.cwd === undefined ? args.cwds : [args.cwd, ...args.cwds])
+          : args.action === 'add' ? { added: (await this.state.addProject(args.cwd)).cwd }
           : args.action === 'create' ? { created: (await this.state.createProject(`tool:${api.taskId}:create`, args.name,
             this.settings.values()['projects.newRoot'])).cwd }
           : args.action === 'remove' ? { removed: (await this.state.removeProject(args.cwd)).cwd } : {}

@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { message, requireCondition } from './messages.mjs'
 
-/** More roots, besides the home directory of the user, that can hold a known repository. */
+/** More roots that the discovery scans and that can hold the directory of the new projects, also out of the home directory. */
 export const ROOTS_VARIABLE = 'MEGACHAT_PROJECT_ROOTS'
 export const KNOWN_PROJECTS_LIMIT = 100
 /** The most repositories that one discovery gives. */
@@ -47,18 +47,31 @@ const inside = (root, path) => {
 
 /**
  * Gives the real path of a directory that can become a known repository. The path must be absolute or start with `~`.
- * The real path must be an existing directory in the home directory of the user or in an allowed root. Thus a
- * symbolic link cannot lead out of these directories. The home directory itself, its application data, the hidden
- * directories directly in it and the state directory of Megachat are refused.
+ * The real path must be an existing directory. The user can name a directory in the home directory or out of it. The
+ * root of the file system, the home directory and each directory that holds it, the application data and the hidden
+ * directories directly in the home directory, and the state directory of Megachat are refused. The check uses the real
+ * path, so a symbolic link cannot lead into a refused directory.
  */
-export async function resolveRepository(path, { home = homedir(), roots = projectRoots(), stateDirectory } = {}) {
+export async function resolveRepository(path, { home = homedir(), stateDirectory } = {}) {
   requireCondition(typeof path === 'string' && path.length > 0 && path.length <= 4096 && !path.includes('\0'), 'directory')
   const expanded = expandHome(path, home)
   requireCondition(isAbsolute(expanded), 'directory')
   const canonical = await real(expanded)
   requireCondition(canonical && (await stat(canonical)).isDirectory(), 'directory')
-  requireCondition(await allowedLocation(canonical, { home, roots, stateDirectory }), 'directory')
+  requireCondition(await allowedRepository(canonical, { home, stateDirectory }), 'directory')
   return canonical
+}
+
+/** Tells whether the real path [canonical] can be a known repository (see `resolveRepository`). */
+async function allowedRepository(canonical, { home, stateDirectory }) {
+  if (dirname(canonical) === canonical) return false
+  const state = stateDirectory && await real(stateDirectory)
+  if (state && (isWithin(canonical, state) || isWithin(state, canonical))) return false
+  const userHome = await real(home) ?? resolve(home)
+  if (isWithin(userHome, canonical)) return false
+  if (!inside(userHome, canonical)) return true
+  const first = relative(userHome, canonical).split(sep)[0]
+  return !first.startsWith('.') && !applicationDirectories.has(first)
 }
 
 const real = directory => realpath(directory).catch(() => undefined)
@@ -67,11 +80,10 @@ const real = directory => realpath(directory).catch(() => undefined)
 const hidden = rest => rest.split(sep).some(part => part.startsWith('.'))
 
 /**
- * Tells whether a real path can hold a known repository: it is in an allowed root or in the home directory, out of the
- * application data and the hidden directories of the home directory, and out of the state directory. A repository that
- * the user names can be in a hidden directory deeper in the home directory or in a root. [newProjects] is for the
- * directory of the new projects: it permits the home directory itself, and it refuses each hidden directory below the
- * home directory or the root, because Megachat chooses that place itself.
+ * Tells whether a real path can be the directory of the new projects or a project in it: it is in an allowed root or in
+ * the home directory, out of the application data and the hidden directories of the home directory, and out of the
+ * state directory. [newProjects] permits the home directory itself, and it refuses each hidden directory below the home
+ * directory or the root, because Megachat chooses that place itself.
  */
 async function allowedLocation(canonical, { home, roots, stateDirectory, newProjects = false }) {
   const state = stateDirectory && await real(stateDirectory)
@@ -143,16 +155,20 @@ async function subdirectories(directory) {
 }
 
 /**
- * Finds the git repositories in `~/src`, in `~/IdeaProjects` and in each root of `MEGACHAT_PROJECT_ROOTS`: a directory of
- * a root, or a directory in a directory of a root, that holds a `.git` entry. The scan does not go into a repository,
- * follows no symbolic link and reads no file. It gives at most [limit] repositories that are not in [listed], the
- * newest change of `.git` first, and `truncated` when more exist.
+ * Finds the git repositories in `~/src`, in `~/IdeaProjects` and in each root of `MEGACHAT_PROJECT_ROOTS`, or only in
+ * the [folder] that the user named: a directory of a root, or a directory in a directory of a root, that holds a `.git`
+ * entry. The scan does not go into a repository, follows no symbolic link and reads no file. It gives at most [limit]
+ * repositories that are not in [listed], the newest change of `.git` first, and `truncated` when more exist. A named
+ * folder must be a real path that `resolveRepository` gives, and the result tells whether the folder itself is a
+ * repository and whether it is listed.
  */
-export async function discoverRepositories({ home = homedir(), roots = projectRoots(), listed = [], limit = DISCOVERY_LIMIT } = {}) {
+export async function discoverRepositories({ home = homedir(), roots = projectRoots(), listed = [], limit = DISCOVERY_LIMIT, folder } = {}) {
   const skipped = new Set(listed)
   const scanned = new Set()
   const found = []
-  for (const start of [...DISCOVERY_DIRECTORIES.map(name => join(home, name)), ...roots]) {
+  const starts = folder === undefined ? [...DISCOVERY_DIRECTORIES.map(name => join(home, name)), ...roots] : [folder]
+  const repository = folder !== undefined && await gitTime(folder) !== undefined
+  for (const start of repository ? [] : starts) {
     const status = await lstat(start).catch(() => undefined)
     const root = status?.isDirectory() && await real(start)
     if (!root || scanned.has(root)) continue
@@ -170,7 +186,8 @@ export async function discoverRepositories({ home = homedir(), roots = projectRo
     }
   }
   found.sort((left, right) => right.changed - left.changed)
-  return { repositories: found.slice(0, limit).map(({ cwd, changed }) => ({ cwd, changedAt: new Date(changed).toISOString() })),
+  return { ...(folder === undefined ? {} : { folder: { cwd: folder, repository, listed: listed.includes(folder) } }),
+    repositories: found.slice(0, limit).map(({ cwd, changed }) => ({ cwd, changedAt: new Date(changed).toISOString() })),
     truncated: found.length > limit, roots: [...scanned] }
 }
 

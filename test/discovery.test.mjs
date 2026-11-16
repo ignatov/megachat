@@ -76,6 +76,46 @@ test('discover gives the repositories of two levels, the newest first, without t
   assert.deepEqual(await discoverRepositories({ home: directories.outside, roots: [] }), { repositories: [], truncated: false, roots: [] })
 })
 
+test('discover with a named folder scans only that folder, and add with cwds adds its repositories in one call', { timeout: 10000 }, async t => {
+  const directories = await tree(t)
+  const { home, outside } = directories
+  const dev = join(home, 'dev')
+  await repository(join(dev, 'app'), 6000)
+  await repository(join(dev, 'group', 'api'), 7000, true)
+  await mkdir(join(dev, 'notes'))
+  await repository(join(dev, '.hidden', 'secret'), 9000)
+  await symlink(join(outside, 'linked'), join(dev, 'link'))
+  const { service, tool } = await open(t, directories)
+  const found = await tool('projects', { action: 'discover', cwd: '~/dev' })
+  assert.deepEqual(found.folder, { cwd: dev, repository: false, listed: false })
+  assert.deepEqual(found.repositories.map(item => item.cwd), [join(dev, 'group', 'api'), join(dev, 'app')])
+  assert.deepEqual([found.roots, found.truncated], [[dev], false])
+  // A folder that is a repository itself gives no scan into it.
+  assert.deepEqual(await tool('projects', { action: 'discover', cwd: '~/dev/app' }),
+    { folder: { cwd: join(dev, 'app'), repository: true, listed: false }, repositories: [], truncated: false, roots: [] })
+  // A directory out of the home directory is a folder too.
+  assert.deepEqual((await tool('projects', { action: 'discover', cwd: outside })).repositories.map(item => item.cwd),
+    [join(outside, 'linked'), join(directories.roots[0], 'extra')])
+  for (const cwd of ['~', home, '/', 'dev', '~/absent', join(home, '.ssh-absent'), directories.stateDirectory])
+    await assert.rejects(tool('projects', { action: 'discover', cwd }), { code: 'directory' }, cwd)
+  // The repositories and a folder that is no repository go to the list in one call. A refused path does not stop the others.
+  const added = await tool('projects', { action: 'add', cwds: [join(dev, 'app'), join(dev, 'group', 'api'), '~/dev/notes', '/', '~/absent', '~/dev/app'] })
+  assert.deepEqual(added.added, [join(dev, 'app'), join(dev, 'group', 'api'), join(dev, 'notes')])
+  assert.deepEqual(added.refused.map(item => [item.cwd, item.code]), [['/', 'directory'], ['~/absent', 'directory']])
+  assert.ok(added.workspaces.some(item => item.cwd === join(dev, 'notes') && item.origin === 'known'))
+  assert.deepEqual((await tool('projects', { action: 'discover', cwd: '~/dev' })).repositories, [])
+  assert.deepEqual((await tool('projects', { action: 'add', cwds: ['~/dev/app'] })).added, [])
+  // MEGACHAT_PROJECT_ROOTS still applies to a discover without a folder.
+  assert.ok((await tool('projects', { action: 'discover' })).repositories.some(item => item.cwd === join(directories.roots[0], 'extra')))
+  // The list limit refuses the whole call, and an automatic turn cannot add.
+  await service.state.change(state => { state.projects.push(...Array.from({ length: 96 }, (_, index) => join(home, 'src', `known-${index}`))) })
+  await assert.rejects(tool('projects', { action: 'add', cwds: [join(outside, 'linked'), join(home, 'src', 'old')] }), { code: 'projectLimit' })
+  assert.equal((await service.state.snapshot()).projects.length, 99)
+  await service.state.change(state => { state.current = { id: 'event', requestId: 'event', cancelling: false, kind: 'event' } })
+  await assert.rejects(tool('projects', { action: 'add', cwds: [join(outside, 'linked')] }), { code: 'proposalOnly' })
+  await assert.rejects(tool('projects', { action: 'add', cwds: [] }), { code: 'directory' })
+})
+
 test('create makes a new project in projects.newRoot with a number when the name is taken, and refuses a bad name or root', { timeout: 10000 }, async t => {
   const directories = await tree(t)
   const { home, outside } = directories

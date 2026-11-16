@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
 import { defineDoc, InboxDoc, LiveDoc } from '@earendil-works/pi-durable'
-import { message, requireCondition } from './messages.mjs'
+import { MegachatError, message, requireCondition } from './messages.mjs'
 import { endOf, logRunEnd, logRunStart } from './RunLog.mjs'
 import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
 import { STOPPED_KIND } from './ReplyStream.mjs'
 import { forgottenTopic } from './MegachatMemory.mjs'
 import { REFLECTION_TURNS } from './MemoryReflection.mjs'
 import { rmdir } from 'node:fs/promises'
-import { createProjectDirectory, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
+import { createProjectDirectory, DISCOVERY_LIMIT, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, resolveRepository } from './ProjectDirectories.mjs'
 import { ChildTextFilter, redactOwnSecrets } from './SessionText.mjs'
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 import { baseVersion, higherVersion, updateNoteText } from './MegachatUpdate.mjs'
@@ -411,11 +411,40 @@ export class MegachatState {
     })
   }
 
-  /** Finds the git repositories that the user can add to the known list. The listed directories are not in the result. */
-  async discoverProjects() {
+  /**
+   * Adds several directories that the user named to the known list in one transaction: for example each repository of a
+   * folder that the user named. A path that `resolveRepository` refuses goes to `refused`, and the others go to the
+   * list. When the list cannot hold them all, the call adds none. An automatic turn cannot add one.
+   */
+  async addProjects(paths) {
+    requireCondition(Array.isArray(paths) && paths.length > 0 && paths.length <= DISCOVERY_LIMIT, 'directory')
+    const resolved = []
+    const refused = []
+    for (const path of paths) {
+      try { resolved.push(await resolveRepository(path, this.repositoryOptions)) }
+      catch (error) {
+        if (!(error instanceof MegachatError)) throw error
+        refused.push({ cwd: String(path), code: error.code, error: error.message })
+      }
+    }
+    return this.change(state => {
+      requireCondition(!automaticKinds.has(state.current?.kind), 'proposalOnly')
+      const added = [...new Set(resolved)].filter(cwd => !state.projects.includes(cwd))
+      requireCondition(state.projects.length + added.length <= KNOWN_PROJECTS_LIMIT, 'projectLimit', KNOWN_PROJECTS_LIMIT)
+      state.projects.push(...added)
+      return { added, ...(refused.length ? { refused } : {}) }
+    })
+  }
+
+  /**
+   * Finds the git repositories that the user can add to the known list. The listed directories are not in the result.
+   * With [folder], a directory that the user named, the scan takes only that folder.
+   */
+  async discoverProjects(folder) {
+    const cwd = folder === undefined ? undefined : await resolveRepository(folder, this.repositoryOptions)
     const state = await this.snapshot()
     const listed = [...state.projects, ...state.workspaces, ...(state.megachatWorkspace ? [state.megachatWorkspace] : [])]
-    return discoverRepositories({ home: this.home, roots: this.repositoryOptions.roots, listed })
+    return discoverRepositories({ home: this.home, roots: this.repositoryOptions.roots, listed, folder: cwd })
   }
 
   /**
