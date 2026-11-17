@@ -105,13 +105,14 @@ async function executable(path) {
 }
 
 /**
- * The first `codex` on [path]. A directory that npm adds does not count, such as `node_modules/.bin`: the daemon does
- * not get it.
+ * The first `codex` on [path], and `codex.exe` on Windows: the same file that `bin/codex` starts. A directory that npm
+ * adds does not count, such as `node_modules/.bin`: the daemon does not get it.
  */
-async function codexOnPath(path) {
+async function codexOnPath(path, platform) {
+  const name = platform === 'win32' ? 'codex.exe' : 'codex'
   for (const directory of path.split(delimiter).filter(item => isAbsolute(item))) {
     if (npmPathEntry(directory)) continue
-    if (await executable(join(directory, 'codex'))) return join(directory, 'codex')
+    if (await executable(join(directory, name))) return join(directory, name)
   }
   return undefined
 }
@@ -148,7 +149,7 @@ async function checks({ configuration, platform, path, binaries }) {
     lines.push(message(key, configuration.settings, configuration.keyHelperTimeout / 1000))
   }
   catch { lines.push(message('install.claudeCentral')) }
-  const codex = await codexOnPath(path)
+  const codex = await codexOnPath(path, platform)
   lines.push(codex ? message('install.codex', codex) : binaries.codex ? message('install.codexBundled') : message('install.codexMissing'))
   const claudeReady = (userClaude || binaries.claude !== undefined) && claudeKey
   const codexReady = codex !== undefined || binaries.codex !== undefined
@@ -166,7 +167,7 @@ async function checks({ configuration, platform, path, binaries }) {
  */
 export async function install({ environment = process.env, platform = process.platform, print = line => process.stdout.write(`${line}\n`),
   root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, ''),
-  configuration = new CentralConfigurationService({ environment, log: () => {} }), binaries = bundledBinaries() } = {}) {
+  configuration = new CentralConfigurationService({ platform, environment, log: () => {} }), binaries = bundledBinaries() } = {}) {
   const { lines, passed } = await checks({ configuration, platform, path: environment.PATH ?? '', binaries })
   for (const line of lines) print(line)
   const path = acpConfigPath(environment)

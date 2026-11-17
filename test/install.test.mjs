@@ -275,6 +275,26 @@ test('install with a key helper of Central that fails prints one plain line with
   assert.equal(result.stderr, '')
 })
 
+test('install on Windows takes codex.exe of the PATH, not the shell script codex of npm', { timeout: 60000 }, async t => {
+  const directory = await temporary(t)
+  const tools = join(directory, 'tools')
+  await mkdir(tools)
+  await writeFile(join(tools, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
+  const environment = { PATH: tools, [ACP_CONFIG_VARIABLE]: join(directory, 'acp.json') }
+  const configuration = new CentralConfigurationService({ platform: 'win32', central: join(directory, 'missing'), claude: join(directory, 'missing'),
+    settings: join(directory, 'missing'), environment, log: () => {} })
+  const lines = async () => {
+    const printed = []
+    await install({ environment, platform: 'win32', print: line => printed.push(line), configuration, binaries: {} })
+    return printed.join('\n')
+  }
+  const script = await lines()
+  assert.ok(script.includes('No Codex is available for a Codex child.'), script)
+  await writeFile(join(tools, 'codex.exe'), '', { mode: 0o755 })
+  const exe = await lines()
+  assert.ok(exe.includes(`A Codex child uses Codex at ${join(tools, 'codex.exe')}.`), exe)
+})
+
 /** Runs install in this process with the Central of [fakeMachine] and the platform binaries [binaries]. */
 async function installWith(t, directory, { binaries, claude = true, settings = true, helper, keyHelperTimeout }) {
   const { home } = await fakeMachine(directory)
