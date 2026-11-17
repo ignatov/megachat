@@ -170,7 +170,9 @@ test('a git checkout gives the version with +dev when git fails or gives no answ
   const started = Date.now()
   assert.equal(buildVersion(directory, { environment: { PATH: fake.path } }), '0.3.0+dev')
   const elapsed = Date.now() - started
-  assert.ok(fake.started())
+  // Do not assert `fake.started()` here. Git has the time limit from its spawn. Under load the shell can need more than
+  // 2 seconds to run `touch`, and the limit then kills it before the marker file exists. A run of 2 seconds or more with
+  // the answer `+dev` shows that the stand-in did not exit and that the limit stopped it. A missing git would answer at once.
   assert.ok(elapsed >= 1900 && elapsed < 8000, `${elapsed} ms`)
 })
 
