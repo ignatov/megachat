@@ -383,6 +383,28 @@ export class PiMegachatService {
   async settingsChanged() {
     this.settingsPending = true
     if (!(await this.state.snapshot()).current) await this.applySettings()
+    this.announceMainAgent()
+  }
+
+  /** The choice of the main agent for Air: the model and the reasoning level, each with its list. */
+  mainAgent() {
+    return this.settings.mainAgent()
+  }
+
+  /** Stores a choice of the user in Air and applies it, as a change of the setting does. Gives the new choice. */
+  async setMainAgent(option, value) {
+    const choice = await this.settings.setMainAgent(option, value)
+    await this.settingsChanged()
+    return choice
+  }
+
+  /** Tells [mainAgentChanged] about a new choice of the main agent, each time that it differs from the last one. */
+  announceMainAgent() {
+    const choice = this.settings.mainAgent()
+    const key = JSON.stringify(choice)
+    if (key === this.mainAgentSent) return
+    this.mainAgentSent = key
+    this.mainAgentChanged?.(choice)
   }
 
   /** Applies the effective settings to the root conversation, the tools and the keep-alive. Calls run one at a time. */

@@ -38,6 +38,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code or Codex, so Megachat sends no record for it. |
 | `session/request_permission` | Megachat | `sessionId`, `toolCall`, `options`, `_meta.jetbrains.air.permission` | Air shows the request of a child, and the stop request of the main agent, as a permission dialog. See "The permissions" and "The stop dialog" below. |
 | `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat cancels the child run of that row, and no other work. It answers `{ "stopped": true }` when it accepted the stop, and `{ "stopped": false }` for each other case. Then the row ends with its terminal update. See "The Stop of a row" below. |
+| `session/set_config_option` | Air | `sessionId`, `configId`, `value` | Megachat stores the choice of the model (`configId` `model`) or of the reasoning level (`thought_level`) of the main agent. It answers with the full `configOptions`. A value that is not in the list, and each other `configId`, get the error `-32602` with a text. See "The model and the reasoning level" below. |
 
 Megachat sends `_session/service/record` once for each attach, for each address in the `serviceSessions` map of the
 daemon state. The daemon adds an address when a delegated run gets its provider session, and it keeps the address
@@ -229,6 +230,24 @@ This uses the updates of the reply stream above. It is not an extension of Megac
 - Air takes a live update outside a prompt turn (`AcpSessionRuntimeOwner.kt`, `followBackgroundWorkEnd`), and the
   reply of an automatic turn of Megachat, such as a child result, comes to Air in the same way. Megachat sends no task
   of the type `turn` for a note.
+
+## The model and the reasoning level
+
+This uses the standard `configOptions` of ACP. It is no extension, and Air needs no change. Air finds the chooser of the
+model by the category `model`, and the chooser of the reasoning level by the category `thought_level`. Air reads no
+older `models` field and sends no `session/set_model`, so Megachat gives neither.
+
+- `session/new` and `session/load` answer with `configOptions`, two `select` options. `model` has the category `model`,
+  the value `provider/model ID` (such as `anthropic/claude-opus-5-5`) and the models Claude Fable, Opus and Sonnet of
+  the registry without a date suffix, and the current model. `thought_level` has the category `thought_level` and the
+  levels that the current model supports (for Claude Opus 5.5: `low`, `medium`, `high`, `xhigh`, `max`).
+- `session/set_config_option` stores the value in the setting `coordinator.model` or `coordinator.thinking`, so the choice stays
+  after a restart. The main agent uses it from its next turn (at the end of a turn that runs). The answer holds the full
+  `configOptions`. A model that does not support the stored level gets the next level that it supports.
+- Megachat sends `config_option_update` with the full `configOptions` to each open view after each change of the model or the
+  level. This includes a change by the main agent with `agents_settings`, and an edit of `settings.json`.
+- The settings of the children do not change.
+- An older daemon has no route for the choice: the view then answers with no `configOptions`, and Air shows no chooser.
 
 ## The end of the agent for an update
 

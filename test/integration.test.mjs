@@ -484,7 +484,8 @@ function stubDaemon({ workspaces = [], quiet = [] } = {}) {
   const daemon = { open: new Set(), watches: 0 }
   daemon.json = async path => {
     // The attach of a view tells the daemon whether the client has the Air support.
-    if (path === '/client') return {}
+    // A daemon of an earlier build has no choice of the main agent, and the view then gives no `configOptions`.
+    if (path === '/client' || path === '/main-agent') return {}
     assert.equal(path, '/workspace')
     return workspaces[workspaceCalls++] ?? {}
   }

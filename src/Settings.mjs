@@ -165,6 +165,12 @@ const modelValues = ({ models }) => ({ values: models.getModels().map(model => (
 const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(model) : [...MODEL_THINKING_LEVELS]
 
 /**
+ * The models that the choice of the main agent in Air offers: the Claude Fable, Opus and Sonnet models of the registry
+ * without a date suffix, such as `claude-opus-4-5-20251101`. The main agent stays strong, so Haiku is not in the list.
+ */
+const PICKER_MODEL = /^claude-(?:fable|opus|sonnet)-.*(?<!-\d{8})$/
+
+/**
  * The settings of Megachat. Each item is the one place that defines a setting:
  * - `key` names it in `settings.json` and in the tool `agents_settings`. `setting.<key>` in the resources describes it.
  * - `variable` names the environment variable that wins over the stored value.
@@ -476,6 +482,40 @@ export class MegachatSettings {
       ...(valid !== undefined && source !== 'setting' ? { storedHidden: true } : {}),
       ...(project ? { project: project.project } : {}),
       ...(project && source !== 'project' ? { projectHidden: true } : {}) }
+  }
+
+  /**
+   * The choice of the main agent for Air: the current model with the models to pick, and the current reasoning level
+   * with the levels of that model. The current model is always in the list, also when the filter or the registry does
+   * not know it.
+   */
+  mainAgent() {
+    const context = this.context()
+    const model = this.entry('coordinator.model', context).value
+    const models = context.models?.getModels?.().filter(item => item.provider === 'anthropic' && PICKER_MODEL.test(item.id))
+      .map(item => ({ value: `${item.provider}/${item.id}`, name: item.name })) ?? []
+    if (!models.some(item => item.value === model)) models.unshift({ value: model, name: context.model?.name ?? model })
+    return { model: { value: model, options: models },
+      thinking: { value: this.entry('coordinator.thinking', context).value, options: thinkingLevels(context.model).map(value => ({ value })) } }
+  }
+
+  /**
+   * Stores a choice of Air: [option] is `model` or `thinking`. A value that the list of `mainAgent` does not hold is
+   * refused. A new model that does not support the level gets the next level that it supports. Gives the new choice.
+   */
+  async setMainAgent(option, value) {
+    requireCondition(option === 'model' || option === 'thinking', 'settingKey')
+    const before = this.mainAgent()
+    requireCondition(typeof value === 'string' && before[option].options.some(item => item.value === value), 'settingValue')
+    if (option === 'thinking') await this.set('coordinator.thinking', value)
+    else {
+      await this.set('coordinator.model', value)
+      const model = this.context().model
+      if (model?.reasoning && !thinkingLevels(model).includes(before.thinking.value)) {
+        await this.set('coordinator.thinking', clampThinkingLevel(model, before.thinking.value))
+      }
+    }
+    return this.mainAgent()
   }
 
   /**

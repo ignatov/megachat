@@ -367,8 +367,8 @@ runs, else at the end of the current turn. No setting needs a restart.
 
 | Setting | Default | Variable | Effect |
 |---|---|---|---|
-| `coordinator.model` | `anthropic/claude-opus-5-5` | | The model of the main agent. The agent lists the models of the registry with their prices. |
-| `coordinator.thinking` | `low` | | The reasoning level of the main agent and of a keep-alive request. |
+| `coordinator.model` | `anthropic/claude-opus-5-5` | | The model of the main agent. The agent lists the models of the registry with their prices. Air also sets it: see "Pick the model and the reasoning level in Air". |
+| `coordinator.thinking` | `low` | | The reasoning level of the main agent and of a keep-alive request. Air also sets it. |
 | `keepAlive.enabled` | `true` | `MEGACHAT_KEEPALIVE` | The keep-alive requests and the summary of an idle conversation. |
 | `keepAlive.hours` | `6` | `MEGACHAT_KEEPALIVE_HOURS` | The time after the last turn in which keep-alive requests go out, 0 to 168 hours. |
 | `cache.ttl` | `1h` | `MEGACHAT_CACHE_TTL` | The lifetime of the prompt cache: `1h` or `5m`. |
@@ -547,6 +547,19 @@ has no stored value and no variable. In the mode `ghost`, the acceptance can sho
 keeps each offer, so a restart does not repeat it, and a request for silence stops the offers.
 `resources/instructions-offers.md` lists the settings and their triggers. The agent changes a setting only after your
 yes.
+
+## Pick the model and the reasoning level in Air
+
+The prompt box of Air has a model chooser and a reasoning chooser for Megachat. They use the ACP `configOptions`
+(`session/set_config_option`), so Air needs no change.
+
+- The model chooser lists the Claude Fable, Opus and Sonnet models of the registry. The reasoning chooser lists the
+  levels that the current model supports, such as `low`, `medium`, `high`, `xhigh` and `max` for Claude Opus 5.5.
+- A choice sets `coordinator.model` or `coordinator.thinking` in `settings.json`. The next turn uses it, and the choice
+  stays after a restart. A turn that runs ends with its own model first. A new model breaks the prompt cache once.
+- A model that does not support the chosen level gets the next level that it supports.
+- A change by the main agent (`agents_settings`) or by an edit of `settings.json` shows in each open view.
+- The choice does not change the models of the children (`children.*`).
 
 ## The learned memory
 

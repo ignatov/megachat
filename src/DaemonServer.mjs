@@ -22,6 +22,8 @@ export class DaemonServer {
     this.history = new MegachatHistoryServer(service)
     // The publish function of each open event stream, for an event to each view, such as the stop for an update.
     this.publishers = new Set()
+    // A change of the model or of the reasoning level of the main agent goes to each view, whoever made it.
+    service.mainAgentChanged = value => { this.announce('mainAgent', value).catch(() => {}) }
     // The automatic update gives the notice of `/health`. A test or a daemon without the check has none.
     this.update = undefined
     this.server = createServer((request, response) => {
@@ -94,6 +96,7 @@ export class DaemonServer {
           return
         }
         case '/state': send(await this.service.state.snapshot()); return
+        case '/main-agent': send(this.service.mainAgent()); return
         case '/conversation': send(await this.service.view()); return
         case '/history': {
           const before = Number(url.searchParams.get('before'))
@@ -138,6 +141,12 @@ export class DaemonServer {
         requireCondition(typeof body.airSupport === 'boolean')
         await this.service.setAirSupport(body.airSupport)
         send({ airSupport: body.airSupport })
+        return
+      }
+      case '/main-agent': {
+        // The choice of the user in Air. A value that is not in the list is a refusal with the code `settingValue`.
+        requireCondition(typeof body.option === 'string' && body.option.length <= 20)
+        send(await this.service.setMainAgent(body.option, body.value))
         return
       }
       case '/input': send(await this.service.submit(body.requestId, body.text, body.images)); return
@@ -206,6 +215,7 @@ export class DaemonServer {
       const tasks = await this.service.state.watch()
       views.push(tasks)
       await publish('tasks', tasks.value)
+      if (this.service.mainAgent) await publish('mainAgent', this.service.mainAgent())
       const stream = this.stream ? new ReplyStream(publish, { intervalMs: this.streamIntervalMs, onFirstText: (reply, ms) => this.firstText(reply, ms),
         onSent: this.onStreamSent }) : undefined
       response.once('close', () => stream?.stop())

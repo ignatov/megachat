@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
-import { agent, methods } from '@agentclientprotocol/sdk/unstable'
+import { agent, methods, RequestError } from '@agentclientprotocol/sdk/unstable'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { CENTRAL_CAUSES, MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
@@ -136,6 +136,24 @@ function promptText(prompt) {
   return { text, images }
 }
 
+/**
+ * The `configOptions` of a session for the choice of the main agent [choice] of the daemon. Air finds the model chooser by
+ * the category `model` and the reasoning chooser by the category `thought_level`, so the IDs are free. The ID of an
+ * option is also the name of the choice in `POST /main-agent`.
+ */
+export function mainAgentOptions(choice) {
+  return [
+    { id: 'model', name: message('acp.option.model'), description: message('acp.option.model.description'), category: 'model', type: 'select',
+      currentValue: choice.model.value, options: choice.model.options.map(item => ({ value: item.value, name: item.name })) },
+    { id: 'thought_level', name: message('acp.option.thinking'), description: message('acp.option.thinking.description'), category: 'thought_level',
+      type: 'select', currentValue: choice.thinking.value,
+      options: choice.thinking.options.map(item => ({ value: item.value, name: message(`acp.level.${item.value}`) })) },
+  ]
+}
+
+/** The name of a `configOptions` ID in the daemon: the settings of the main agent are `model` and `thinking`. */
+const MAIN_AGENT_OPTIONS = { model: 'model', thought_level: 'thinking' }
+
 /** The limit of the open views of one ACP connection. */
 const MAX_VIEWS = 32
 /** The interval of the check of `/health` while the bridge has no open view, and the time limit of one check. */
@@ -232,6 +250,7 @@ export class AcpBridge {
       })
       .onRequest(methods.agent.session.new, ctx => this.attach(ctx, false))
       .onRequest(methods.agent.session.load, ctx => this.attach(ctx, true))
+      .onRequest(methods.agent.session.setConfigOption, ctx => this.view(ctx.params.sessionId).setConfigOption(ctx.params))
       .onRequest(methods.agent.session.prompt, ctx => this.view(ctx.params.sessionId).prompt(ctx))
       .onNotification(methods.agent.session.cancel, ctx => this.view(ctx.params.sessionId).cancel())
       // The Stop action of a row in the chat. Air shows it only for a row with `canStop: true`, and it accepts the stop
@@ -465,6 +484,15 @@ class AcpBridgeSession {
     this.replayIndex = 0
     this.shownSuggestion = null
     this.ready = false
+    // The choice of the main agent that this view showed last. A daemon of an earlier build has no route, so it stays empty.
+    this.mainAgentChoice = undefined
+    this.mainAgentSent = undefined
+    try {
+      const choice = await this.daemon.json('/main-agent')
+      if (choice?.model && choice?.thinking) { this.mainAgentChoice = choice; this.mainAgentSent = JSON.stringify(choice) }
+    }
+    catch (error) { if (!(error instanceof MegachatError)) throw error }
+    open()
     let resolveReady
     let rejectReady
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
@@ -484,6 +512,7 @@ class AcpBridgeSession {
         await this.conversation(event.value, !received.has('conversation'), true)
       }
       if (event.type === 'tasks') await this.tasks(event.value)
+      if (event.type === 'mainAgent') await this.mainAgent(event.value)
       if (event.type === 'stream') await this.stream(event.value)
       if (event.type === 'stops') await this.stopRequests(event.value)
       // The daemon stops itself for an update. The bridge ends, so the next start goes through the entry and npx.
@@ -509,7 +538,41 @@ class AcpBridgeSession {
     // A live prompt suggestion goes out again after the replay. An old one does not.
     this.ready = true
     await this.enqueue(() => abort.signal.aborted ? undefined : this.suggest(this.lastState))
-    return loading ? {} : { sessionId: this.sessionId }
+    const configOptions = this.mainAgentChoice ? { configOptions: mainAgentOptions(this.mainAgentChoice) } : {}
+    return loading ? configOptions : { sessionId: this.sessionId, ...configOptions }
+  }
+
+  /**
+   * Shows a new choice of the main agent as `config_option_update`, when it differs from the last one that this view
+   * showed. The response of `session/new` and `session/load` has the choice that is current at its end, so an event
+   * before that sends no update.
+   */
+  async mainAgent(choice) {
+    const key = JSON.stringify(choice)
+    if (key === this.mainAgentSent) return
+    this.mainAgentSent = key
+    this.mainAgentChoice = choice
+    if (this.ready) await this.notify({ sessionUpdate: 'config_option_update', configOptions: mainAgentOptions(choice) })
+  }
+
+  /**
+   * `session/set_config_option` of Air for the model or the reasoning level of the main agent. The daemon stores the
+   * value, and the next turn uses it. An unknown option or a value that is not in the list is an error `-32602` with a
+   * text that names the allowed values.
+   */
+  async setConfigOption(params) {
+    const option = Object.hasOwn(MAIN_AGENT_OPTIONS, params.configId) ? MAIN_AGENT_OPTIONS[params.configId] : undefined
+    const refuse = key => RequestError.invalidParams(undefined, message(key))
+    if (!this.mainAgentChoice || !option) throw refuse('acp.option.unknown')
+    let choice
+    try { choice = await this.daemon.json('/main-agent', { option, value: params.value }) }
+    catch (error) {
+      if (error instanceof MegachatError && (error.code === 'settingValue' || error.code === 'settingKey')) throw refuse(error.code === 'settingKey' ? 'acp.option.unknown' : 'acp.option.value')
+      throw error
+    }
+    // The update first, so a view that has the new options already gets no second update.
+    await this.mainAgent(choice)
+    return { configOptions: mainAgentOptions(choice) }
   }
 
   async refreshWorkspaces() {
