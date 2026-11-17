@@ -652,11 +652,11 @@ test('a stored setting of the project events of v0.3.0 causes no error, and the 
   assert.deepEqual((await stored(directory)).values, { 'coordinator.model': FAST, 'future.key': 1, 'reply.length': 'normal' })
 })
 
-test('the setup asks three questions: the pair of agents, the index and the repositories, and the account check shows only problems', async () => {
+test('the setup asks four questions: the pair of agents, the index, the repositories and the folder of new projects, and the account check shows only problems', async () => {
   const rules = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
   const keys = new Set(SETTINGS.map(setting => setting.key))
   const named = new Set(rules.match(/\b[a-z][A-Za-z]*\.[a-z][A-Za-z]+\b/g).filter(word => keys.has(word)))
-  assert.deepEqual([...named].sort(), ['children.agent', 'children.codexModel', 'coordinator.model', 'sessions.index'])
+  assert.deepEqual([...named].sort(), ['children.agent', 'children.codexModel', 'coordinator.model', 'projects.newRoot', 'sessions.index'])
   // The pair question changes only the children, and the main model keeps its value.
   assert.match(rules, /\+ Claude[^\n]*children\.agent claude/)
   assert.match(rules, /\+ Codex on GPT-6 Astra[^\n]*children\.agent codex, children\.codexModel openai\/gpt-6-astra/)
@@ -674,7 +674,7 @@ test('each setup question is in full in the reply, with numbered options, and no
   assert.match(rules, /The rule of the answer length does not shorten a setup question\./)
   assert.match(rules, /Do not refer to a question above or to an earlier setup in the conversation\. Ask each question again in full\./)
   assert.match(rules, /These setup rules win over a setup text of an earlier build in the conversation\./)
-  // Each of the three questions gives its options as a numbered list.
+  // Each of the four questions gives its options as a numbered list.
   assert.match(rules, /^1\. The agents\.[^\n]*as a numbered list: 1\. the main model \+ Claude, 2\. the main model \+ Codex on GPT-6 Astra/m)
   assert.match(rules, /^2\. The index of past sessions\.[^\n]*as a numbered list: 1\. on, 2\. off\./m)
   assert.match(rules, /^3\. The known repositories:[^\n]*a short numbered list/m)
@@ -684,6 +684,15 @@ test('each setup question is in full in the reply, with numbered options, and no
   assert.match(rules, /add all the repositories found in it in one call agents_projects\(action="add", cwds\)/)
   assert.match(rules, /When the folder is a repository or holds no repository, add the folder itself\./)
   assert.match(rules, /Do not refuse a folder because it is out of ~\/src or ~\/IdeaProjects, and do not ask for an environment variable\./)
+  // Question 4 asks for the folder of new projects, proposes the folder of question 3 and stores nothing for a skip.
+  assert.match(rules, /^4\. The folder of new projects\.[^\n]*projects\.newRoot[^\n]*the default ~\/src[^\n]*a short numbered list/m)
+  assert.match(rules, /The proposed folder is the folder that the user named in question 3, when the user named one, else the current value\./)
+  assert.match(rules, /an absolute path or a path that starts with ~\//)
+  assert.match(rules, /agents_settings\(action="set", key="projects\.newRoot", value\)/)
+  assert.match(rules, /store nothing when the user skips the question/)
+  assert.match(rules, /When the tool refuses the value, tell the user why in plain words and ask the question again\./)
+  assert.match(rules, /asks the user four questions/)
+  assert.ok(rules.indexOf('\n3. The known repositories') < rules.indexOf('\n4. The folder of new projects') && rules.indexOf('\n4. The folder of new projects') < rules.indexOf('At the end, call agents_accounts'))
   // A worktree is glued to its main repository, and the agent tells the user.
   assert.match(rules, /"N worktrees are glued to <repository>"/)
   assert.match(rules, /Add one worktree alone only when the user names it exactly/)

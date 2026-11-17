@@ -110,6 +110,7 @@ test('the added setup rules ask for the likely answer and name no setting key', 
   assert.match(rules, /call agents_suggest one time with the likely answer/)
   assert.match(rules, /Keep the current values/)
   assert.match(rules, /For the pair of agents, the likely answer is the current pair/)
+  assert.match(rules, /For the folder of new projects, the likely answer keeps the current value/)
   // The grey text only adds the likely answer: the question and its options stay in the reply text.
   assert.match(rules, /The suggestion only adds the likely answer\. The reply text still holds the full question with its numbered options, the current value and the default\./)
   assert.match(rules, /Do not move the question or its options into the suggestion\./)

@@ -57,6 +57,7 @@ test('a fresh conversation gets one setup note with no model request, and a seco
   assert.equal(written[0].data.type, 'onboarding')
   assert.equal(written[0].model[0].content[0].text, message('onboarding.offer'))
   assert.match(written[0].model[0].content[0].text, /^Welcome to Megachat\./)
+  assert.match(written[0].model[0].content[0].text, /four short questions[^.]*where new projects go/)
   assert.equal(await flag(), 'offered')
   assert.equal(fake.state.callCount, 0)
   // A restart and a reconnect start the driver again.

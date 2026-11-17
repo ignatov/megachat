@@ -23,8 +23,8 @@ curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh
 
    Without the line: [Install without the setup line](#install-without-the-setup-line).
 2. In Air, select Megachat in the agent list. The IDE needs no restart. The first start takes 30 to 100 seconds.
-3. Megachat writes "Welcome to Megachat" and asks three setup questions: the agents, the index of past sessions and
-   the known repositories. Answer, or skip. See [Settings and the first run](#settings-and-the-first-run).
+3. Megachat writes "Welcome to Megachat" and asks four setup questions: the agents, the index of past sessions, the
+   known repositories and the folder of new projects. Answer, or skip. See [Settings and the first run](#settings-and-the-first-run).
 4. Check it: write a message in the chat. Or run `npx -y "github:ignatov/megachat#semver:x" status` in a terminal.
    It prints JSON with the `version` of the running daemon.
 5. If it does not work, look in `idea.log` (Help | Show Log in Finder) for the line "This ACP client has no Air
@@ -541,7 +541,7 @@ a stored value. A daemon reads the variables at its start.
 Without `settings.json`, the setup of Megachat is pending. When you open Megachat for the first time, the daemon writes
 a note on its own, "Welcome to Megachat", which offers the setup. It comes once, and it needs no message of yours. Answer
 "yes" to start or "skip". When you write another message first, the note does not come: the main agent answers your
-message and then offers the setup. The setup asks three questions, one at a time. Each reply holds the full question,
+message and then offers the setup. The setup asks four questions, one at a time. Each reply holds the full question,
 its options as a numbered list, the current value and the default, also with the short answer length:
 
 1. The agents: your main model with Claude Code, or with Codex on GPT-6 Astra, for example "Opus + Claude" or "Opus +
@@ -549,7 +549,9 @@ its options as a numbered list, the current value and the default, also with the
    `openai/gpt-6-astra`. The main model keeps its value.
 2. The index of past sessions, `sessions.index`. It is on by default. The answer off deletes the index and the table
    of the running sessions.
-3. The known repositories.
+3. The known repositories. You can name a folder of your own, such as `~/dev`, and Megachat adds its repositories.
+4. The folder of new projects, `projects.newRoot`. It is `~/src` by default. The question proposes the folder that you
+   named in question 3. Answer with an absolute path or a path that starts with `~/`, or skip to keep the value.
 
 You can skip one question or the whole setup, and the defaults then apply. Each other setting keeps its default, and
 you can change it in the chat at any time. In the mode `ghost` of `reply.suggestions`, Air shows the likely answer of

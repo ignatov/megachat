@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Setup note on its own
-A daemon with the onboarding `pending` and a conversation with no entry and no input MUST write one note of Megachat on its own, with no model request. The note MUST offer the setup with its three questions, the skip and the defaults. It MUST go out only when no turn runs, no run is live and the inbox is empty, else the daemon MUST try again each 10 seconds. The note MUST come once, also after a restart or a reconnect.
+A daemon with the onboarding `pending` and a conversation with no entry and no input MUST write one note of Megachat on its own, with no model request. The note MUST offer the setup with its four questions, the skip and the defaults. It MUST go out only when no turn runs, no run is live and the inbox is empty, else the daemon MUST try again each 10 seconds. The note MUST come once, also after a restart or a reconnect.
 
 Tests: `test/onboarding.test.mjs`
 
@@ -26,13 +26,13 @@ Tests: `test/onboarding.test.mjs`
 ## MODIFIED Requirements
 
 ### Requirement: Content of the setup rules
-The setup rules MUST tell the agent to answer the user first and then offer the setup one time, unless the conversation holds the setup note of Megachat, which is the offer. They MUST tell it to ask one question at a time with its default, let the user skip, store each answer at once, and mark the onboarding done at the end. They MUST ask only for the pair of agents, the index of past sessions and the known repositories. The end MUST say that each setting can change later in the chat.
+The setup rules MUST tell the agent to answer the user first and then offer the setup one time, unless the conversation holds the setup note of Megachat, which is the offer. They MUST tell it to ask one question at a time with its default, let the user skip, store each answer at once, and mark the onboarding done at the end. They MUST ask only for the pair of agents, the index of past sessions, the known repositories and the folder of new projects. The end MUST say that each setting can change later in the chat.
 
 Tests: `test/settings.test.mjs`, `test/onboarding.test.mjs`
 
 #### Scenario: The settings in the setup rules
 - **WHEN** a test reads `resources/instructions-onboarding.md`
-- **THEN** the setting keys that it names are `coordinator.model`, `children.agent`, `children.codexModel` and `sessions.index`
+- **THEN** the setting keys that it names are `coordinator.model`, `children.agent`, `children.codexModel`, `sessions.index` and `projects.newRoot`
 
 #### Scenario: The pairs of agents
 - **WHEN** a test reads `resources/instructions-onboarding.md`
