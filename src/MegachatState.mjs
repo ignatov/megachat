@@ -290,6 +290,9 @@ export function findSteer(state, steerId) {
   return null
 }
 
+/** The text of the prompt of the morning report, without the data. [html] true asks for a page, else for text. */
+export const morningPrompt = html => [message('event.morning'), message(html ? 'event.morning.page' : 'event.morning.text'), message('event.morning.rules')].join(' ')
+
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
   constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots, suggestions = 'off',
@@ -941,8 +944,11 @@ export class MegachatState {
     })
   }
 
-  /** Starts the turn of the morning report that waits. The turn runs only when no other turn runs. */
-  async nextMorningReport() {
+  /**
+   * Starts the turn of the morning report that waits. The turn runs only when no other turn runs. With [html] true, the
+   * prompt asks for one `air-html` page, else for the text of three parts.
+   */
+  async nextMorningReport({ html = false } = {}) {
     return this.change(async (state, tx) => {
       const pending = state.morningReport?.pending
       if (state.current || !pending) return null
@@ -951,7 +957,7 @@ export class MegachatState {
       const mainRunId = randomUUID()
       const requestId = `morning:${mainRunId}`
       const submissionId = await this.root.submit(tx, {
-        type: 'input', requestId, content: `${message('event.morning')}\n${JSON.stringify(pending.data)}`,
+        type: 'input', requestId, content: `${morningPrompt(html)}\n${JSON.stringify(pending.data)}`,
         entry: { kind: 'air.megachat.event', data: { type: 'morning', date: pending.date } },
       })
       state.morningReport.pending = null

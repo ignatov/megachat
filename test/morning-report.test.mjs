@@ -10,6 +10,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { AcpBridge } from '../src/AcpBridge.mjs'
 import { DailySpend } from '../src/DailySpend.mjs'
 import { message } from '../src/messages.mjs'
+import { morningPrompt } from '../src/MegachatState.mjs'
 import { collectReportData, MorningReport, REPORT_RECHECK_MS } from '../src/MorningReport.mjs'
 import { PromptCacheKeepAlive } from '../src/PromptCacheKeepAlive.mjs'
 import { SessionIndex } from '../src/SessionIndex.mjs'
@@ -549,6 +550,44 @@ test('a connected client gets the report as it comes, and a client that connects
   assert.ok(shows(later, 'Morning report text.'))
   assert.ok(!later.some(event => event.update?.content?.text?.includes(message('event.morning').slice(0, 40))))
   assert.equal((await alone.reports()).length, 1)
+})
+
+/** The prompt of the report of Monday 2026-11-16, with [values] in the settings and [support] as the Air support. */
+async function reportPrompt(t, values, support) {
+  const { service, requests, advance, settled } = await daemonFixture(t, { start: '2026-11-16T08:50:00Z', spendDays: ACTIVE, userTurns: [FRIDAY], values })
+  if (support !== undefined) await service.setAirSupport(support)
+  await service.resume()
+  await advance(10 * MINUTE)
+  await settled()
+  assert.equal(requests.length, 1)
+  return requests[0].prompt.slice(0, requests[0].prompt.indexOf('\n'))
+}
+
+const RULES = [/separateResult true/, /name it in a few words/, /otherWork is notShown/, /Other work on this machine: not shown/, /status is missing/, /Start nothing/,
+  /money\.megachat is the USD that the key of Megachat paid/, /money\.otherSessions is the API-equivalent cost/]
+
+test('the report asks for one page with the layout when HTML in the chat is on, in the setting and with the Air support', { timeout: 20000 }, async t => {
+  for (const [values, support] of [[{ 'chat.html': 'on' }, undefined], [{}, true]]) {
+    const prompt = await reportPrompt(t, values, support)
+    assert.equal(prompt, morningPrompt(true))
+    assert.match(prompt, /one air-html code fence/)
+    assert.match(prompt, /Megachat morning report/)
+    assert.match(prompt, /tiles/)
+    assert.match(prompt, /Never add the two kinds together/)
+    assert.match(prompt, /next steps after the fence as plain text/)
+    assert.doesNotMatch(prompt, /three short parts/)
+    for (const rule of RULES) assert.match(prompt, rule)
+  }
+})
+
+test('the report keeps the text of three parts when chat.html is off, or auto without the Air support', { timeout: 20000 }, async t => {
+  for (const [values, support] of [[{ 'chat.html': 'off' }, true], [{}, false], [{ 'chat.html': 'off' }, undefined]]) {
+    const prompt = await reportPrompt(t, values, support)
+    assert.equal(prompt, morningPrompt(false))
+    assert.match(prompt, /three short parts/)
+    assert.doesNotMatch(prompt, /air-html/)
+    for (const rule of RULES) assert.match(prompt, rule)
+  }
 })
 
 test('turning the report on after the start of a working day keeps the first report for the next working day', { timeout: 20000 }, async t => {

@@ -922,7 +922,7 @@ export class PiMegachatService {
       this.eventPump = this.eventPump.then(async () => {
         if (this.lifetime.signal.aborted || this.pendingUserInputs) return
         const receipt = (this.resultsWait(await this.state.snapshot()) ? null : await this.state.nextChildResults()) ?? await this.state.nextSessionsEvent()
-          ?? await this.state.nextMorningReport()
+          ?? await this.state.nextMorningReport({ html: this.html })
         if (receipt) this.follow(receipt)
       }).catch(error => {
         if (this.lifetime.signal.aborted) return
