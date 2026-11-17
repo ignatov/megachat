@@ -10,6 +10,7 @@ import { arr, bool, int, num, obj, opt, str, union } from '@earendil-works/pi-sc
 import { DailySpend, requestCost } from './DailySpend.mjs'
 import { ensurePrivateDirectory, readUserInstructions, withUserInstructions } from './MegachatHome.mjs'
 import { MegachatMemory } from './MegachatMemory.mjs'
+import { CLOUD_LIST_LIMIT, CloudWatch, cloudToolOutput, locateAirc, logCloudFailure, readCloudSessions } from './CloudSessions.mjs'
 import { automaticKinds, findSteer, lastUserTurnEnd, MegachatState, permissionOpen, terminalStates } from './MegachatState.mjs'
 import { updateTime } from './MegachatUpdate.mjs'
 import { MemoryReflection, REFLECTION_MAX_TOKENS, REFLECTION_TIMEOUT_MS } from './MemoryReflection.mjs'
@@ -105,9 +106,10 @@ function harnessSettings(values, models) {
  * The rules of the main agent that the settings give: the reply style, the suggestion rules, and the setup rules while
  * the onboarding is pending. The defaults give the rules from before the settings. The rules are a section of their
  * own, so a change sends only this section to the model again, and not the bundled rules. [projects] gives the project
- * values as `[directory, text]`, one line for each project.
+ * values as `[directory, text]`, one line for each project. [cloud] is the state of the cloud sessions: `off` gives no
+ * line, so the rules of a user without the cloud sessions do not change.
  */
-function settingsRules(values, onboarding, rules, notice, projects = [], offers = [], html = false) {
+function settingsRules(values, onboarding, rules, notice, projects = [], offers = [], html = false, cloud = 'off') {
   const language = values['reply.language']
   return [
     message(`instructions.length.${values['reply.length']}`),
@@ -123,6 +125,7 @@ function settingsRules(values, onboarding, rules, notice, projects = [], offers 
     ...(offers.length ? [rules.offers.head, message('instructions.offers.open'),
       ...offers.map(({ key, value, trigger }) => `${key} (${value}): ${trigger}`)] : []),
     message('instructions.notes', notesOn(values) ? 'on' : 'off'),
+    ...(cloud === 'on' ? [message('instructions.cloud')] : cloud === 'missing' ? [message('instructions.cloud.missing')] : []),
     // The page rules are for the main agent only. A child gets the rules paragraph of `childRulesText`, not this section.
     ...(html ? [rules.html.trimEnd()] : []),
     ...(notice ? [message('instructions.spend', notice.usd.toFixed(2), notice.limit)] : []),
@@ -212,13 +215,15 @@ export class PiMegachatService {
    * [promptSuggestionLifetimeMs] replaces the lifetime of a prompt suggestion, for a test. [morningReport] gives the
    * clock of the working day and the time limit of tokprof, for a test. The clock gives the time of the timer of the
    * morning report, of the idle time of the conversation, of the wait of a child result, and of the notes about the
-   * waiting sessions. [notes] replaces the view of the running sessions of the notes, for a test. [secrets] is a
+   * waiting sessions, and of the reads of the cloud sessions. [notes] replaces the view of the running sessions of the
+   * notes, for a test. [cloud] gives the path of `central` and the environment of `central plugins` and of `airc`, or
+   * `locate` and `list` in place of them, for a test. Without them, Megachat finds no `airc`. [secrets] is a
    * `KnownSecrets` with the exact values of the own secret of Megachat: the state and the session index remove them.
    * [memoryPath] is the path of `memory.md`. Without it, the main agent has no memory section, no tool
    * `agents_memory` and no reflection, for a test. [memory] gives the hooks of the memory, for a test.
    * [centralFailure] gives the last failure of Central, `{ cause, at }`, as `CentralConfigurationService.lastFailure`.
    */
-  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, archive: archiveOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, archive: archiveOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {}, cloud: cloudOptions = {} } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -269,6 +274,14 @@ export class PiMegachatService {
     service.offered = new Set(Object.keys((await state.snapshot()).initiative.offers))
     // The Air support of the last client that attached. `chat.html` `auto` uses it until the next attach.
     service.airSupport = (await state.snapshot()).airSupport === true
+    // The cloud sessions (see `CloudSessions.mjs`). Megachat looks for the plugin `airc` only with the setting on.
+    // `cloudAirc` is the path of the binary, `false` when the last detection found none, and `null` before a detection.
+    service.cloud = {
+      locate: cloudOptions.locate ?? (() => locateAirc({ central: cloudOptions.central, env: cloudOptions.environment })),
+      list: cloudOptions.list ?? ((airc, signal) => readCloudSessions(airc, { env: cloudOptions.environment, signal })),
+    }
+    service.cloudAirc = null
+    if (values['cloud.sessions'] === 'on') await service.detectCloud()
     service.adopt(values)
     await service.dropPromptSuggestion()
     service.workdayClock = reportOptions.clock ?? workdayClock
@@ -277,6 +290,9 @@ export class PiMegachatService {
     // The notes start in `resume`, and only with the setting `sessions.notes` and the consent `sessions.index`.
     service.sessionNotes = new SessionNotes({ clock: service.workdayClock, view: notesOptions.view ?? (() => service.running.view()),
       sleeping: () => service.sleeping(), deliver: (plan, now) => state.sessionNote(plan, now) })
+    // The reads of the cloud sessions start in `resume`, and only with the setting `cloud.sessions` and `airc`.
+    service.cloudWatch = new CloudWatch({ clock: service.workdayClock, list: signal => service.cloud.list(service.cloudAirc, signal),
+      sleeping: () => service.sleeping(), start: now => state.cloudWatch(true, now), deliver: (plan, now) => state.cloudNote(plan, now) })
     // The first paragraph of the file is the system prompt of a summary request. The rest follows the conversation.
     const [system, ...rest] = (await resource('compaction.md')).trim().split('\n\n')
     service.summaryPrompt = { system, instructions: rest.join('\n\n') }
@@ -344,6 +360,8 @@ export class PiMegachatService {
     // The mode of the suggestions: `off`, `reply` or `ghost`.
     this.suggestions = values['reply.suggestions']
     this.state.suggestionMode = this.suggestions
+    // The tool `agents_cloud` and its rules line follow the state of the cloud sessions, so they change between two turns.
+    this.cloudState = this.cloudStateOf(values)
     // The warning about the spend is a line of the rules, so it changes only between two turns, as each setting does.
     this.notice = this.spend.notice(values['budget.dailyUsd'])
     // With suggestions, the prompt of an event turn lets the main agent offer a next step.
@@ -413,9 +431,13 @@ export class PiMegachatService {
       if (!this.settingsPending) return
       this.settingsPending = false
       const values = this.settings.values()
+      // A hand edit of `settings.json` can turn the cloud sessions on. Megachat then looks for `airc` one time.
+      if (values['cloud.sessions'] !== 'on') this.cloudAirc = null
+      else if (this.cloudAirc === null) await this.detectCloud()
       const renewed = this.adopt(values)
       await this.dropPromptSuggestion()
       this.registry.install(this.extension())
+      await this.applyCloud(values)
       const agent = agentOf(values, this.rules)
       if (JSON.stringify(agent) !== JSON.stringify(this.agent)) {
         await this.root.configure(agent, context)
@@ -477,7 +499,7 @@ export class PiMegachatService {
     if (args.action === 'offer') return this.offerSetting(args.key, taskId)
     if (args.action === 'get') {
       return { ...this.settings.describe(), spend: { ...this.spend.report(this.settings.entry('budget.dailyUsd').value), note: message('settings.spend.note') },
-        ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}), sessionNotes: this.notesStatus() }
+        ...(this.sessionIndex ? { sessionIndex: await this.sessionIndex.status() } : {}), sessionNotes: this.notesStatus(), cloudSessions: this.cloudStatus() }
     }
     requireCondition(!automaticKinds.has((await this.state.snapshot()).current?.kind), 'settingEvent')
     let changed
@@ -498,6 +520,14 @@ export class PiMegachatService {
       await this.sessionIndex?.apply(this.settings.values())
       if (this.resumed) this.sessionNotes.apply(notesOn(this.settings.values()))
       if (args.key === 'sessions.notes' || args.key === 'sessions.index') changed = { ...changed, sessionNotes: this.notesStatus() }
+      // Each set or reset of the cloud sessions looks for `airc` again, and the reads start or stop in this turn.
+      if (args.key === 'cloud.sessions') {
+        const values = this.settings.values()
+        if (values['cloud.sessions'] === 'on') await this.detectCloud()
+        else this.cloudAirc = null
+        await this.applyCloud(values)
+        changed = { ...changed, cloudSessions: this.cloudStatus() }
+      }
     }
     await this.settingsChanged()
     return changed
@@ -537,6 +567,49 @@ export class PiMegachatService {
     return { on: notesOn(values), ...(values['sessions.notes'] === 'on' && !notesOn(values) ? { note: message('settings.notes.consent') } : {}) }
   }
 
+  /** The state of the cloud sessions for [values]: `off` (the setting), `on` (with `airc`) or `missing` (without `airc`). */
+  cloudStateOf(values) {
+    return values['cloud.sessions'] !== 'on' ? 'off' : this.cloudAirc ? 'on' : 'missing'
+  }
+
+  /** Looks for the plugin `airc` of Central with one call of `central plugins`. The log names a missing plugin with a fixed word. */
+  async detectCloud() {
+    const found = await this.cloud.locate().catch(() => ({ reason: 'central' }))
+    this.cloudAirc = typeof found?.path === 'string' ? found.path : false
+    if (!this.cloudAirc) logEvent('log.cloud.missing', /^[a-z]{1,20}$/.test(found?.reason ?? '') ? found.reason : 'other')
+  }
+
+  /**
+   * Starts or stops the reads of the cloud sessions for [values] at once, also in the middle of a turn. The setting off
+   * also ends the watch in the state, so a later watch starts with a new base.
+   */
+  async applyCloud(values) {
+    if (!this.resumed) return
+    this.cloudWatch.apply(this.cloudStateOf(values) === 'on')
+    if (values['cloud.sessions'] !== 'on') await this.state.cloudWatch(false, this.workdayClock.now())
+  }
+
+  /** Whether the cloud sessions are on, and why not when the setting is on without `airc`. */
+  cloudStatus() {
+    const values = this.settings.values()
+    return { on: this.cloudStateOf(values) === 'on', ...(this.cloudStateOf(values) === 'missing' ? { note: message('settings.cloud.missing') } : {}) }
+  }
+
+  /**
+   * The tool `agents_cloud`: one read of the list, with the filter of [args]. The tool stays until the end of a turn
+   * after the setting turned off, so it refuses then. A failed read gives the error to the main agent and one log line.
+   */
+  async cloudTool(args, signal) {
+    requireCondition(this.cloudStateOf(this.settings.values()) === 'on', 'cloudOff')
+    let sessions
+    try { sessions = await this.cloud.list(this.cloudAirc, signal) }
+    catch (error) {
+      logCloudFailure(error)
+      throw error
+    }
+    return cloudToolOutput(sessions, args)
+  }
+
   /**
    * The user turned the morning report on. After the start of a working day, the first report comes on the next working
    * day, so the report does not interrupt the conversation that turned it on.
@@ -558,7 +631,8 @@ export class PiMegachatService {
     const workday = reportWorkday(this.settings.values())
     const data = await collectReportData({ state, date, workday, spend: this.spend, sessionStore: this.sessionIndex?.store,
       home: this.home, stateDirectory: this.stateDirectory, environment: this.environment,
-      now: this.workdayClock.now(), tokprofTimeoutMs: this.reportOptions.tokprofTimeoutMs, signal: this.lifetime.signal })
+      now: this.workdayClock.now(), tokprofTimeoutMs: this.reportOptions.tokprofTimeoutMs, signal: this.lifetime.signal,
+      cloud: this.cloudStateOf(this.settings.values()) === 'on' ? () => this.cloud.list(this.cloudAirc, this.lifetime.signal) : undefined })
     if (this.lifetime.signal.aborted) return
     const stored = data ? await this.state.morningReportReady(date, data) : await this.state.morningReportDone(date)
     if (stored) logReport(date, data)
@@ -589,7 +663,8 @@ export class PiMegachatService {
     const inspect = async args => result(await this.state.readRun(args.runId))
     return defineExtension({ name: MAIN_EXTENSION, sections: [
       // The section reads the adopted settings, so a change in a turn reaches the model only in the next turn.
-      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules, this.openOffers, this.html) },
+      { key: 'settings', render: () => settingsRules(this.values, this.onboarding, this.rules, this.spend.current(this.notice), this.projectRules,
+        this.openOffers, this.html, this.cloudState) },
       // The section is always there when the daemon has a memory, so a change of the file changes only this section.
       ...(this.memory ? [{ key: 'memory', render: () => this.memorySection() }] : []),
     ], hooks: [
@@ -696,6 +771,9 @@ export class PiMegachatService {
         await this.state.closeChild(args.childSessionId)
         return result({ closed: true })
       }),
+      // The tool exists only with the cloud sessions on and `airc` found, so the tools of each other user stay the same.
+      ...(this.cloudState === 'on' ? [tool('cloud', obj({ status: opt(str({ maxLength: 40 })), limit: opt(int({ minimum: 1, maximum: CLOUD_LIST_LIMIT })) }),
+        async (args, api, callContext) => result(await this.cloudTool(args, callContext?.abortSignal ?? this.lifetime.signal)))] : []),
       // The limits of the schema are above the limits of an entry, so the tool gives the reason `tooLong` for a long text.
       ...(this.memory ? [tool('memory', obj({ action: str({ maxLength: 20 }), section: opt(str({ maxLength: 20 })),
         text: opt(str({ maxLength: 4000 })), match: opt(str({ maxLength: 4000 })), topic: opt(str({ maxLength: 1000 })) }),
@@ -918,6 +996,7 @@ export class PiMegachatService {
           this.keepAlive?.turnEnded(undefined, { kind })
           // A note that waited for the end of the turn goes out now.
           this.sessionNotes.check()
+          this.cloudWatch.turnEnded()
           this.reflection?.turnEnded()
         }
       }
@@ -960,6 +1039,7 @@ export class PiMegachatService {
     // An index that cannot open must not stop the chat. The log names the failure, and a change of the setting tries again.
     await this.sessionIndex?.apply(this.values).catch(error => logFailure('log.sessions', error))
     this.sessionNotes.apply(notesOn(this.values))
+    await this.applyCloud(this.values)
     // A stored answer of a pass gets its writes, and a due pass waits for the idle time after the start.
     this.reflection?.resume()
   }
@@ -1238,6 +1318,7 @@ export class PiMegachatService {
     this.stopper.stop()
     await this.morningReport?.close()
     await this.sessionNotes?.close()
+    await this.cloudWatch?.close()
     await this.reflection?.close()
     if (this.waitTimer !== undefined) this.workdayClock.clearTimeout(this.waitTimer)
     clearTimeout(this.reportTimer)

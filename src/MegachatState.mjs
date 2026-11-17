@@ -4,6 +4,7 @@ import { defineDoc, InboxDoc, LiveDoc } from '@earendil-works/pi-durable'
 import { MegachatError, message, requireCondition } from './messages.mjs'
 import { endOf, logRunEnd, logRunStart } from './RunLog.mjs'
 import { NOTE_KIND, noteMessage, pruneRecords } from './SessionNotes.mjs'
+import { pruneCloudRecords } from './CloudSessions.mjs'
 import { STOPPED_KIND } from './ReplyStream.mjs'
 import { forgottenTopic } from './MegachatMemory.mjs'
 import { REFLECTION_TURNS } from './MemoryReflection.mjs'
@@ -154,6 +155,19 @@ function digest(value) {
 }
 
 const plain = value => JSON.parse(JSON.stringify(value))
+
+/**
+ * Writes a note of the daemon with the [text] and the entry [data] into the conversation of [root] in the transaction
+ * [tx], only when the conversation is idle: no turn runs, no run is live and the inbox is empty. Pi Durable appends such
+ * a write at once and starts no run, so the note costs no model request. A note between a tool result and the next
+ * model request would end the context with a message of the assistant, so a note never lands inside a run. Gives true
+ * when the note went out.
+ */
+async function writeNote(state, tx, root, text, data, now) {
+  if (!text || state.current || (await tx.doc(LiveDoc, root.id)).run !== undefined || (await tx.doc(InboxDoc, root.id)).items.length > 0) return false
+  await root.submit(tx, { type: 'write', requestId: `notes:${randomUUID()}`, entry: { kind: NOTE_KIND, data, model: [noteMessage(text, now)] } })
+  return true
+}
 
 /** Keeps at most the last 64,000 characters of the output of [run]: the result of a long run is at its end. */
 function appendOutput(run, text) {
@@ -840,18 +854,55 @@ export class MegachatState {
       state.sessionNotes ??= { records: {} }
       const records = state.sessionNotes.records
       const { due, changes, text } = plan(plain(records))
-      const idle = !state.current && (await tx.doc(LiveDoc, this.root.id)).run === undefined
-        && (await tx.doc(InboxDoc, this.root.id)).items.length === 0
       let sent = 0
-      if (text && idle) {
-        await this.root.submit(tx, { type: 'write', requestId: `notes:${randomUUID()}`,
-          entry: { kind: NOTE_KIND, data: { type: 'sessions', count: due.length }, model: [noteMessage(text, now)] } })
+      if (await writeNote(state, tx, this.root, text, { type: 'sessions', count: due.length }, now)) {
         for (const { key, row } of due) records[key] = { status: row.status, since: row.statusSince, left: false, notedAt: now }
         sent = due.length
       }
       Object.assign(records, changes)
       pruneRecords(records, now)
       return sent
+    })
+  }
+
+  /**
+   * Starts ([on]) or ends the watch of the cloud sessions. The start keeps the time [now] in `cloudSessions.since`, so
+   * the first read of the watch is a base: a change before it gives no note. A start of a watch that has a start, as
+   * after a restart, keeps it. The end removes the start and keeps the records, so a later watch gives no second note.
+   * A state of an earlier build has no field.
+   */
+  async cloudWatch(on, now) {
+    const since = (await this.snapshot()).cloudSessions?.since
+    if (on ? Number.isFinite(since) : !Number.isFinite(since)) return
+    await this.change(state => {
+      state.cloudSessions ??= { since: null, records: {} }
+      state.cloudSessions.since = on ? now : null
+    })
+  }
+
+  /**
+   * Writes a note about the cloud sessions into the conversation, and the records of the cloud sessions, in one commit,
+   * as `sessionNote` does. [plan] gets the watch (`cloudSessions`, `{ since, records }`, the records keyed by
+   * `cloudKey`) and gives `{ due, changes, text }` (see `planCloudNotes`). The records of the sessions in [plan.due]
+   * change only when the note goes out. A read without a note and without a changed record commits nothing. Gives
+   * `{ sent, waiting }`: the count of the sessions in the note, and whether a note waits for the end of a turn.
+   */
+  async cloudNote(plan, now) {
+    const before = await this.snapshot()
+    const preview = plan(plain(before.cloudSessions ?? { since: null, records: {} }))
+    if (!Object.keys(preview.changes).length && (!preview.text || before.current)) return { sent: 0, waiting: Boolean(preview.text) }
+    return this.change(async (state, tx) => {
+      state.cloudSessions ??= { since: null, records: {} }
+      const records = state.cloudSessions.records
+      const { due, changes, text } = plan(plain(state.cloudSessions))
+      let sent = 0
+      if (await writeNote(state, tx, this.root, text, { type: 'cloud', count: due.length }, now)) {
+        for (const { key, session } of due) records[key] = { status: session.status, seenAt: now }
+        sent = due.length
+      }
+      Object.assign(records, changes)
+      pruneCloudRecords(records, now)
+      return { sent, waiting: Boolean(text) && !sent }
     })
   }
 

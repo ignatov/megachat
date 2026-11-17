@@ -311,6 +311,11 @@ export const SETTINGS = [
   { key: 'sessions.notes', default: 'off', applies: 'notes',
     validate: value => { const on = toBoolean(value); return on === undefined ? undefined : on ? 'on' : 'off' },
     allowed: () => ({ values: ['on', 'off'] }) },
+  // The watch of the cloud sessions through the plugin `airc` of Central. Off runs no `central plugins` and no `airc`.
+  // On also needs an active plugin `airc`: without it, the cloud sessions stay off (see `CloudSessions.mjs`).
+  { key: 'cloud.sessions', default: 'off', applies: 'cloud',
+    validate: value => { const on = toBoolean(value); return on === undefined ? undefined : on ? 'on' : 'off' },
+    allowed: () => ({ values: ['on', 'off'] }) },
 ]
 
 /** True when the notes about the waiting sessions are on: the setting `sessions.notes` and the consent `sessions.index`. */

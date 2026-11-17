@@ -404,6 +404,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `sessions.index` | `on` | | The index of your past sessions. `on` gives the consent to read the session files. It applies at once. A `settings.json` of v0.6.3 or older after its setup keeps `off`, because that setup stored no answer `off`. |
 | `sessions.days` | `180` | | The import takes the sessions with activity in this count of days. `0` takes all sessions. |
 | `sessions.notes` | `off` | | A short note in the chat when an agent session waits for you for a long time. It needs `sessions.index`. See [Notes about the sessions that wait](#notes-about-the-sessions-that-wait). |
+| `cloud.sessions` | `off` | | Your cloud sessions from the plugin `airc` of JetBrains Central: the tool `agents_cloud`, a note when a cloud session finished, failed or waits for you, and the cloud sessions in the morning report. See [The cloud sessions](#the-cloud-sessions). |
 
 The daemon adds the rules of `children.commit`, `children.push` and `children.daemonRestart` to the prompt of each
 child at its dispatch, also to a follow-up and to a continuation. With `ask`, the child does the step only when its task
@@ -609,9 +610,11 @@ With `report.morning` on, the main agent writes a report on each working day at 
 days from the previous working day up to yesterday, so the report of a Monday covers Friday and the weekend. It has
 three parts:
 
-- **Done:** the finished child tasks, the commits of each listed project, and the sessions of the period by project
-  when the index of the past sessions is on.
-- **Open:** the child tasks that still run or that failed, and the permission requests that wait.
+- **Done:** the finished child tasks, the commits of each listed project, the sessions of the period by project
+  when the index of the past sessions is on, and the cloud sessions that finished in the period when `cloud.sessions`
+  is on.
+- **Open:** the child tasks that still run or that failed, the permission requests that wait, and, with
+  `cloud.sessions` on, the cloud sessions that failed in the period or that run or wait for you now.
 - **Money:** the USD that the key of Megachat paid for the main agent and the pi children, from `spend.json`, and apart
   from it the API-equivalent cost of your other agent sessions from [tokprof](https://github.com/ignatov/tokprof),
   which the accounts of Claude Code, Codex and the other agents paid. This cost covers only the projects that Megachat
@@ -812,6 +815,36 @@ The daemon checks the sessions every minute while the notes are on, with the sam
 
 Megachat 0.3.0 opens a state with a note: it shows the note as a message of the assistant, and it keeps the records.
 
+## The cloud sessions
+
+With `cloud.sessions` on, Megachat also watches your cloud sessions: the sessions that Air, Air Web and the automations
+started in JCP Cloud with your Central login. Say "watch my cloud sessions" to turn it on. It is off by default.
+
+- **The plugin `airc`.** Megachat reads the cloud sessions with the plugin `airc` of JetBrains Central, which has the
+  Central login. Megachat looks for it with `central plugins` at the start of the daemon and at each change of
+  `cloud.sessions`: the plugin must be `active`, and its `manifest.json` gives the binary. Without the plugin, the
+  cloud sessions stay off, and the settings and the rules of the main agent say why. Run `central plugins` to check
+  the plugin.
+- **The tool.** Ask "what runs in the cloud?". The main agent calls `agents_cloud`, which runs
+  `airc sessions --limit 50`. It gives the ID, the name, the status, the comment of the status, the agent, the
+  repositories with the results branch, the last change and the task ID of each session. It can keep one status, and
+  it gives 20 sessions by default, at most 50.
+- **The notes.** The daemon reads the list every 2 minutes while the conversation is awake, and not while it sleeps
+  (see [The prompt cache](#the-prompt-cache)). When a cloud session changes to `FINISHED`, `USER_INPUT_REQUIRED`,
+  `ERROR` or `ABORTED`, Megachat writes a note in the chat, as for the sessions that wait (see
+  [Notes about the sessions that wait](#notes-about-the-sessions-that-wait)). The note gives the agent, the name, the
+  repository and the new status, the results branch of a finished session, and the comment of a failed one. A session
+  gets one note for each status. A change from before the start of the watch gives no note. A note costs no model
+  request, and when a turn runs, it waits for its end.
+- **The morning report.** The report gets the cloud sessions that finished or failed in the period, and the ones that
+  run or wait for you now. The cloud sessions do not make a period active: a period with only cloud sessions gives no
+  report.
+- **Privacy.** The names and the repositories of the cloud sessions go only into the conversation and into the data of
+  the report. The state keeps a hash of the ID and the status of each session. The log of the daemon gets the count of
+  the sessions of a note only.
+
+Megachat cannot start, cancel or continue a cloud session, and it shows no credits. Do these steps in Air or Air Web.
+
 ## Archive a session
 
 Ask the agent "archive these sessions" (for example, the idle sessions that you named), or "restore the session 7a2f". The
@@ -933,6 +966,7 @@ The session text is data for the agent, not instructions.
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |
+| `src/CloudSessions.mjs` | The cloud sessions: the detection of the plugin `airc`, the read of the list, the output of `agents_cloud`, the plan and the text of a cloud note, the part of the morning report and the timer of the reads. |
 | `src/DailySpend.mjs` | The count of the spend of the main agent on each day, and the cost of one request. |
 | `src/MegachatMemory.mjs` | The learned memory: the parse of `memory.md`, the checks of an entry, the address of an entry, the write with the second read, the versions, and the section of the prompt. |
 | `src/MemoryReflection.mjs` | The reflection of the learned memory: the transcript of a pass, the parse of the answer, the writes, and the schedule. `resources/reflection.md` holds the prompt of a pass. |

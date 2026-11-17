@@ -268,6 +268,36 @@ test('the data has the child runs, the permissions, the sessions and the spend o
   assert.equal(await collectReportData({ state, date: '2026-11-17', workday: UTC, spend, home: directory, environment: { PATH: join(directory, 'none') } }), null)
 })
 
+test('the data has the cloud sessions of the period when they are on, no part cloud when they are off, and unavailable for a failed read', async t => {
+  const directory = await temporary(t)
+  const spend = new DailySpend(undefined, { now: () => at('2026-11-16T09:00:00Z') })
+  const state = { workspaces: [], projects: [], megachatWorkspace: join(directory, 'workspace'), runs: {}, permissions: {},
+    inputs: { 'user-1': { admittedAt: at('2026-11-14T08:00:00Z') } } }
+  const cloudSession = (id, status, updatedAt, extra = {}) => ({ id, name: `Cloud ${id}`, status, agent: 'claude',
+    repositories: [{ host: 'github.com', organization: 'demo', repository: 'demo-app', branch: 'main', resultsBranch: `results-${id}` }], updatedAt, taskId: `task-${id}`, ...extra })
+  const sessions = [cloudSession('1', 'FINISHED', '2026-11-13T10:00:00Z'), cloudSession('2', 'ERROR', '2026-11-14T10:00:00Z', { statusComment: 'The container stopped.' }),
+    cloudSession('3', 'FINISHED', '2026-11-10T10:00:00Z'), cloudSession('4', 'USER_INPUT_REQUIRED', '2026-11-15T22:00:00Z'), cloudSession('5', 'RUNNING', '2026-11-16T08:00:00Z')]
+  const collect = (value, cloud) => collectReportData({ state: value, date: '2026-11-16', workday: UTC, spend, home: directory,
+    environment: { PATH: join(directory, 'none') }, now: at('2026-11-16T09:00:00Z'), cloud })
+  let reads = 0
+  const data = await collect(state, async () => { reads++; return sessions })
+  const entry = (item, statusComment = null) => ({ name: item.name, status: item.status, agent: 'claude', repository: 'demo/demo-app',
+    resultsBranch: item.repositories[0].resultsBranch, statusComment, updatedAt: item.updatedAt })
+  assert.deepEqual(data.cloud, { state: 'on', finished: [entry(sessions[0])], failed: [entry(sessions[1], 'The container stopped.')],
+    waiting: [entry(sessions[3])], running: [entry(sessions[4])] })
+  assert.equal((await collect(state)).cloud, undefined)
+  let failed
+  const lines = await logLines(t, async () => {
+    failed = await collect(state, async () => { throw Object.assign(new Error('no credential for Cloud 1'), { cloudReason: 'exit', exitCode: 1 }) })
+  })
+  assert.deepEqual(failed.cloud, { state: 'unavailable' })
+  assert.ok(lines.some(line => line.includes(message('log.cloud.failed', 'exit', 1))))
+  assert.ok(!lines.some(line => line.includes('no credential')))
+  // The cloud sessions do not make a period active: a period without a turn and a child run gives no data and no read.
+  assert.equal(await collect({ ...state, inputs: {} }, async () => { reads++; return sessions }), null)
+  assert.equal(reads, 1)
+})
+
 test('the commits of the period come from git log of each known project with a time limit', async t => {
   const directory = await temporary(t)
   const repository = join(directory, 'demo-app')
