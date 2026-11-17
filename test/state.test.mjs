@@ -773,7 +773,7 @@ test('at 5,000 delegated session addresses, the oldest go until 4,000 stay', { t
     }
   })
   await state.submit('turn', 'Work')
-  const run = await state.admitChild('child', { cwd: '/workspace', prompt: 'Work' })
+  const run = await state.admitChild('child', { cwd: '/workspace', prompt: 'Work' }, { showInProject: false })
   await state.transition(run.id, ['admitted'], { status: 'ready', generation: 'process', providerSessionId: 'new' })
   const sessions = Object.values((await state.snapshot()).serviceSessions)
   assert.equal(sessions.length, 4001)

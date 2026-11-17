@@ -119,7 +119,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': false, 'reply.suggestions': 'ghost', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false, 'chat.html': 'auto',
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
-    'children.timeoutMinutes': 240, 'children.showInProject': false,
+    'children.timeoutMinutes': 240, 'children.showInProject': true,
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'memory.reflection': true, 'sessions.index': 'on', 'sessions.days': 180, 'sessions.notes': 'off',
   })
   assert.equal(settings.entry('cache.ttl').source, 'environment')

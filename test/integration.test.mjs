@@ -27,7 +27,7 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions } = {}) {
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions, showInProject = false } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -43,6 +43,8 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
     args: [fileURLToPath(new URL('./fake-codex-app-server.mjs', import.meta.url)), await realpath(cwd)] }) }
   const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, histories,
     { reportRetryDelayMs: 20, suggestions })
+  // The tests of service sessions need `false`. `null` keeps the default of the setting.
+  if (showInProject !== null) await service.settings.set('children.showInProject', showInProject)
   await service.state.addWorkspace(cwd)
   const server = new DaemonServer(service)
   const daemon = new DaemonClient(await server.listen())
@@ -101,9 +103,8 @@ test('a Codex child requests permission and registers its service session', { ti
   assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: false })
 })
 
-test('a child in a project with children.showInProject registers no service session', { timeout: 10000 }, async t => {
-  const { daemon, cwd, service } = await fixture(t, 'done', 'codex')
-  await service.settings.set('children.showInProject', true, cwd)
+test('a child registers no service session with the default of children.showInProject', { timeout: 10000 }, async t => {
+  const { daemon, cwd, service } = await fixture(t, 'done', 'codex', { showInProject: null })
   const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true })
   t.after(() => viewer.connection.close())
   await viewer.connection.agent.request(methods.agent.session.prompt, {

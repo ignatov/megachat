@@ -1087,7 +1087,7 @@ export class MegachatState {
    * Admits a child run. A new task without a named agent gets [defaultAgent], the setting `children.agent`. The digest
    * holds only [args], so a repeated request still finds its run after a change of the setting.
    */
-  async admitChild(requestId, args, { defaultAgent = 'claude', showInProject = false } = {}) {
+  async admitChild(requestId, args, { defaultAgent = 'claude', showInProject = true } = {}) {
     requireCondition(typeof args.prompt === 'string' && args.prompt.length > 0 && args.prompt.length <= 64000)
     requireCondition(args.title === undefined || typeof args.title === 'string' && args.title.trim().length > 0 && args.title.length <= 60)
     const hash = digest(args)
