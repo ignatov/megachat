@@ -120,6 +120,7 @@ function settingsRules(values, onboarding, rules, notice, projects = [], offers 
     message('instructions.projects', PROJECT_SETTINGS.join(', ')),
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? onboardingRules(values, rules) : message('instructions.settings'),
+    message('instructions.update'),
     ...(offers.length ? [rules.offers.head, message('instructions.offers.open'),
       ...offers.map(({ key, value, trigger }) => `${key} (${value}): ${trigger}`)] : []),
     message('instructions.notes', notesOn(values) ? 'on' : 'off'),
@@ -306,6 +307,8 @@ export class PiMegachatService {
   }
 
   constructor(harness, root, state, sessionProviders) {
+    // The check of the update. The daemon sets it after its start (see the tool `agents_update`).
+    this.updater = undefined
     this.harness = harness
     this.root = root
     this.state = state
@@ -611,6 +614,8 @@ export class PiMegachatService {
         return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces, runs,
           ...(this.suggestions !== 'off' ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
+      // The check and the request of the user to update (see the capability `update`).
+      tool('update', obj({ action: str({ maxLength: 10 }), whenIdle: opt(bool()) }), async args => result(await this.updateTool(args))),
       tool('settings', obj({ action: str(), key: opt(str({ maxLength: 100 })),
         value: opt(union([str({ maxLength: 2000 }), num(), bool(), arr(str({ maxLength: 200 }), { maxItems: 50 })])),
         status: opt(str({ maxLength: 20 })), project: opt(str({ maxLength: 4096 })) }), async (args, api) => result(await this.settingsTool(args, api?.taskId))),
@@ -965,20 +970,49 @@ export class PiMegachatService {
   }
 
   /**
-   * True when the automatic update can stop the daemon at the time [now] (see the capability `update`): no turn runs, no
-   * input and no morning report waits, each child run is in a terminal state, no permission request and no stop request
-   * is open, and the time is right (see `updateTime`). The check only reads the state.
+   * What runs or waits and so blocks a stop for an update (see the capability `update`), as a list of `{ kind, ... }`:
+   * `turn` (with the kind of the turn), `input` (a message waits for its turn), `morningReport`, `child` (a run that is
+   * not in a terminal state), `permission`, `stopRequest` and `queue`. The list is empty when nothing runs or waits.
+   * The check only reads the state.
    */
-  async updateReady(now = this.workdayClock.now()) {
-    if (this.pendingUserInputs > 0 || this.stopper.view().requests.length > 0) return false
+  async updateWork() {
+    const work = []
     const snapshot = await this.state.snapshot()
-    if (snapshot.current || snapshot.morningReport?.pending || snapshot.morningReport?.running) return false
-    if (Object.values(snapshot.runs).some(run => !terminalStates.has(run.status))) return false
-    if (Object.values(snapshot.permissions).some(permission => permissionOpen(snapshot, permission))) return false
+    if (snapshot.current) work.push({ kind: 'turn', turn: snapshot.current.kind })
+    if (this.pendingUserInputs > 0) work.push({ kind: 'input', count: this.pendingUserInputs })
+    if (snapshot.morningReport?.pending || snapshot.morningReport?.running) work.push({ kind: 'morningReport' })
+    for (const run of Object.values(snapshot.runs)) {
+      if (!terminalStates.has(run.status)) work.push({ kind: 'child', runId: run.id, agent: run.agent ?? 'claude', title: run.title, status: run.status })
+    }
+    if (Object.values(snapshot.permissions).some(permission => permissionOpen(snapshot, permission))) work.push({ kind: 'permission' })
+    if (this.stopper.view().requests.length > 0) work.push({ kind: 'stopRequest' })
     const inbox = await this.harness.snapshot(InboxDoc, this.root.id, context)
     const live = await this.harness.snapshot(LiveDoc, this.root.id, context)
-    if ((inbox?.items?.length ?? 0) > 0 || live?.run !== undefined) return false
+    if ((inbox?.items?.length ?? 0) > 0 || live?.run !== undefined) work.push({ kind: 'queue' })
+    return work
+  }
+
+  /**
+   * True when the automatic update can stop the daemon at the time [now]: no work (see [updateWork]), and the time is
+   * right (see `updateTime`).
+   */
+  async updateReady(now = this.workdayClock.now()) {
+    if ((await this.updateWork()).length > 0) return false
     return updateTime(this.settings.values(), now, this.userIdleSince)
+  }
+
+  /**
+   * The tool `agents_update`. `check` asks the repository for the highest release now. `apply` makes the check and
+   * then asks the daemon to stop for the update (see `UpdateCheck.apply`). Only a turn of the user can apply: the
+   * request of the user is the approval, and no event can give it.
+   */
+  async updateTool(args) {
+    requireCondition(['check', 'apply'].includes(args.action))
+    requireCondition(this.updater, 'unavailable')
+    if (args.action === 'check') return { ...await this.updater.checkNow(), autoUpdate: this.settings.values()['update.auto'] }
+    requireCondition((await this.state.snapshot()).current?.kind === 'user', 'updateEvent')
+    const outcome = await this.updater.apply({ whenIdle: args.whenIdle === true })
+    return { ...outcome, instruction: message(`update.apply.${outcome.reason ?? 'started'}`, outcome.version, outcome.latest) }
   }
 
   /**

@@ -862,7 +862,7 @@ export class MegachatState {
    * field: it gets the version with no message. Gives `{ notice, failed }`: the new message and the release of a stop
    * without an update, or `null`.
    */
-  async recordVersion(version) {
+  async recordVersion(version, { autoOn = false } = {}) {
     return this.change(state => {
       if (!state.update) {
         state.update = { version, stop: null, failed: null, notice: null }
@@ -872,7 +872,7 @@ export class MegachatState {
       let notice = null
       let failed = null
       if (higherVersion(version, update.version)) {
-        notice = { from: baseVersion(update.version), to: baseVersion(version), notes: null }
+        notice = { from: baseVersion(update.version), to: baseVersion(version), notes: null, ...(autoOn ? { autoOn: true } : {}) }
         update.notice = notice
         update.failed = null
       }

@@ -240,6 +240,11 @@ These checks need the author by hand. Each one names its OpenSpec change.
   changes, so `docs/air-contract.md` does not change.
 - `first-start-feedback` (task 5.9): record the results of 5.3 to 5.7 here and in `README.md`, part "The start in the
   IDE".
+- `update-on-request` (task 3.2): on a real IDE build with the Air support, use a copy of the npx entry and a temporary
+  new tag in `MEGACHAT_RELEASE_REPOSITORY` (the entry needs it in its `env`). Write "update yourself" in the chat. Record
+  whether the reply comes whole before the daemon stops, whether Air starts the agent again at the next message, how long
+  the install takes after the move of `_npx/<hash>`, and whether the message "Megachat updated from" comes with the line
+  about the automatic update. Also ask with a child task that runs: the agent must name the task and not stop.
 - `automatic-update` (task 6.2): on a real IDE build with the Air support, use a copy of the npx entry, a temporary
   state, and a repository with a new temporary tag in `MEGACHAT_RELEASE_REPOSITORY` (the entry gets the variable in
   its `env`). Set the working day so that the conversation sleeps. Let the daemon stop itself for the update. Record

@@ -5,11 +5,11 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import test from 'node:test'
@@ -24,8 +24,8 @@ import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { message } from '../src/messages.mjs'
 import {
-  baseVersion, CHECK_INTERVAL_MS, CONDITION_INTERVAL_MS, fetchReleaseNotes, higherVersion, highestRelease, listRelease, NOTES_LINES,
-  npxCopy, recordVersion, RETRY_INTERVAL_MS, UpdateCheck, updateNoteText, updateTime,
+  APPLY_POLL_MS, baseVersion, CHECK_INTERVAL_MS, CONDITION_INTERVAL_MS, fetchReleaseNotes, higherVersion, highestRelease, listRelease, NOTES_LINES,
+  npxCopy, recordVersion, removeRetired, retireCopy, RETRY_INTERVAL_MS, UpdateCheck, updateNoteText, updateTime,
 } from '../src/MegachatUpdate.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { NOTE_KIND } from '../src/SessionNotes.mjs'
@@ -92,9 +92,9 @@ const text = entry => entry.model?.map(item => typeof item.content === 'string' 
   : item.content.map(part => part.text ?? '').join('')).join('\n') ?? ''
 
 /** An update check with a fake clock. [ready] decides the conditions. The stops go to `stops`. */
-function check({ version = '0.4.0', selfUpdating = true, release, ready = async () => true, failed = async () => null, values = { 'update.auto': true }, clock = fakeClock('2026-11-11T23:00:00Z') } = {}) {
+function check({ version = '0.4.0', selfUpdating = true, kind, work, release, ready = async () => true, failed = async () => null, values = { 'update.auto': true }, clock = fakeClock('2026-11-11T23:00:00Z') } = {}) {
   const stops = []
-  const update = new UpdateCheck({ version, selfUpdating, release, ready, failed, values: () => values, clock,
+  const update = new UpdateCheck({ version, selfUpdating, kind, ...(work ? { work } : {}), release, ready, failed, values: () => values, clock,
     stop: async (from, to) => { stops.push({ from, to, at: new Date(clock.now()).toISOString() }) } })
   const advance = ms => clock.advance(ms, () => update.running)
   return { update, stops, clock, advance }
@@ -304,7 +304,14 @@ test('a daemon of a copy of npx stops itself for a new release, and the next dae
   assert.deepEqual(events.filter(event => event.type === 'update'), [{ type: 'update', value: { from: version, to: '99.0.0' } }])
   assert.match(first.log, new RegExp(`Megachat stops for the update from ${version.replace(/\./g, '\\.')} to 99\\.0\\.0\\.`))
   assert.equal(existsSync(join(home, 'daemon', 'connection.json')), false)
-  // The copy gave the old version again, as a stale cache of npx would. The daemon keeps running and keeps the notice.
+  // The stop moved the copy of the entry away, so npx cannot reuse it. Only that directory moved.
+  const entry = dirname(dirname(copy))
+  assert.equal(existsSync(copy), false)
+  const retired = (await readdir(dirname(entry))).filter(name => name.startsWith('0123abcd.megachat-old-'))
+  assert.equal(retired.length, 1)
+  assert.deepEqual((await readdir(dirname(entry))).filter(name => !name.startsWith('0123abcd')), [])
+  // An old npm gives the old copy again, as a stale cache would: the copy comes back. The daemon keeps running and keeps the notice.
+  await rename(join(dirname(entry), retired[0]), entry)
   const second = startDaemon(t, copy, home, environment)
   const again = await connected(home)
   await delay(3500)
@@ -313,6 +320,33 @@ test('a daemon of a copy of npx stops itself for a new release, and the next dae
   assert.match(second.log, /The automatic update to 99\.0\.0 did not install it/)
   await again.json('/shutdown', {})
   assert.equal((await second.exited)[0], 0)
+})
+
+test('retireCopy moves only a copy of npx that holds the package megachat, and removeRetired removes only its own old directories', async t => {
+  const { copy } = await npxPackage(t)
+  const entry = dirname(dirname(copy))
+  const parent = dirname(entry)
+  await mkdir(join(parent, 'other', 'node_modules', 'megachat'), { recursive: true })
+  await writeFile(join(parent, 'other', 'node_modules', 'megachat', 'package.json'), '{"name":"megachat"}')
+  // A checkout, a path outside `_npx` and a copy with another package name stay where they are.
+  assert.equal(retireCopy(REPOSITORY), undefined)
+  await mkdir(join(dirname(parent), 'plain', 'node_modules', 'megachat'), { recursive: true })
+  await writeFile(join(dirname(parent), 'plain', 'node_modules', 'megachat', 'package.json'), '{"name":"megachat"}')
+  assert.equal(retireCopy(join(dirname(parent), 'plain', 'node_modules', 'megachat')), undefined)
+  await writeFile(join(copy, 'package.json'), '{"name":"another"}')
+  assert.equal(retireCopy(copy), undefined)
+  await writeFile(join(copy, 'package.json'), '{"name":"megachat"}')
+  const moved = retireCopy(copy, 1000)
+  assert.equal(moved, join(parent, '0123abcd.megachat-old-1000'))
+  assert.equal(existsSync(copy), false)
+  assert.equal(existsSync(join(parent, 'other')), true)
+  // A later copy of the same entry, an old directory of this entry and a directory of another entry.
+  await mkdir(join(parent, '0123abcd.megachat-old-2000'))
+  await mkdir(join(parent, '9999.megachat-old-1000'))
+  await mkdir(entry, { recursive: true })
+  assert.equal(await removeRetired(REPOSITORY), 0, 'a checkout gives no removal')
+  assert.equal(await removeRetired(copy), 2)
+  assert.deepEqual((await readdir(parent)).sort(), ['0123abcd', '9999.megachat-old-1000', 'other'])
 })
 
 test('a stop without an update allows a stop only for a higher release', async () => {
@@ -504,4 +538,117 @@ test('without an answer of the server, the message gives the address of the rele
   assert.equal(lines.filter(line => line.includes('could not get the release notes of 0.5.0')).length, 1)
   const note = await noteEntry(entries)
   assert.equal(text(note), 'Megachat updated from 0.4.0 to 0.5.0.\nMegachat could not get the release notes. The notes are at https://github.com/ignatov/megachat/releases/tag/v0.5.0')
+})
+
+test('a check on demand finds a release before the next timer, and the summary names the failure of a failed check', async () => {
+  let latest = '0.4.0'
+  let broken = false
+  const { update, advance } = check({ selfUpdating: false, release: async () => { if (broken) throw Object.assign(new Error('x'), { code: 'timeout' }); return latest } })
+  update.start()
+  await advance(0)
+  assert.equal(update.status(), undefined)
+  latest = '0.5.0'
+  const found = await update.checkNow()
+  assert.deepEqual([found.version, found.latest, found.available, found.kind], ['0.4.0', '0.5.0', '0.5.0', 'other'])
+  assert.deepEqual(update.status(), { available: '0.5.0', notice: 'A new release is available: 0.4.0 → 0.5.0' })
+  broken = true
+  const failed = await update.checkNow()
+  assert.equal(failed.error, 'timeout')
+  update.close()
+})
+
+test('a check that the sleep of the computer delayed runs when the computer wakes, by the wall clock', async () => {
+  let latest = '0.4.0'
+  const { update, advance, clock } = check({ selfUpdating: false, release: async () => latest })
+  update.start()
+  await advance(0)
+  latest = '0.5.0'
+  // The timers of the computer do not run in a sleep of 30 hours. The next tick finds that the check is due.
+  clock.sleep(30 * 3600000)
+  assert.equal(update.status(), undefined)
+  await advance(1)
+  assert.equal(update.status()?.available, '0.5.0')
+  update.close()
+})
+
+test('apply in a copy of npx stops when the work is over, waits for busy work, and the turn of the request is no work', async () => {
+  let work = [{ kind: 'turn', turn: 'user' }]
+  const { update, stops, advance } = check({ release: async () => '0.5.0', work: async () => work, ready: async () => false, values: { 'update.auto': false } })
+  // The turn of the request runs: the stop waits for its end, with `update.auto` off.
+  const started = await update.apply()
+  assert.deepEqual([started.applied, started.scheduled, started.available], [true, true, '0.5.0'])
+  await advance(APPLY_POLL_MS * 3)
+  assert.equal(stops.length, 0)
+  work = []
+  await advance(APPLY_POLL_MS)
+  assert.deepEqual(stops.map(({ from, to }) => [from, to]), [['0.4.0', '0.5.0']])
+  update.close()
+  // A child that runs refuses the request, and `whenIdle` accepts it and stops right after the child.
+  work = [{ kind: 'turn', turn: 'user' }, { kind: 'child', runId: 'r1', agent: 'claude', title: 'Build', status: 'running' }]
+  const busy = check({ release: async () => '0.5.0', work: async () => work, ready: async () => false })
+  const refused = await busy.update.apply()
+  assert.deepEqual([refused.applied, refused.reason, refused.work.map(item => item.kind)], [false, 'busy', ['child']])
+  const waiting = await busy.update.apply({ whenIdle: true })
+  assert.deepEqual([waiting.applied, waiting.work.map(item => item.kind)], [true, ['child']])
+  await busy.advance(APPLY_POLL_MS * 5)
+  assert.equal(busy.stops.length, 0)
+  work = []
+  await busy.advance(APPLY_POLL_MS)
+  assert.equal(busy.stops.length, 1)
+  busy.update.close()
+})
+
+test('apply says current, a failed check, a checkout and another copy, and stops no daemon', async () => {
+  const cases = [
+    [{ release: async () => '0.4.0' }, 'current'],
+    [{ release: async () => { throw Object.assign(new Error('x'), { code: 'exit128' }) } }, 'checkFailed'],
+    [{ release: async () => '0.5.0', selfUpdating: false, kind: 'checkout' }, 'checkout'],
+    [{ release: async () => '0.5.0', selfUpdating: false, kind: 'other' }, 'other'],
+  ]
+  for (const [options, reason] of cases) {
+    const { update, stops, advance } = check(options)
+    const outcome = await update.apply()
+    assert.deepEqual([outcome.applied, outcome.reason], [false, reason])
+    await advance(CONDITION_INTERVAL_MS * 2)
+    assert.equal(stops.length, 0, reason)
+    update.close()
+  }
+})
+
+test('the tool agents_update checks in each turn, applies only in a turn of the user, and its texts name no @latest', async t => {
+  const { service } = await open(t)
+  const tool = service.extension().tools.find(item => item.name === 'agents_update')
+  await assert.rejects(tool.execute({ action: 'check' }), { code: 'unavailable' })
+  const stops = []
+  service.updater = new UpdateCheck({ version: '0.4.0', selfUpdating: false, kind: 'checkout', release: async () => '0.5.0', ready: async () => false,
+    failed: async () => null, values: () => ({ 'update.auto': true }), stop: async (from, to) => { stops.push([from, to]) } })
+  t.after(() => service.updater.close())
+  const checked = JSON.parse((await tool.execute({ action: 'check' })).output[0].text)
+  assert.deepEqual([checked.latest, checked.available, checked.kind, checked.autoUpdate], ['0.5.0', '0.5.0', 'checkout', true])
+  // An automatic turn cannot apply, and the request does not even check.
+  for (const kind of ['report', 'event', 'morning']) {
+    await service.state.change(state => { state.current = { id: kind, requestId: kind, cancelling: false, kind } })
+    await assert.rejects(tool.execute({ action: 'apply' }), { code: 'updateEvent' })
+    await service.state.change(state => { state.current = null })
+  }
+  await service.state.change(state => { state.current = { id: 'u', requestId: 'u', cancelling: false, kind: 'user' } })
+  const applied = JSON.parse((await tool.execute({ action: 'apply' })).output[0].text)
+  assert.equal(applied.reason, 'checkout')
+  assert.match(applied.instruction, /git pull/)
+  assert.match(applied.instruction, /node src\/main\.mjs stop/)
+  assert.deepEqual(stops, [])
+  for (const key of ['update.apply.started', 'update.apply.current', 'update.apply.checkFailed', 'update.apply.checkout', 'update.apply.other', 'update.apply.busy', 'instructions.update', 'tool.update'])
+    assert.doesNotMatch(message(key, '0.4.0', '0.5.0'), /@latest/, key)
+  assert.match(message('instructions.update'), /github:ignatov\/megachat#semver:x/)
+  assert.ok((await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render().includes(message('instructions.update')))
+})
+
+test('the note after an update tells that the automatic update is on, within the limit of lines', () => {
+  const notes = [{ version: '0.5.0', text: Array.from({ length: 9 }, (_, index) => `Line ${index + 1}`).join('\n') }]
+  const plain = updateNoteText({ from: '0.4.0', to: '0.5.0', notes })
+  const withNote = updateNoteText({ from: '0.4.0', to: '0.5.0', notes, autoOn: true })
+  assert.ok(!plain.includes(message('update.autoOn')))
+  assert.ok(withNote.endsWith(message('update.autoOn')))
+  assert.ok(withNote.split('\n').length <= NOTES_LINES)
+  assert.match(updateNoteText({ from: '0.4.0', to: '0.5.0', notes: null, autoOn: true }), /ask me to set update\.auto to false/)
 })

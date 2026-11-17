@@ -99,7 +99,7 @@ Alternatives:
 
 ### 3. The setting `update.auto`
 
-A global setting in `settings.json` (see the capability `settings`): boolean, default `false`, no variable, not a
+A global setting in `settings.json` (see the capability `settings`): boolean, default `true` (see the change `update-on-request`), no variable, not a
 project setting. It applies at the next check of the conditions, so it gets the new text
 `settings.applies.update`: "At once. The next check of the update uses the new value." The default is `false`, because
 the author approved the update as opt-in: a stop of the daemon needs `update.auto=true` from the user. With the

@@ -227,8 +227,8 @@ export const SETTINGS = [
     },
     allowed: () => ({ minimum: 0, maximum: 1440 }) },
   { key: 'report.morning', default: false, applies: 'nextTurn', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
-  // The approval of the user for the automatic stop of a copy of npx for a new release (see `MegachatUpdate.mjs`).
-  { key: 'update.auto', default: false, applies: 'update', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
+  // The automatic stop of a copy of npx for a new release (see `MegachatUpdate.mjs`). It is on by default. A stored `false` keeps it off.
+  { key: 'update.auto', default: true, applies: 'update', validate: toBoolean, allowed: () => ({ values: [true, false] }) },
   { key: 'reply.suggestions', variable: SUGGESTIONS_VARIABLE, default: 'ghost', applies: 'nextTurn',
     fromEnvironment: text => text === '1' ? 'reply' : text === '0' ? 'off' : choice(SUGGESTION_MODES)(text.toLowerCase()),
     validate: suggestionMode, allowed: () => ({ values: SUGGESTION_MODES }) },
@@ -339,7 +339,12 @@ export function environmentSetting(key, environment = process.env) {
   return environmentValue(definition, environment) ?? definition.default
 }
 
-const emptySettings = () => ({ schema: SCHEMA, onboarding: 'pending', defaults: DEFAULTS, values: {} })
+/**
+ * The key `migrations` of `settings.json` records the one-time changes that this file got. `updateAuto` is the change of
+ * v0.13.0 that turns the automatic update on for each earlier file, also one that stores `false`: a later choice of the
+ * user is kept. A new file starts with the record, so it needs no change.
+ */
+const emptySettings = () => ({ schema: SCHEMA, onboarding: 'pending', defaults: DEFAULTS, migrations: { updateAuto: true }, values: {} })
 /** True when [data] is a file of v0.6.3 or older after its setup, so it keeps the earlier defaults. */
 const earlierSetup = data => !Object.hasOwn(data, 'defaults') && data.onboarding !== 'pending'
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -364,8 +369,17 @@ function invalidReason(data) {
  * read it. Without a path, the settings stay in memory, for a test.
  */
 export class SettingsStore {
-  /** A file that the daemon cannot read stays next to the path under another name, and the defaults apply. */
+  /**
+   * Opens the file and makes the one-time changes of [migrate]. A file that the daemon cannot read stays next to the
+   * path under another name, and the defaults apply.
+   */
   static async open(path) {
+    const store = await SettingsStore.read(path)
+    store.migrate()
+    return store
+  }
+
+  static async read(path) {
     if (!path) return new SettingsStore(undefined, emptySettings())
     let text
     try { text = await readFile(path, 'utf8') }
@@ -391,6 +405,20 @@ export class SettingsStore {
     this.path = path
     this.data = data
     this.queue = Promise.resolve()
+    /** True when the open of this file turned the automatic update on (see [emptySettings]). */
+    this.migratedUpdateAuto = false
+  }
+
+  /**
+   * The one-time changes, in memory. A file without the record `migrations.updateAuto` loses a stored value other than
+   * `true` of `update.auto`, so the default applies. The next write of the file stores the record, so a later choice of
+   * the user stays. A start that no write follows makes the same change again, which is the same result.
+   */
+  migrate() {
+    if (this.data.migrations?.updateAuto === true) return
+    this.migratedUpdateAuto = true
+    if (this.data.values['update.auto'] !== true) delete this.data.values['update.auto']
+    this.data.migrations = { ...(isRecord(this.data.migrations) ? this.data.migrations : {}), updateAuto: true }
   }
 
   get onboarding() { return this.data.onboarding }
@@ -440,6 +468,9 @@ export class MegachatSettings {
   }
 
   get onboarding() { return this.store.onboarding }
+
+  /** True when the open of `settings.json` turned the automatic update on for an earlier file. */
+  get migratedUpdateAuto() { return this.store.migratedUpdateAuto }
 
   /** The context of a validation: the models, and the effective model of the main agent. */
   context() {

@@ -116,7 +116,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'coordinator.model': 'anthropic/claude-opus-5-5', 'coordinator.thinking': 'low', 'keepAlive.enabled': true, 'keepAlive.hours': 6,
     'cache.ttl': '5m', 'compaction.tokens': 100000,
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
-    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': false, 'reply.suggestions': 'ghost', 'reply.language': 'auto', 'reply.length': 'short',
+    'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': true, 'reply.suggestions': 'ghost', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false, 'chat.html': 'auto',
     'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'children.timeoutMinutes': 240, 'children.showInProject': true,
@@ -300,7 +300,7 @@ test('no file means a pending onboarding, and each answer goes at once to a priv
   // The first start writes no file. The first answer writes it.
   assert.deepEqual(await readdir(directory), [])
   await first.tool({ action: 'set', key: 'reply.length', value: 'detailed' })
-  assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', defaults: 2, values: { 'reply.length': 'detailed' } })
+  assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', defaults: 2, migrations: { updateAuto: true }, values: { 'reply.length': 'detailed' } })
   assert.equal((await stat(join(directory, 'settings.json'))).mode & 0o777, 0o600)
   await first.tool({ action: 'set', key: 'reply.language', value: 'Deutsch' })
   await first.tool({ action: 'set', key: 'keepAlive.hours', value: 2 })
@@ -568,7 +568,7 @@ test('a file that the daemon cannot read stays under another name, and the defau
     assert.equal(store.onboarding, 'pending')
     assert.equal(store.stored('reply.length'), undefined)
     // The file can hold an answer off of the user, so the new file keeps the index off.
-    assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', defaults: 2, values: { 'sessions.index': 'off' } })
+    assert.deepEqual(await stored(directory), { schema: 1, onboarding: 'pending', defaults: 2, migrations: { updateAuto: true }, values: { 'sessions.index': 'off' } })
     const files = (await readdir(directory)).filter(file => file !== 'settings.json')
     assert.equal(files.length, 1)
     assert.match(files[0], /^settings\.json\.unreadable-\d{4}-\d\d-\d\dT[\d-]+Z$/)
@@ -604,7 +604,7 @@ test('the index is on by default, and a file of v0.6.3 or older after its setup 
     assert.deepEqual(earlier.state, ['off', 'default', 'off'])
     assert.equal(await readFile(join(directory, 'settings.json'), 'utf8'), text, 'The open does not change the file')
     await earlier.settings.set('reply.language', 'Deutsch')
-    assert.deepEqual(await stored(directory), { schema: 1, onboarding, defaults: 2,
+    assert.deepEqual(await stored(directory), { schema: 1, onboarding, defaults: 2, migrations: { updateAuto: true },
       values: { 'reply.length': 'normal', 'sessions.index': 'off', 'reply.language': 'Deutsch' } })
     const later = await index(directory)
     assert.deepEqual(later.state, ['off', 'setting', 'on'])
@@ -621,7 +621,7 @@ test('the index is on by default, and a file of v0.6.3 or older after its setup 
   const before = await index(pending)
   assert.deepEqual(before.state, ['on', 'default', 'on'])
   await before.settings.setOnboarding('done')
-  assert.deepEqual(await stored(pending), { schema: 1, onboarding: 'done', defaults: 2, values: {} })
+  assert.deepEqual(await stored(pending), { schema: 1, onboarding: 'done', defaults: 2, migrations: { updateAuto: true }, values: {} })
   assert.deepEqual((await index(pending)).state, ['on', 'default', 'on'])
 })
 
@@ -714,15 +714,46 @@ test('each setting of the children, the projects and the spend stays across a re
   }
 })
 
-test('update.auto is false by default, and a change goes to settings.json and applies at the next check of the update', async t => {
+test('update.auto is true by default, and a change goes to settings.json and applies at the next check of the update', async t => {
   const directory = await temporary(t)
   const { tool } = await open(t, directory)
   const entry = (await tool({ action: 'get' })).settings.find(item => item.key === 'update.auto')
-  assert.equal(entry.value, false)
+  assert.equal(entry.value, true)
   assert.equal(entry.source, 'default')
   assert.deepEqual(entry.values, [true, false])
-  const changed = await tool({ action: 'set', key: 'update.auto', value: true })
-  assert.equal(changed.value, true)
+  const changed = await tool({ action: 'set', key: 'update.auto', value: false })
+  assert.equal(changed.value, false)
   assert.equal(changed.applies, 'At once. The next check of the update uses the new value.')
-  assert.equal((await stored(directory)).values['update.auto'], true)
+  assert.equal((await stored(directory)).values['update.auto'], false)
+})
+
+test('the migration turns update.auto on once for an earlier file that stores false, and a later false stays', async t => {
+  const directory = await temporary(t)
+  const value = async () => (await (await open(t, directory)).tool({ action: 'get' })).settings.find(item => item.key === 'update.auto')
+  // An earlier file with `false`, and one with no value, and one with `true`: all give the default `true`.
+  await seed(directory, { 'update.auto': false, 'reply.length': 'detailed' })
+  const text = await readFile(join(directory, 'settings.json'), 'utf8')
+  assert.deepEqual([(await value()).value, (await value()).source], [true, 'default'])
+  assert.equal(await readFile(join(directory, 'settings.json'), 'utf8'), text, 'The open does not change the file')
+  // The user sets `false` after the migration: the file holds the record, and each later start keeps `false`.
+  const first = await open(t, directory)
+  await first.tool({ action: 'set', key: 'update.auto', value: false })
+  assert.deepEqual((await stored(directory)).migrations, { updateAuto: true })
+  await first.close()
+  for (let start = 0; start < 2; start++) assert.deepEqual([(await value()).value, (await value()).source], [false, 'setting'])
+  // A file with the record keeps a stored `false`, also one that another build wrote.
+  await seed(directory, { 'update.auto': false })
+  const marked = { ...(await stored(directory)), migrations: { updateAuto: true } }
+  await writeFile(join(directory, 'settings.json'), JSON.stringify(marked), { mode: 0o600 })
+  assert.equal((await value()).value, false)
+  // A stored `true` and a variable-free new file: `true`. A new file starts with the record.
+  const fresh = await temporary(t)
+  const one = await open(t, fresh)
+  assert.equal((await one.tool({ action: 'get' })).settings.find(item => item.key === 'update.auto').value, true)
+  await one.tool({ action: 'set', key: 'reply.length', value: 'normal' })
+  assert.deepEqual((await stored(fresh)).migrations, { updateAuto: true })
+  await one.tool({ action: 'set', key: 'update.auto', value: false })
+  await one.close()
+  const again = await open(t, fresh)
+  assert.equal((await again.tool({ action: 'get' })).settings.find(item => item.key === 'update.auto').value, false)
 })

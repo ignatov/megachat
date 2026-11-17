@@ -253,8 +253,9 @@ older `models` field and sends no `session/set_model`, so Megachat gives neither
 
 This is no extension of Megachat, and no ACP message changes. It describes what Megachat expects from Air.
 
-- With the setting `update.auto` on (the default is off), the daemon of a copy of the install line stops itself for a new release when no turn,
-  no child task and no request waits. Each `acp` process then writes one line to its error output, "The Megachat
+- With the setting `update.auto` on (the default), or at the request of the user to the main agent (the tool
+  `agents_update`, after the reply of that turn), the daemon of a copy of the install line stops itself for a new
+  release when no turn, no child task and no request waits. Each `acp` process then writes one line to its error output, "The Megachat
   daemon stopped for the update from <old> to <new>. The next start of Megachat installs it.", and exits with the code
   0. An `acp` process without an open view exits within about 1 minute after its daemon is gone, with the line "The
   Megachat daemon is gone".

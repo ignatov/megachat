@@ -1,4 +1,7 @@
 import { spawn } from 'node:child_process'
+import { readdirSync, readFileSync, renameSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import { logEvent, logFailure, message } from './messages.mjs'
 import { ENTRY_GIT_VARIABLES } from './npmEnvironment.mjs'
 import { gitCheckout } from './sourceBuildId.mjs'
@@ -33,6 +36,13 @@ export function startDelay(environment = process.env) {
 /** The time of a check after a successful check, and after a failed check. */
 export const CHECK_INTERVAL_MS = 24 * 3600000
 export const RETRY_INTERVAL_MS = 3600000
+/**
+ * The longest time of one timer of a check. A timer runs in the time that the computer is awake, so after a sleep of
+ * the computer a long timer ends late. The timer of a check ends each hour and compares the wall clock with the due time.
+ */
+export const CHECK_TICK_MS = 3600000
+/** The time between two checks of the conditions of a stop that the user asked for. */
+export const APPLY_POLL_MS = 2000
 /** The time between two checks of the conditions of the stop while an update waits. */
 export const CONDITION_INTERVAL_MS = 10 * 60000
 /** The hard time limit of `git ls-remote`. The variables of git do not end a proxy that never answers `CONNECT`. */
@@ -125,6 +135,48 @@ export function npxCopy(root) {
   return /[\\/]_npx[\\/][^\\/]+[\\/]node_modules[\\/]megachat$/.test(path) && !gitCheckout(path)
 }
 
+/** The kind of the package root [root]: `npx` for a copy of npx (see [npxCopy]), `checkout` for a git checkout, else `other`. */
+export const installKind = root => npxCopy(root) ? 'npx' : gitCheckout(root) ? 'checkout' : 'other'
+
+/** The part of the name of a retired copy of npx. */
+const RETIRED = '.megachat-old-'
+
+/**
+ * Moves the copy of npx of [root] away, so the next start through npx finds no copy of this entry and installs the
+ * highest release. npx keeps the copy of a spec in `_npx/<hash>`, and the hash comes from the text of the spec only. The
+ * function changes only that one directory: it does nothing unless [root] is a copy of npx whose directory holds the
+ * package `megachat`. It renames the directory to `<hash>.megachat-old-<time>`, and it returns the new path or `undefined`.
+ * The rename keeps the files that a running process loads late. [removeRetired] removes the renamed directories later.
+ */
+export function retireCopy(root, now = Date.now()) {
+  if (!npxCopy(root)) return undefined
+  const entry = dirname(dirname(String(root).replace(/[\\/]+$/, '')))
+  try {
+    if (JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name !== 'megachat') return undefined
+    const target = join(dirname(entry), `${basename(entry)}${RETIRED}${now}`)
+    renameSync(entry, target)
+    return target
+  }
+  catch { return undefined }
+}
+
+/** Removes each directory that [retireCopy] renamed next to the copy of [root]. It does nothing for another copy. */
+export async function removeRetired(root) {
+  if (!npxCopy(root)) return 0
+  const entry = dirname(dirname(String(root).replace(/[\\/]+$/, '')))
+  let removed = 0
+  try {
+    for (const name of readdirSync(dirname(entry))) {
+      const prefix = `${basename(entry)}${RETIRED}`
+      if (!name.startsWith(prefix) || !/^\d+$/.test(name.slice(prefix.length))) continue
+      await rm(join(dirname(entry), name), { recursive: true, force: true })
+      removed++
+    }
+  }
+  catch { /* The next start tries again. */ }
+  return removed
+}
+
 /**
  * True when the time [now] allows the automatic stop with the effective settings [values]. With `workday.enabled` on,
  * the conversation must sleep. Else the local time must be in the night window, and the last turn of the user at
@@ -157,44 +209,61 @@ export async function fetchReleaseNotes({ from, to, environment = process.env, t
     .map(({ version, release }) => ({ version, text: typeof release.body === 'string' ? release.body.trim() : '' }))
 }
 
+const withAutoOn = (lines, autoOn) => (autoOn ? [...lines, message('update.autoOn')] : lines).join('\n')
+
 /**
  * The fixed text of the message after an update of [notice]: `{ from, to, notes }`. `notes` is `null` when the notes
  * are not available. The text has at most [NOTES_LINES] lines: the title, and the first lines of the notes of the
  * newest release first, without the blank lines and the headings. When the notes are longer, the last line gives the
  * address of the release.
  */
-export function updateNoteText({ from, to, notes }) {
+export function updateNoteText({ from, to, notes, autoOn }) {
+  // The line about the automatic update takes one of the lines of the note.
+  const limit = NOTES_LINES - (autoOn ? 1 : 0)
   const lines = [message('update.done', baseVersion(from), baseVersion(to))]
   if (!notes) {
     lines.push(message('update.noNotes', releaseUrl(to)))
-    return lines.join('\n')
+    return withAutoOn(lines, autoOn)
   }
   const body = notes.flatMap(item => item.text.replace(/\r\n?/g, '\n').split('\n')).map(line => line.trim())
     .filter(line => line !== '' && !line.startsWith('#'))
     .map(line => line.length > NOTES_LINE_CHARACTERS ? `${line.slice(0, NOTES_LINE_CHARACTERS - 1)}…` : line)
-  if (body.length <= NOTES_LINES - 1) lines.push(...body)
-  else lines.push(...body.slice(0, NOTES_LINES - 2), message('update.more', releaseUrl(to)))
-  return lines.join('\n')
+  if (body.length <= limit - 1) lines.push(...body)
+  else lines.push(...body.slice(0, limit - 2), message('update.more', releaseUrl(to)))
+  return withAutoOn(lines, autoOn)
 }
 
 /**
  * The timers of the update in one daemon. [version] is the version of the daemon. [selfUpdating] is true for a copy
- * of npx. [release] gives the highest release (see [listRelease]). [ready] tells whether the work and the time allow
- * the stop now. [failed] gives the release for which an automatic stop gave no update, or `null`. [stop] records the
- * stop, tells the bridges and stops the daemon. [values] gives the effective settings.
+ * of npx, and [kind] is its [installKind]. [release] gives the highest release (see [listRelease]). [ready] tells
+ * whether the work and the time allow the automatic stop now. [work] gives what runs or waits, as a list (see
+ * `PiMegachatService.updateWork`); a stop that the user asked for needs an empty list. [failed] gives the release for
+ * which an automatic stop gave no update, or `null`. [stop] records the stop, tells the bridges and stops the daemon.
+ * [values] gives the effective settings.
  */
 export class UpdateCheck {
-  constructor({ version, selfUpdating, release, ready, failed, stop, values, clock = systemClock }) {
-    Object.assign(this, { version, selfUpdating, release, ready, failed, stop, values, clock })
+  constructor({ version, selfUpdating, kind = selfUpdating ? 'npx' : 'other', release, ready, work = async () => [], failed, stop, values, clock = systemClock }) {
+    Object.assign(this, { version, selfUpdating, kind, release, ready, work, failed, stop, values, clock })
     this.available = undefined
+    this.latest = undefined
+    this.checkedAt = undefined
+    this.failure = undefined
     this.closed = false
     this.running = Promise.resolve()
     this.stopping = false
+    this.requested = false
+    this.due = new Map()
   }
 
   /** The notice of `/health`, or `undefined` without a higher release. */
   status() {
     return this.available ? { available: this.available, notice: message('update.available', baseVersion(this.version), this.available) } : undefined
+  }
+
+  /** What the last check found: the versions, the time, the kind of copy, and the failure code of a failed check. */
+  summary() {
+    return { version: baseVersion(this.version), latest: this.latest ?? null, available: this.available ?? null, kind: this.kind,
+      checkedAt: this.checkedAt === undefined ? null : new Date(this.checkedAt).toISOString(), ...(this.failure ? { error: this.failure } : {}) }
   }
 
   /** Checks after [delayMs], and then by the timers. */
@@ -206,11 +275,27 @@ export class UpdateCheck {
     if (this.closed) return
     const field = kind === 'check' ? 'checkTimer' : 'conditionTimer'
     if (this[field] !== undefined) this.clock.clearTimeout(this[field])
+    this.due.set(kind, this.clock.now() + delayMs)
+    this.arm(kind, field)
+  }
+
+  /** One timer for at most [CHECK_TICK_MS]: the wall clock decides, so a sleep of the computer does not delay a check. */
+  arm(kind, field) {
+    const rest = this.due.get(kind) - this.clock.now()
     this[field] = this.clock.setTimeout(() => {
       this[field] = undefined
+      if (this.closed) return
+      if (this.clock.now() < this.due.get(kind)) return this.arm(kind, field)
       this.running = this.running.then(() => kind === 'check' ? this.check() : this.conditions())
         .catch(error => logFailure('log.update.error', error))
-    }, delayMs)
+    }, Math.max(0, Math.min(rest, CHECK_TICK_MS)))
+  }
+
+  /** A check at once, in the line of the other work of the update. Gives the [summary]. */
+  checkNow() {
+    const done = this.running.then(() => this.check())
+    this.running = done.catch(error => logFailure('log.update.error', error))
+    return done.then(() => this.summary())
   }
 
   async check() {
@@ -219,10 +304,14 @@ export class UpdateCheck {
     try { release = await this.release() }
     catch (error) {
       logFailure('log.update.check', error)
+      this.failure = error?.code ?? 'failed'
       this.schedule('check', RETRY_INTERVAL_MS)
       return
     }
     if (this.closed) return
+    this.failure = undefined
+    this.latest = release
+    this.checkedAt = this.clock.now()
     this.schedule('check', CHECK_INTERVAL_MS)
     const next = higherVersion(release, this.version) ? release : undefined
     if (next && next !== this.available) logEvent('log.update.found', baseVersion(this.version), next)
@@ -237,19 +326,39 @@ export class UpdateCheck {
     return !(failed && !higherVersion(release, failed))
   }
 
+  /**
+   * The request of the user to update now (see the tool `agents_update`). It makes a fresh check first. The result has
+   * `applied`, and `reason` when nothing starts: `checkFailed`, `current`, `checkout`, `other`, or `busy` with `work`.
+   * With [whenIdle], work that runs does not refuse the request: the daemon stops when that work has ended. The turn
+   * of the request is no work: the daemon stops after that turn. A second request gives the same answer.
+   */
+  async apply({ whenIdle = false } = {}) {
+    const found = await this.checkNow()
+    if (this.stopping || this.requested) return { applied: true, scheduled: true, ...found }
+    if (!found.available) return { applied: false, reason: found.error ? 'checkFailed' : 'current', ...found }
+    if (!this.selfUpdating) return { applied: false, reason: this.kind === 'checkout' ? 'checkout' : 'other', ...found }
+    const work = (await this.work()).filter(item => item.kind !== 'turn')
+    if (work.length > 0 && !whenIdle) return { applied: false, reason: 'busy', work, ...found }
+    this.requested = true
+    logEvent('log.update.requested', baseVersion(this.version), this.available)
+    this.schedule('condition', APPLY_POLL_MS)
+    return { applied: true, scheduled: true, ...(work.length > 0 ? { work } : {}), ...found }
+  }
+
   async conditions() {
     if (this.closed || this.stopping || !this.available) return
-    const allowed = await this.allowed(this.available)
+    // The request of the user is the approval: it needs neither `update.auto` nor the time of the night.
+    const allowed = this.requested || await this.allowed(this.available)
     if (this.closed) return
     if (!allowed) {
       // A change of `update.auto` or a newer release can allow the stop later.
       this.schedule('condition', CONDITION_INTERVAL_MS)
       return
     }
-    const ready = await this.ready(this.clock.now())
+    const ready = this.requested ? (await this.work()).length === 0 : await this.ready(this.clock.now())
     if (this.closed) return
     if (!ready) {
-      this.schedule('condition', CONDITION_INTERVAL_MS)
+      this.schedule('condition', this.requested ? APPLY_POLL_MS : CONDITION_INTERVAL_MS)
       return
     }
     this.stopping = true
@@ -275,8 +384,8 @@ export class UpdateCheck {
  * input blocks the write, the daemon tries again each [retryMs]. `notes` of the result ends with the write, and `close()`
  * ends the tries. [fetchNotes] replaces the request, for a test.
  */
-export async function recordVersion(state, version, { environment = process.env, fetchNotes = fetchReleaseNotes, timeoutMs = NOTES_TIMEOUT_MS, retryMs = NOTE_RETRY_MS } = {}) {
-  const result = await state.recordVersion(version)
+export async function recordVersion(state, version, { autoOn = false, environment = process.env, fetchNotes = fetchReleaseNotes, timeoutMs = NOTES_TIMEOUT_MS, retryMs = NOTE_RETRY_MS } = {}) {
+  const result = await state.recordVersion(version, { autoOn })
   if (result.failed) logEvent('log.update.failed', result.failed, baseVersion(version))
   const notice = result.notice
   let closed = false

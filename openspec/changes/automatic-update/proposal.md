@@ -22,8 +22,8 @@ Where it shows: the output of the command `status`, a fixed message in the chat 
   after 1 hour. The user gets no message.
 - **The status.** When a higher release is available, `status` prints the key `update` after the key `version`, with the
   text "A new release is available: 0.4.0 → 0.5.0".
-- **The setting `update.auto`.** A boolean, default `false`. The update is opt-in: the value `true` is the approval
-  of the user for the automatic stop of the daemon. With the default, the daemon only shows the notice in `status`. The rule `children.daemonRestart` for a child stays as it is.
+- **The setting `update.auto`.** A boolean. The default was `false`, and the change `update-on-request` makes it `true`. The value `true` is the approval
+  of the user for the automatic stop of the daemon. With the value `false`, the daemon only shows the notice in `status`. The rule `children.daemonRestart` for a child stays as it is.
 - **The automatic update.** With `update.auto` on, a copy of npx (the daemon runs from a directory
   `_npx/<hash>/node_modules/megachat`) and a higher release, the daemon stops itself when each of these is true:
   - no child task runs or waits for its start;

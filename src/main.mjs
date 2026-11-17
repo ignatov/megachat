@@ -23,7 +23,7 @@ import { daemonBuild, megachatVersion, needsReplacement } from './MegachatBuild.
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
 import { install } from './MegachatInstall.mjs'
 import { startOnboardingNote } from './MegachatOnboarding.mjs'
-import { ANNOUNCE_MS, listRelease, npxCopy, recordVersion, startDelay, UpdateCheck } from './MegachatUpdate.mjs'
+import { ANNOUNCE_MS, installKind, listRelease, recordVersion, removeRetired, retireCopy, startDelay, UpdateCheck } from './MegachatUpdate.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
 import { PiRunService } from './PiRunService.mjs'
 import { logFailure, MegachatError, message, requireCondition } from './messages.mjs'
@@ -127,23 +127,29 @@ async function daemon() {
     await service.resume()
     proceed()
     // The version of this daemon goes to the state at the start. The message of an update goes out on its own, as a note.
-    versionRecord = await recordVersion(service.state, megachatVersion())
+    versionRecord = await recordVersion(service.state, megachatVersion(), { autoOn: service.settings.migratedUpdateAuto && service.settings.values()['update.auto'] === true })
     // A fresh conversation with a pending setup gets the note that offers the setup, on its own.
     onboardingNote = startOnboardingNote(service.state, () => service.settings.onboarding === 'pending')
     proceed()
     await owner.publish(descriptor)
     // The check of a release starts after the publish, so it does not delay the start. Only a copy of npx stops itself
     // for an update: its next start through npx installs the release. The daemon starts no process for the update but git.
-    update = new UpdateCheck({ version: megachatVersion(), selfUpdating: npxCopy(fileURLToPath(new URL('..', import.meta.url))),
-      release: () => listRelease(), ready: now => service.updateReady(now), clock: service.workdayClock,
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const kind = installKind(root)
+    // A copy that an earlier update moved away is no longer in use: this daemon runs from the new copy.
+    removeRetired(root).catch(() => {})
+    update = new UpdateCheck({ version: megachatVersion(), selfUpdating: kind === 'npx', kind,
+      release: () => listRelease(), ready: now => service.updateReady(now), work: () => service.updateWork(), clock: service.workdayClock,
       failed: async () => (await service.state.snapshot()).update?.failed ?? null, values: () => service.settings.values(),
       stop: async (from, to) => {
         await service.state.updateStopped(from, to)
         await server.announce('update', { from, to })
         await delay(ANNOUNCE_MS)
-        // The stop of the daemon closes the check, so it must not wait inside the check.
-        setImmediate(() => shutdown().catch(() => { process.exitCode = 1 }))
+        // The stop of the daemon closes the check, so it must not wait inside the check. After the stop, the copy of npx
+        // of this entry moves away: npx then cannot reuse it, and the next start installs the highest release.
+        setImmediate(() => shutdown().then(() => retireCopy(root)).catch(() => { process.exitCode = 1 }))
       } })
+    service.updater = update
     server.update = update
     update.start(startDelay())
   })()

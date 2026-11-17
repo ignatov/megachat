@@ -194,13 +194,13 @@ Nobody measured it against GitHub. Nobody tested what happens to an unfinished d
 replaces the daemon. A measurement with a local repository showed that npx takes the new tag at each next start, also
 without `--prefer-online` (see `docs/manual-checks.md`).
 
-The daemon lives for days, so it looks for a new release itself. 60 seconds after its start and then every 24 hours,
-it runs `git ls-remote --tags` on `https://github.com/ignatov/megachat`, with the time limits of git of the entry and a
+The daemon lives for days, so it looks for a new release itself. 60 seconds after its start and then every 24 hours of
+wall-clock time (a sleep of the computer does not delay the check), it runs `git ls-remote --tags` on `https://github.com/ignatov/megachat`, with the time limits of git of the entry and a
 time limit of 30 seconds. It takes the highest tag `v<major>.<minor>.<patch>` and ignores a pre-release. A failed
 check, for example without the network, writes one line to `daemon/daemon.log` and tries again after 1 hour. When a
 higher release is available, `status` gives the key `update`, for example "A new release is available: 0.4.0 → 0.5.0".
 
-The automatic update is opt-in. With the setting `update.auto` on (the default is off), the daemon of a copy of the install line, in a directory
+The automatic update is on by default. With the setting `update.auto` on, the daemon of a copy of the install line, in a directory
 `_npx/<hash>/node_modules/megachat`, stops itself for the update when all of these are true:
 
 - No turn runs, and no message and no morning report waits for its turn.
@@ -219,8 +219,26 @@ has the earlier version, it does not stop itself again for the same release.
 After an update, your next message or the next morning report, whichever comes first, starts with a message of
 Megachat: "Megachat updated from 0.4.0 to 0.5.0.", with the notes of each new release from GitHub. Without an answer
 of GitHub in 10 seconds, the message gives the address of the release instead. A git checkout, a copy outside `_npx`,
-and a daemon with `update.auto` off (the default) only show the new release in `status`. To get each
-release without an action, ask the agent to set `update.auto` to `true`.
+and a daemon with `update.auto` off only show the new release in `status`. To turn the automatic update off, ask the
+agent to set `update.auto` to `false`.
+
+One time, the first start of this build turns `update.auto` on for each earlier `settings.json`, also one that stores
+`false`. The file then has `migrations.updateAuto`, and a `false` that you set later stays. The message after the next
+update tells that the automatic update is on and how to turn it off.
+
+**Update on request.** Ask the agent "update yourself" (or "обновись"). The agent calls the tool `agents_update`. With
+`action=check`, the daemon asks GitHub for the tags at once and tells the version, the last release and the time of the
+check. With `action=apply`, the daemon stops for the update after the reply of that turn, when no child task, permission
+request, stop request or waiting message exists. Your request is the approval, so `update.auto` and the night window do
+not matter. An automatic turn, such as a child result or the morning report, cannot do it. When work runs, the agent
+names it and asks. If you agree, it stops the daemon right after that work ends. Then wait about 30 seconds and send a
+message: the IDE starts `npx` again, and npx installs the new release. A git checkout and a copy that is not a copy of
+npx do not update themselves: the agent tells you to run `git pull` in the checkout and `node src/main.mjs stop`, or to
+run the install line again.
+
+Before the daemon stops for an update, it moves the directory `_npx/<hash>` of its own copy to
+`<hash>.megachat-old-<time>` in the same directory, so npx cannot reuse the old copy. The next daemon removes such
+directories of its own entry. It changes no other directory of the npm cache.
 
 **Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then delete the directory `_npx/<hash>` that
 holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. `install` printed the directory of the
@@ -380,7 +398,7 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `workday.timezone` | `auto` | | The timezone of the working hours. `auto` is the timezone of the system, else an IANA name such as `Europe/Berlin`. |
 | `workday.idleMinutes` | `30` | | The idle time outside the working hours before the conversation goes to sleep, 0 to 1440 minutes. |
 | `report.morning` | `false` | | The morning report on each working day at `workday.start`. See [The morning report](#the-morning-report). |
-| `update.auto` | `false` | | Whether the daemon of a copy of the install line stops itself for a new release when no work runs, at night or while the conversation sleeps. See "Update" in [Install for a colleague](#install-for-a-colleague). |
+| `update.auto` | `true` | | Whether the daemon of a copy of the install line stops itself for a new release when no work runs, at night or while the conversation sleeps. See "Update" in [Install for a colleague](#install-for-a-colleague). |
 | `reply.suggestions` | `ghost` | `MEGACHAT_SUGGESTIONS` | The main agent offers a next step by itself. `off` gives no offer. `reply` puts the offer into the reply text. `ghost` shows the offer as grey text in the empty prompt input of Air, and Tab puts it into the input; a client that does not know the key shows nothing. In the mode `ghost`, a next step that you ask for is in the reply text. A stored value stays after an update, and only a `settings.json` without a value gets the default `ghost`. The variable takes `0`, `1` or `ghost`, and `0` gives `off`. The stored values `false` and `true` of earlier releases give `off` and `reply`. |
 | `reply.language` | `auto` | | The language of the answers. `auto` is your language. |
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |

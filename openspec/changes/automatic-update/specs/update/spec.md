@@ -43,7 +43,7 @@ Tests: `test/update.test.mjs`, `test/launch.test.mjs`
 - **THEN** `/health` gives `update` `{"available":"0.5.0","notice":"A new release is available: 0.4.0 → 0.5.0"}`
 
 ### Requirement: Copy that updates itself
-Only a daemon whose package root has no `.git` and is the directory `_npx/<one directory>/node_modules/megachat` MUST stop itself for an update, and only with `update.auto` on. Each other copy and a daemon with `update.auto` off MUST only give the notice.
+Only a daemon whose package root has no `.git` and is the directory `_npx/<one directory>/node_modules/megachat` MUST stop itself for an update, and only with `update.auto` on (the default). Each other copy and a daemon with `update.auto` off MUST only give the notice.
 
 Tests: `test/update.test.mjs`, `test/package.mjs`
 
