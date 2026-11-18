@@ -11,8 +11,11 @@ const daemon = process.ppid
 const lifetime = new Socket({ fd: 3, readable: true, writable: true, allowHalfOpen: true })
 // The daemon has the mask 077. The agent gets the mask of the user, as in a terminal.
 applyFileMask()
+// On macOS and Linux, the agent gets its own process group. On Windows, a detached agent gets no console, and each
+// console program that it starts then opens a visible console window. So there the agent keeps the hidden console of
+// this process.
 const child = spawn(process.argv[2], process.argv.slice(3), {
-  stdio: ['pipe', 'pipe', 'pipe'], detached: true,
+  stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32', windowsHide: true,
 })
 const tell = line => {
   if (lifetime.writable && !lifetime.destroyed) lifetime.write(`${line}\n`)

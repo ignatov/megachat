@@ -91,6 +91,6 @@ else {
   env.CODEX_PATH = fileURLToPath(import.meta.url)
   env.MEGACHAT_CODEX_ARGS = JSON.stringify(process.argv.slice(2))
 }
-const child = spawn(command, args, { stdio: 'inherit', env, ...(cwd ? { cwd } : {}) })
+const child = spawn(command, args, { stdio: 'inherit', windowsHide: true, env, ...(cwd ? { cwd } : {}) })
 child.once('error', () => { process.exitCode = 1 })
 child.once('exit', code => { process.exitCode = code ?? 1 })

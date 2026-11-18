@@ -106,7 +106,7 @@ export function listRelease({ repository, environment = process.env, timeoutMs =
   const target = repository ?? (environment[RELEASE_REPOSITORY_VARIABLE] || RELEASE_REPOSITORY)
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['ls-remote', '--tags', '--refs', target], {
-      stdio: ['ignore', 'pipe', 'ignore'], env: { ...environment, ...ENTRY_GIT_VARIABLES, GIT_TERMINAL_PROMPT: '0' },
+      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: { ...environment, ...ENTRY_GIT_VARIABLES, GIT_TERMINAL_PROMPT: '0' },
     })
     let output = ''
     let timedOut = false

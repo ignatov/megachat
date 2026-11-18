@@ -231,7 +231,7 @@ export class CentralConfigurationService {
     try {
       const result = await execute(this.central, ['run', 'pi'], {
         env: { ...process.env, PATH: [BIN, dirname(process.execPath), this.centralPath()].join(delimiter) },
-        timeout: 15000, maxBuffer: 128000, signal,
+        timeout: 15000, maxBuffer: 128000, windowsHide: true, signal,
       })
       const configuration = JSON.parse(result.stdout).anthropic
       this.validate(configuration)
@@ -307,7 +307,7 @@ export class CentralConfigurationService {
       fallback = 'helper'
       // Windows has no `/bin/sh`. There, the shell of Node.js, `cmd.exe`, runs the key helper.
       const [command, args, shell] = this.platform === 'win32' ? [settings.apiKeyHelper, [], true] : ['/bin/sh', ['-c', settings.apiKeyHelper], false]
-      const result = await execute(command, args, { shell, timeout: this.keyHelperTimeout, maxBuffer: 64000,
+      const result = await execute(command, args, { shell, windowsHide: true, timeout: this.keyHelperTimeout, maxBuffer: 64000,
         env: { ...process.env, PATH: this.centralPath() } })
       const apiKey = result.stdout.trim()
       this.validate({ baseUrl, apiKey })

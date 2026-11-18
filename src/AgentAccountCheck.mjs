@@ -30,7 +30,7 @@ async function checkAgent(configuration, agent, { cwd, timeoutMs, launch: overri
   let connection
   const child = spawn(process.execPath, [fileURLToPath(new URL('./child-supervisor.mjs', import.meta.url)),
     launch.command ?? process.execPath, ...launch.args ?? []], {
-    cwd: launch.cwd ?? cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    cwd: launch.cwd ?? cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], windowsHide: true,
   })
   // The output of the agent can hold a secret, so the check reads none of it.
   child.stderr.resume()
