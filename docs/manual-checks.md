@@ -206,6 +206,23 @@ the user. A script sent "Hello" through the daemon service and the ACP bridge, w
   message again."
 - The check did not run `central logout`, and it did not try an expired login. See the open checks.
 
+One manual check of the cloud sessions ran on 2026-11-17 against Central with the plugin `airc` 0.1.3 on the machine of
+the author, without a daemon. A script called `locateAirc` and `readCloudSessions` of `src/CloudSessions.mjs` with the
+real `~/.local/bin/central` and the `PATH` of Central first. It printed only the counts, the statuses and the field
+names, and no name, ID or repository of a session.
+
+- `central plugins` took 0.6 s. `locateAirc` found the binary `~/.jetbrains-central/plugins/airc/airc` in 0.4 s.
+- `airc sessions --limit 50` took 0.8 s and gave 50 sessions: 36 `ARCHIVED`, 11 `SUSPENDED`, 2 `FINISHED` and 1
+  `LAUNCHING`. Each session had `id`, `name`, `status`, `agent`, `repositories` and `updatedAt`. 45 sessions had
+  `taskId`, 1 had `statusComment`, and 21 had a `resultsBranch` in the first repository. The agents were `claude`,
+  `codex` and `junie`. `Date.parse` read each `updatedAt`.
+- `airc sessions --limit 200` gave 194 sessions in the order of `updatedAt`, the newest first. Each session after the
+  first 50 had the status `ARCHIVED`. So the 50 sessions of a read are the 50 newest.
+- The first read of a new watch gave no note and 50 records. A watch that started in 1970 gave a note for each of the 2
+  sessions with a status of a note.
+- The part `cloud` of the morning report for the last 24 hours had 2 finished sessions, 0 failed, 0 waiting and 1 running.
+- The check did not run a daemon, did not show a note in Air, and did not try a missing login. See the open checks.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.
@@ -285,4 +302,7 @@ These checks need the author by hand. Each one names its OpenSpec change.
 - `air-html-in-chat` (task 1.2, open): give the rules to the model in a test chat, and verify that Air draws the fence and
   that a stream with a chunk inside the fence ends in a page.
 - `air-html-in-chat` (task 3.2, open): ask "draw the open tasks as a chart" in Megachat in Air, and record the result.
-
+- `watch-cloud-sessions` (after the merge): start the daemon with `MEGACHAT_HOME=$(mktemp -d)` and `cloud.sessions` on,
+  in the IDE with the Air support. Start a short cloud session in Air. Verify that one note "Megachat note: one cloud
+  session changed its state." shows in the chat at most 2 minutes after the session finished, and that the replay of a
+  new view shows it again. Ask "what runs in the cloud?", and verify that the answer names the session.

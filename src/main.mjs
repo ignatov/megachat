@@ -93,7 +93,8 @@ async function daemon() {
         settingsPath: join(directory, 'settings.json'), memoryPath: join(directory, 'memory.md'), workspacePath: join(directory, 'workspace'), stateDirectory: directory,
         spendPath: join(directory, 'spend.json'),
         accountCheck: () => checkAccounts(configuration, { cwd: join(directory, 'workspace') }),
-        centralFailure: () => configuration.lastFailure })
+        centralFailure: () => configuration.lastFailure,
+        cloud: { central: configuration.central, environment: { ...process.env, PATH: configuration.centralPath() } } })
     proceed()
     await service.search.catchUp()
     proceed()

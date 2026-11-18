@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { cloudReportPart, logCloudFailure } from './CloudSessions.mjs'
 import { logEvent, logFailure } from './messages.mjs'
 import { automaticRequest, terminalStates } from './MegachatState.mjs'
 import { directoriesOf, directoryKey } from './ProjectDirectories.mjs'
@@ -131,9 +132,11 @@ const knownProjects = (directories, runs) =>
  * must not make the next period active. The daemon collects the data, and the main agent only writes the text. The money of Megachat
  * and the money of the other sessions stay apart: the key of Megachat paid the first, and the accounts of the agents
  * paid the second, so tokprof gives only its API-equivalent cost. [signal] stops the commands at the stop of the daemon.
+ * [cloud] reads the cloud sessions, only when they are on (see the capability `cloud-sessions`). The cloud sessions do
+ * not make a period active.
  */
 export async function collectReportData({ state, date, workday, spend, sessionStore, home, stateDirectory, environment = process.env,
-  now = Date.now(), tokprofTimeoutMs, signal }) {
+  now = Date.now(), tokprofTimeoutMs, signal, cloud }) {
   const timezone = workday.timezone
   const period = reportPeriod(workday, date)
   const from = zonedTime(period.from, '00:00', timezone)
@@ -174,6 +177,7 @@ export async function collectReportData({ state, date, workday, spend, sessionSt
     children,
     permissionsWaiting,
     sessions: await sessionsOf(sessionStore, directories, from, to),
+    ...(cloud ? { cloud: await cloudOf(cloud, inPeriod) } : {}),
     commits: { projects: commits, moreProjects: Math.max(0, repositories.length - COMMIT_PROJECTS), unreadableProjects: unreadable },
     money: {
       megachat: { paidBy: 'megachatKey', usd: cents(megachatUsd), mainAgentUsd: cents(megachatUsd - piUsd), piChildrenUsd: cents(piUsd),
@@ -181,6 +185,15 @@ export async function collectReportData({ state, date, workday, spend, sessionSt
       otherSessions: { paidBy: 'agentAccounts', costKind: 'apiEquivalent', ...tokprof },
     },
     collectedAt: iso(now),
+  }
+}
+
+/** The part `cloud` from one read with [read], or `unavailable` when the read fails. The log line has no output of airc. */
+async function cloudOf(read, inPeriod) {
+  try { return cloudReportPart(await read(), inPeriod) }
+  catch (error) {
+    logCloudFailure(error)
+    return { state: 'unavailable' }
   }
 }
 
