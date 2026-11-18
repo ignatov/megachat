@@ -111,10 +111,18 @@ Tests: `test/child-processes.test.mjs`
 - **THEN** the error of the run gives the exit code 1 and the line `Error: The stand-in agent crashed.`, and the shell ends
 
 ### Requirement: Other platforms
-On a platform other than macOS, the supervisor MUST NOT read the process table. At each end of a run, it MUST send SIGKILL to the process group of the agent, as before.
+On a platform other than macOS, the supervisor MUST NOT read the process table. At each end of a run, it MUST send SIGKILL to the process group of the agent, as before. On Windows, it MUST end the process tree of the agent with `taskkill /T /F` instead, and only while the agent runs.
 
 Tests: `test/child-processes.test.mjs`
 
 #### Scenario: Linux
 - **WHEN** the supervisor runs on `linux`, and the daemon asks for the end of the processes of the run
 - **THEN** no read of the process table runs, and the process group of the agent gets SIGKILL
+
+#### Scenario: Windows
+- **WHEN** the supervisor runs on `win32`, and the daemon asks for the end of the processes of the run
+- **THEN** no read of the process table runs, no signal goes out, and the process tree of the agent ends
+
+#### Scenario: Windows after the exit of the agent
+- **WHEN** the supervisor runs on `win32`, the agent exited, and the end `keep` comes
+- **THEN** no process tree ends

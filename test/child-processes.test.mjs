@@ -106,13 +106,13 @@ test('the daemon, a process above it and a process of another user are never pro
 })
 
 /** A fake world for `RunProcesses`: a table that changes after each signal, and a list of the signals. */
-function world({ tables, ends = () => true, platform = 'darwin', read } = {}) {
+function world({ tables, ends = () => true, platform = 'darwin', read, killTree } = {}) {
   const signals = []
   const reports = []
   let index = 0
   const alive = new Set([-30, 30, 40, 41])
   let clock = 0
-  const processes = new RunProcesses({ agentPid: 30, platform, self: 25, daemon: 20, uid: UID, interval: 1000,
+  const processes = new RunProcesses({ agentPid: 30, platform, killTree, self: 25, daemon: 20, uid: UID, interval: 1000,
     // A read gives no line for a process of the fake world that ended.
     read: read ?? (async () => {
       const table = tables[Math.min(index++, tables.length - 1)]
@@ -184,6 +184,24 @@ test('the end keep and an end on linux send SIGKILL to the group of the agent on
   await linux.processes.end('clean')
   assert.deepEqual(linux.signals, [[-30, 'SIGKILL']])
   assert.equal(linux.reads(), 0)
+})
+
+test('an end on Windows ends the process tree of a running agent, sends no signal and makes no read', async () => {
+  const table = tableOf([...BASE, [41, 30, 41]])
+  const trees = []
+  const killTree = async pid => { trees.push(pid) }
+  const windows = world({ tables: [table], platform: 'win32', killTree })
+  windows.processes.start()
+  await windows.processes.end('clean')
+  assert.deepEqual(trees, [30])
+  assert.deepEqual(windows.signals, [])
+  assert.equal(windows.reads(), 0)
+  // The PID of an agent that exited can belong to another process, so nothing ends.
+  const exited = world({ tables: [table], platform: 'win32', killTree })
+  exited.processes.agentExited()
+  await exited.processes.end('keep')
+  assert.deepEqual(trees, [30])
+  assert.deepEqual(exited.signals, [])
 })
 
 // The tests below start real stand-in processes. Each one selects a process only by a PID that a stand-in wrote at its
@@ -331,6 +349,40 @@ test('the end of a run without a shell outside the group of the agent takes abou
   supervisor.stdio[3].end('clean\n')
   await exit
   t.diagnostic(`the end with no shell took ${Date.now() - started} ms after the word clean`)
+})
+
+test('on Windows, the end of the lifetime pipe ends the agent and the process that it started', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-tree-')))
+  const pids = []
+  const runs = pid => {
+    try { process.kill(pid, 0); return true }
+    catch (error) { return error.code === 'EPERM' }
+  }
+  t.after(async () => {
+    for (const pid of pids) if (runs(pid)) process.kill(pid)
+    await rm(directory, { force: true, recursive: true })
+  })
+  // The agent starts a second process that runs until something ends it, as a build of an agent does.
+  const agent = join(directory, 'agent.mjs')
+  await writeFile(agent, `import { spawn } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+writeFileSync(${JSON.stringify(join(directory, 'pids'))}, process.pid + ' ' + child.pid)
+setInterval(() => {}, 1000)
+`)
+  const supervisor = spawn(process.execPath, [SUPERVISOR, process.execPath, agent], { stdio: ['pipe', 'pipe', 'ignore', 'pipe'], windowsHide: true })
+  pids.push(supervisor.pid)
+  supervisor.stdout.resume()
+  for (let tries = 0; pids.length === 1 && tries < 100; tries++) {
+    const text = await readFile(join(directory, 'pids'), 'utf8').catch(() => '')
+    if (text) pids.push(...text.split(' ').map(Number))
+    else await delay(100)
+  }
+  assert.equal(pids.length, 3)
+  const exit = new Promise(resolve => supervisor.once('exit', resolve))
+  supervisor.stdio[3].end()
+  await exit
+  assert.deepEqual(pids.slice(1).filter(runs), [])
 })
 
 // The run service with the stand-in ACP agent.
