@@ -26,6 +26,14 @@ const BIN = fileURLToPath(new URL('../bin/', import.meta.url))
  */
 export const KEY_HELPER_TIMEOUT_MS = 60000
 
+/**
+ * The path of the command [name] in `~/.local/bin`, where the installers of Central and of Claude Code put it. On
+ * Windows, the file has the extension `.exe`.
+ */
+export function localBinCommand(name, { platform = process.platform, home = homedir() } = {}) {
+  return join(home, '.local', 'bin', platform === 'win32' ? `${name}.exe` : name)
+}
+
 /** Whether the path is a file that the user can run. */
 export async function executableFile(path) {
   try {
@@ -177,9 +185,10 @@ const withoutFallbacks = model => {
 }
 
 export class CentralConfigurationService {
-  constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'),
-    settings = join(homedir(), '.claude/settings.json'), environment = process.env, keyHelperTimeout = KEY_HELPER_TIMEOUT_MS,
-    log = logFailure } = {}) {
+  constructor({ platform = process.platform, central = localBinCommand('central', { platform }),
+    claude = localBinCommand('claude', { platform }), settings = join(homedir(), '.claude/settings.json'), environment = process.env,
+    keyHelperTimeout = KEY_HELPER_TIMEOUT_MS, log = logFailure } = {}) {
+    this.platform = platform
     this.central = central
     this.claude = claude
     this.settings = settings
@@ -214,11 +223,15 @@ export class CentralConfigurationService {
     return [dirname(this.central), path].filter(Boolean).join(delimiter)
   }
 
+  /**
+   * Central starts the `pi` shim of [BIN]. On Windows, Central finds the shim `pi.cmd`, and that shim starts `node` of
+   * the `PATH`. So the node that runs Megachat comes after [BIN].
+   */
   async pi(signal) {
     try {
       const result = await execute(this.central, ['run', 'pi'], {
-        env: { ...process.env, PATH: `${BIN}${delimiter}${this.centralPath()}` },
-        timeout: 15000, maxBuffer: 128000, signal,
+        env: { ...process.env, PATH: [BIN, dirname(process.execPath), this.centralPath()].join(delimiter) },
+        timeout: 15000, maxBuffer: 128000, windowsHide: true, signal,
       })
       const configuration = JSON.parse(result.stdout).anthropic
       this.validate(configuration)
@@ -292,7 +305,9 @@ export class CentralConfigurationService {
       requireCondition(typeof settings.apiKeyHelper === 'string', 'central')
       this.validateBaseUrl(baseUrl)
       fallback = 'helper'
-      const result = await execute('/bin/sh', ['-c', settings.apiKeyHelper], { timeout: this.keyHelperTimeout, maxBuffer: 64000,
+      // Windows has no `/bin/sh`. There, the shell of Node.js, `cmd.exe`, runs the key helper.
+      const [command, args, shell] = this.platform === 'win32' ? [settings.apiKeyHelper, [], true] : ['/bin/sh', ['-c', settings.apiKeyHelper], false]
+      const result = await execute(command, args, { shell, windowsHide: true, timeout: this.keyHelperTimeout, maxBuffer: 64000,
         env: { ...process.env, PATH: this.centralPath() } })
       const apiKey = result.stdout.trim()
       this.validate({ baseUrl, apiKey })

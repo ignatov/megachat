@@ -206,6 +206,17 @@ the user. A script sent "Hello" through the daemon service and the ACP bridge, w
   message again."
 - The check did not run `central logout`, and it did not try an expired login. See the open checks.
 
+One manual check of Central ran on 2026-11-17 on Windows 11 x64 with Central 2.7.0 and Node.js 24.22.1. Central was at
+`~/.local/bin/central.exe`, and Claude Code came only from npm. No check printed a key or a base URL.
+
+- Megachat 0.13.0 in Air answered no message. The log of the daemon held "Central gave no configuration to the main
+  agent" with `code=1`. `central run pi` printed `exec: "pi": executable file not found in %PATH%`, because Central
+  finds on Windows only a file with an extension of `PATHEXT`.
+- With the shims `bin/pi.cmd` and `bin/codex.cmd`, `CentralConfigurationService.pi()` gave a configuration with the
+  host `127.0.0.1`. `claudeConfiguration()` gave the source `settings` through `cmd.exe`. The app-server of
+  `codexAppServerLaunch()` answered `initialize` with the Codex that npm installed with Megachat.
+- `install` 0.13.0 did not find `central.exe` and could not read an `acp.json` with `//` comments.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.

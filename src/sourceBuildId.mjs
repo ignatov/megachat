@@ -28,7 +28,7 @@ export function buildVersion(root, { version = JSON.parse(readFileSync(join(root
   // stops the write of the index, so the command does not hold the lock of a git command of the user.
   const { GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, ...rest } = environment
   const result = spawnSync('git', ['-C', root, 'describe', '--tags', '--long', '--always', '--dirty', '--abbrev=7', '--match', `v${version}`], {
-    encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], env: { ...rest, GIT_OPTIONAL_LOCKS: '0' },
+    encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: { ...rest, GIT_OPTIONAL_LOCKS: '0' },
   })
   // The output is `v0.4.0-3-g1a2b3c4[-dirty]` when the tag is in the history, else `1a2b3c4[-dirty]`.
   const match = result.status === 0 && /^(?:(.+)-(\d+)-g)?([0-9a-f]{7,64})(-dirty)?$/.exec(result.stdout.trim())

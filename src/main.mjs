@@ -239,7 +239,7 @@ async function spawnDaemon() {
   // The log can hold the filtered error output of a failed child run. The mode of the open applies only to a new file.
   if (process.platform !== 'win32') await output.chmod(0o600)
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', ...(explicit ? [directory] : [])], {
-    detached: true, stdio: ['ignore', output.fd, output.fd], env: { ...process.env, ...(explicit ? {} : { MEGACHAT_HOME: directory }) },
+    detached: true, windowsHide: true, stdio: ['ignore', output.fd, output.fd], env: { ...process.env, ...(explicit ? {} : { MEGACHAT_HOME: directory }) },
   })
   await output.close()
   child.once('error', () => { child.ended ??= 1 })

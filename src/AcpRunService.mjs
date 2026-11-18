@@ -268,7 +268,7 @@ export class AcpRunService {
       if (work.lifetime.signal.aborted) throw work.lifetime.signal.reason
       child = spawn(process.execPath, [fileURLToPath(new URL('./child-supervisor.mjs', import.meta.url)),
         launch.command ?? process.execPath, ...launch.args], {
-        cwd: launch.cwd ?? run.cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+        cwd: launch.cwd ?? run.cwd, env: { ...launch.env, ...fileMaskEnvironment() }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], windowsHide: true,
       })
       exited = new Promise(resolve => { child.once('exit', resolve); child.once('error', resolve) })
       let stderrBytes = 0

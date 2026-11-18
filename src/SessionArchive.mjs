@@ -186,9 +186,9 @@ export class ArchiveCards {
 const systemClock = { now: () => Date.now() }
 const systemSleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const defaultGit = async (args, cwd) => {
-  try { return (await execute('git', args, { cwd, timeout: 5000, maxBuffer: 1024 * 1024 })).stdout } catch { return undefined }
+  try { return (await execute('git', args, { cwd, timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true })).stdout } catch { return undefined }
 }
-const defaultCodex = async args => { await execute('codex', args, { timeout: 30000 }) }
+const defaultCodex = async args => { await execute('codex', args, { timeout: 30000, windowsHide: true }) }
 const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
 
 /**

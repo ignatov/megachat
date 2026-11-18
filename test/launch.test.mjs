@@ -4,13 +4,13 @@ import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { inspect } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
-import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE, KEY_HELPER_TIMEOUT_MS } from '../src/CentralConfigurationService.mjs'
+import { agentCommand, CentralConfigurationService, CLAUDE_ACP_VARIABLE, CODEX_ACP_VARIABLE, KEY_HELPER_TIMEOUT_MS, localBinCommand } from '../src/CentralConfigurationService.mjs'
 import { daemonBuild, megachatVersion, needsReplacement } from '../src/MegachatBuild.mjs'
 import { message } from '../src/messages.mjs'
 import { redactSecrets } from '../src/SessionText.mjs'
@@ -410,6 +410,40 @@ test('the key helper of Central and each child find a bare central in the direct
   const codex = (await configuration.childLaunch('codex')).env.PATH.split(delimiter)
   assert.deepEqual(codex.slice(1), [dirname(process.execPath), tools, '/usr/bin'])
   assert.deepEqual(configuration.codexAppServerLaunch().env.PATH.split(delimiter).slice(1), [dirname(process.execPath), tools, '/usr/bin'])
+})
+
+test('the Central command and Claude Code are in ~/.local/bin, with the extension .exe on Windows', () => {
+  assert.equal(localBinCommand('central', { platform: 'darwin', home: '/Users/me' }), join('/Users/me', '.local', 'bin', 'central'))
+  assert.equal(localBinCommand('claude', { platform: 'win32', home: 'C:\\Users\\me' }), join('C:\\Users\\me', '.local', 'bin', 'claude.exe'))
+  const windows = new CentralConfigurationService({ platform: 'win32' })
+  assert.equal(windows.central, join(homedir(), '.local', 'bin', 'central.exe'))
+  assert.equal(windows.claude, join(homedir(), '.local', 'bin', 'claude.exe'))
+  assert.equal(new CentralConfigurationService({ platform: 'darwin' }).central, join(homedir(), '.local', 'bin', 'central'))
+})
+
+test('on Windows, the shell of Node.js runs the key helper of Claude Code', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-key-helper-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const settings = join(directory, 'settings.json')
+  await writeFile(settings, JSON.stringify({ apiKeyHelper: 'echo helper-key-0123456789abcdef', env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9/wire/test' } }))
+  const configuration = new CentralConfigurationService({ platform: 'win32', settings, central: join(directory, 'missing'),
+    claude: join(directory, 'missing'), environment: {} })
+  assert.deepEqual(await configuration.claudeConfiguration(),
+    { baseUrl: 'http://127.0.0.1:9/wire/test', apiKey: 'helper-key-0123456789abcdef', source: 'settings' })
+})
+
+test('bin/codex on Windows starts codex.exe of the user and skips the shell script codex of npm', { timeout: 30000, skip: process.platform !== 'win32' }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'megachat-codex-exe-'))
+  t.after(() => rm(directory, { force: true, recursive: true }))
+  const user = join(directory, 'user')
+  await mkdir(user)
+  await writeFile(join(user, 'codex'), '#!/bin/sh\necho user codex\n')
+  // A copy of Node.js plays the codex.exe of the user: it prints its version.
+  await cp(process.execPath, join(user, 'codex.exe'))
+  const shim = fileURLToPath(new URL('../bin/codex', import.meta.url))
+  const printed = execFileSync(process.execPath, [shim, '--version'], { encoding: 'utf8', timeout: 20000,
+    env: { ...process.env, PATH: [user, process.env.PATH].join(delimiter), MEGACHAT_CODEX_ARGS: '[]' } }).trim()
+  assert.equal(printed, process.version)
 })
 
 test('the app-server of the Codex history starts through Central with the PATH of a Codex child', () => {

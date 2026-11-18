@@ -66,6 +66,16 @@ export function readTable(timeout = READ_TIMEOUT_MS) {
   })
 }
 
+/**
+ * Ends the process [pid] and each process below it on Windows: `taskkill /T /F /PID <pid>`. Windows has no process
+ * group and no signal, so `process.kill(-pid)` fails there. A failure and the time limit of 10 seconds give no error.
+ */
+export function endProcessTree(pid) {
+  return new Promise(resolve => {
+    execFile('taskkill', ['/T', '/F', '/PID', String(pid)], { timeout: 10000, windowsHide: true }, () => resolve())
+  })
+}
+
 /** An empty record: the live processes of the run by PID, each PID that it had with its start time, and the agent. */
 export const newRecord = () => ({ live: new Map(), known: new Map(), agent: null })
 
@@ -140,14 +150,15 @@ export function refusal(pid, { table, record, guarded, uid }) {
  * The end `keep` is the end of before: SIGKILL to the process group of the agent at once. The end `clean` also ends
  * each process of the run: SIGTERM, a wait of at most [termWaitMs], then SIGKILL. On a platform other than macOS, each
  * end is `keep`. In the end `clean`, the process group of the agent gets SIGTERM first, then the read of the table
- * runs, then each other process of the run gets SIGTERM.
+ * runs, then each other process of the run gets SIGTERM. On Windows, the end `keep` ends the process tree of the agent
+ * with [killTree] instead of the signal to the group.
  */
 export class RunProcesses {
   constructor({ agentPid, platform = process.platform, read = readTable, kill = (pid, signal) => process.kill(pid, signal),
-    report = () => {}, self = process.pid, daemon = process.ppid, parent = () => daemon, uid = process.geteuid?.(),
-    now = () => Date.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)), interval = READ_INTERVAL_MS,
-    termWaitMs = TERM_WAIT_MS } = {}) {
-    Object.assign(this, { agentPid, platform, read, kill, report, self, daemon, parent, uid, now, wait, interval, termWaitMs })
+    killTree = endProcessTree, report = () => {}, self = process.pid, daemon = process.ppid, parent = () => daemon,
+    uid = process.geteuid?.(), now = () => Date.now(), wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    interval = READ_INTERVAL_MS, termWaitMs = TERM_WAIT_MS } = {}) {
+    Object.assign(this, { agentPid, platform, read, kill, killTree, report, self, daemon, parent, uid, now, wait, interval, termWaitMs })
     this.record = newRecord()
     this.agentAlive = true
     this.stopped = false
@@ -212,6 +223,18 @@ export class RunProcesses {
     catch {}
   }
 
+  /**
+   * The end of before on Windows: the process tree of the agent ends while the agent runs. The PID of an agent that
+   * exited can belong to another process, so then nothing ends. A process that the agent started and that lost its
+   * parent stays.
+   */
+  async endTree() {
+    const pid = this.agentPid
+    if (!this.agentAlive || !Number.isSafeInteger(pid) || pid <= 1 || [this.self, this.daemon, this.parent()].includes(pid)) return
+    try { await this.killTree(pid) }
+    catch {}
+  }
+
   exists(target) {
     try { this.kill(target, 0); return true }
     catch (error) { return error?.code === 'EPERM' }
@@ -222,7 +245,8 @@ export class RunProcesses {
     this.stopped = true
     clearTimeout(this.timer)
     if (mode !== 'clean' || !this.enabled) {
-      this.signalGroup('SIGKILL')
+      if (this.platform === 'win32') await this.endTree()
+      else this.signalGroup('SIGKILL')
       return
     }
     // The agent gets SIGTERM before the read, so its error output ends as fast as before (see `AcpRunService`).
