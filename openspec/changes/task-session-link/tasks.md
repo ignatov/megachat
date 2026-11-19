@@ -1,0 +1,26 @@
+# Tasks
+
+## 1. The bridge
+
+- [ ] 1.1 Read `asyncTaskSessions` from the capabilities of `initialize` in `src/AcpBridge.mjs`, keep it as `taskSessions` on the bridge, and give it to each view, as `nativeTurns` is given. Do not add it to the capabilities of the answer (design.md, decision 2).
+- [ ] 1.2 Add `rowSession(run)` to `src/AcpBridge.mjs`: `{ agentId: run.agent ?? 'claude', sessionId: run.providerSessionId, cwd: run.cwd }`, or `null` for a pi run, for a run without `providerSessionId` and for no run (design.md, decision 1). Do not change `taskRows`.
+- [ ] 1.3 In `childRows`, keep in `childTasks` for each sent row the run ID and whether the view sent its session. For a view with `taskSessions`, add `session` to `async_task_spawned` when `rowSession` gives a value, in each phase (design.md, decision 3). For a row that the view sent without the session, send one `async_task_progress` with only `asyncTaskId` and `session` when the session comes (decision 4). Change the comment above the spawn: Air opens the session, and the file is the fallback.
+- [ ] 1.4 After the rows that a view sends at its attach, send one `async_task_progress` with only `asyncTaskId` and `session` for each such row that holds the session (design.md, decision 5). Verify with `npm test`.
+
+## 2. The tests
+
+- [ ] 2.1 In `test/transcript.test.mjs`, keep the case of today for a view with `asyncTasks` only, and add to it that the view gets no `async_task_progress`. Add the cases of "Session of a new child after its start" (the new Claude child `First` with the session `fake-session`: the spawn without `session`, one progress with the exact fields), of "Session of a row after an attach" (a second `session/load` of the same view while `First` runs), and the scenario "A row with a session keeps its file" of "Transcript file in the row of a run".
+- [ ] 2.2 In `test/integration.test.mjs`, add a view with `asyncTaskSessions` to the cases of `agents_resume` for the Codex session `active` and of a follow-up with `agents_send`, and check `session` in each spawn of the run, also a queued row, and no progress for a run whose spawns held the session. Hold the run in the phase `queued` (for example behind another child in the same checkout) so the case sees that row. Add the case of a new Codex child with `children.showInProject` `false`: the registration and one progress with the agent ID `codex`.
+- [ ] 2.3 In `test/pi-child.test.mjs`, add the case of a pi child with the title `README` and a view with `asyncTaskSessions`: the row has `outputFilePath` and no `session`, and the view gets no `async_task_progress`, although the pi run has `providerSessionId`.
+- [ ] 2.4 Check that each `Tests:` line of the deltas names the files of tasks 2.1 to 2.3, and that each scenario has its case there with the same values. Run `npm test` and `openspec validate --all --strict`. No change of `build.mjs`, of `package.json`, of the launcher, of `install` or of a dependency, so `npm run test:bundle` and `npm run test:package` are not necessary.
+
+## 3. The documents
+
+- [ ] 3.1 In `docs/air-contract.md`, add the row `asyncTaskSessions` (sender Air) to the table of "The capabilities": Megachat sends `session` in the rows of the Claude and Codex runs. In the table of "The background tasks", add `session` to the fields of `async_task_spawned`, and add the row `async_task_progress` with `asyncTaskId` and `session`. Add a section "The session of a child run" with the triple, the phases, the progress of a new child, the progress after an attach, the runs without a session (pi, the import), and what Air does: the link, the open and the selection in the sessions tree, the short wait, and the fallback to `outputFilePath`. Name the open point of Air for a hidden service session.
+- [ ] 3.2 In `docs/air-contract.md`, "The transcript of a child run": say that a click opens the file only for a row without `session`, or when Air cannot open the session. Replace "Megachat sends no `async_task_progress`" with the rule of the one progress update that holds only `session`.
+- [ ] 3.3 In `README.md`, "Read the transcript of a task": a click on the title of a running Claude or Codex task opens its session in Air, when the Air build supports it, and else the transcript. A pi task opens the transcript. Change the row of `src/AcpBridge.mjs` in the code map: "with their Stop, their session and their transcript".
+- [ ] 3.4 The Air side: another worker makes it in the monorepo now. Add the item to the IJAI ticket of the Air side of Megachat on `ignatov` (IJAI-6285, or a new IJAI ticket), with the capability, the field and the open point of a hidden service session, only after the author says "да".
+
+## 4. The manual check
+
+- [ ] 4.1 Manual check of the author, with the Air build that has the other side and a temporary `MEGACHAT_HOME`: start a Claude child and a Codex child that run for some minutes, one in the project of the window and one in another project. Click the title of each row while it runs. Verify that Air opens the session of the child and selects it in the sessions tree, and that a row of a pi child opens its transcript. Repeat once with `children.showInProject` `false` and record what Air does with a hidden session. Write the result in `docs/manual-checks.md`.
