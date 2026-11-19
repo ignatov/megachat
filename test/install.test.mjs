@@ -10,7 +10,9 @@ import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { megachatVersion } from '../src/MegachatBuild.mjs'
 import { CentralConfigurationService } from '../src/CentralConfigurationService.mjs'
-import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, entryWithoutTimeLimits, install, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
+import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, entryWithoutTimeLimits, INSTALLED_VARIABLE, installedAgentsPath, install, overlayEntry,
+  overlayPath, OVERLAY_VARIABLE, ownOverlayEntry, registryAgent, RELEASE_ENTRY, removeOverlayEntry, stableNodePath, writeEntry,
+  writeOverlayEntry } from '../src/MegachatInstall.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('../bin/megachat.mjs', import.meta.url))
@@ -20,6 +22,12 @@ const entry = { command: '/usr/local/bin/node', args: ['/opt/megachat/bin/megach
 /** The entry that `install` 0.3.0 and 0.4.0 wrote. */
 const withoutTimeLimits = { command: 'npx', args: ['-y', 'github:ignatov/megachat#semver:x', 'acp'] }
 const air = 'Megachat cannot check the IDE build. Megachat needs an IDE build with the Air support for Megachat'
+/** The overlay entry that `install` writes in a checkout of another directory. */
+const local = overlayEntry(entry)
+const ID = 'acp.registry.megachat-acp'
+/** An `installed.json` of Air with the registry agent of Megachat, as Air writes it. */
+const installedJson = JSON.stringify({ agents: { [ID]: { agent: { id: 'megachat-acp', name: 'Megachat', version: '0.13.0',
+  distribution: { npx: { package: 'github:ignatov/megachat#v0.13.0', args: ['acp'], env: {} } } } } } })
 const network = 'Each start of Megachat in the IDE needs the network, because npx asks GitHub for the last release.'
 const mode = async path => (await stat(path)).mode & 0o777
 const temporary = async t => {
@@ -115,6 +123,96 @@ test('an equal entry, a different entry and an unreadable file stay unchanged', 
   assert.deepEqual(await readdir(directory), ['acp.json'])
 })
 
+test('the state guard points the overlay and installed.json paths of each test to temporary files', () => {
+  assert.equal(overlayPath(), process.env[OVERLAY_VARIABLE])
+  assert.equal(overlayPath({}), process.env[OVERLAY_VARIABLE])
+  assert.equal(installedAgentsPath({}), process.env[INSTALLED_VARIABLE])
+  assert.ok(!overlayPath().startsWith(join(homedir(), '.jetbrains')))
+})
+
+test('installed.json is in the common data directory of the IDE on each platform', () => {
+  const saved = process.env[INSTALLED_VARIABLE]
+  delete process.env[INSTALLED_VARIABLE]
+  try {
+    assert.equal(installedAgentsPath({}, 'darwin'), join(homedir(), 'Library', 'Application Support', 'JetBrains', 'acp-agents', 'installed.json'))
+    assert.equal(installedAgentsPath({}, 'linux'), join(homedir(), '.local', 'share', 'JetBrains', 'acp-agents', 'installed.json'))
+    assert.equal(installedAgentsPath({ XDG_DATA_HOME: '/data' }, 'linux'), join('/data', 'JetBrains', 'acp-agents', 'installed.json'))
+    assert.equal(installedAgentsPath({ APPDATA: '/roaming' }, 'win32'), join('/roaming', 'JetBrains', 'acp-agents', 'installed.json'))
+  }
+  finally { process.env[INSTALLED_VARIABLE] = saved }
+})
+
+test('the registry agent is installed only when installed.json has acp.registry.megachat-acp', async t => {
+  const path = join(await temporary(t), 'installed.json')
+  assert.equal(await registryAgent(path), 'absent')
+  await writeFile(path, installedJson)
+  assert.equal(await registryAgent(path), 'installed')
+  await writeFile(path, JSON.stringify({ agents: { 'acp.megachat': {} } }))
+  assert.equal(await registryAgent(path), 'absent')
+  await writeFile(path, '{ "agents": ')
+  assert.equal(await registryAgent(path), 'unreadable')
+})
+
+test('a missing overlay file gets a private file with the one overlay entry', async t => {
+  const path = join(await temporary(t), 'jetbrains', 'acp-registry-installed-overlay.json')
+  assert.deepEqual(await writeOverlayEntry(path, local), { status: 'created' })
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { agents: { [ID]: { agent: { distribution: { local: entry } } } } })
+  assert.equal(await mode(path), 0o600)
+})
+
+test('an overlay file without the entry keeps each other entry, the key order and the mode, and gets a backup', async t => {
+  const directory = await temporary(t)
+  const path = join(directory, 'overlay.json')
+  const original = JSON.stringify({ agents: { 'acp.registry.claude-acp': { agent: { distribution: { local: { command: 'node', args: ['/x.js'] } } } } }, z: 1 })
+  await writeFile(path, original, { mode: 0o640 })
+  await chmod(path, 0o640)
+  const result = await writeOverlayEntry(path, local, new Date('2026-11-19T09:08:07Z'))
+  assert.deepEqual(result, { status: 'added', backup: join(directory, 'overlay.json.before-megachat-20261119T090807Z') })
+  assert.equal(await readFile(result.backup, 'utf8'), original)
+  const written = JSON.parse(await readFile(path, 'utf8'))
+  assert.deepEqual(Object.keys(written), ['agents', 'z'])
+  assert.deepEqual(Object.keys(written.agents), ['acp.registry.claude-acp', ID])
+  assert.equal(await mode(path), 0o640)
+  // The removal takes only this entry away, with its own backup.
+  const removed = await removeOverlayEntry(path, new Date('2026-11-19T09:08:08Z'))
+  assert.equal(removed.status, 'removed')
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), JSON.parse(original))
+  assert.equal(await mode(path), 0o640)
+})
+
+test('an equal overlay entry, a different entry, a file with comments and an unreadable file stay unchanged, and only an own entry goes', async t => {
+  const directory = await temporary(t)
+  const path = join(directory, 'overlay.json')
+  const other = { agent: { distribution: { local: { command: 'node', args: ['/x.js'], env: { A: '1' } } } } }
+  const commented = '{\n  // The local Claude agent.\n  "agents": { "acp.registry.claude-acp": { "agent": { "distribution": { "local": { "command": "node", "args": ["/x.js"], }, }, }, }, },\n}\n'
+  const cases = [
+    [JSON.stringify({ agents: { [ID]: local } }), { status: 'same' }, { status: 'removed' }],
+    [JSON.stringify({ agents: { [ID]: other } }), { status: 'different', existing: other }, { status: 'different', existing: other }],
+    // Air accepts comments, but a write of the JSON loses them, so Megachat does not change such a file.
+    [commented, { status: 'unreadable' }, { status: 'unreadable' }],
+    [`// A checkout of Megachat.\n${JSON.stringify({ agents: { [ID]: local } })}`, { status: 'unreadable' }, { status: 'unreadable' }],
+    ['{"agents": {', { status: 'unreadable' }, { status: 'unreadable' }],
+    ['{"agents": []}', { status: 'unreadable' }, { status: 'unreadable' }],
+  ]
+  for (const [text, written, removed] of cases) {
+    await writeFile(path, text)
+    assert.deepEqual(await writeOverlayEntry(path, local), written, text)
+    assert.equal(await readFile(path, 'utf8'), text)
+    const result = await removeOverlayEntry(path)
+    assert.deepEqual(removed.status === 'removed' ? result.status : result, removed.status === 'removed' ? 'removed' : removed, text)
+    if (result.status === 'removed') await rm(result.backup)
+    else assert.equal(await readFile(path, 'utf8'), text)
+  }
+  assert.deepEqual(await readdir(directory), ['overlay.json'])
+})
+
+test('an own overlay entry has only agent.distribution.local, and the local command starts bin/megachat.mjs acp with node', () => {
+  assert.equal(ownOverlayEntry(local), true)
+  assert.equal(ownOverlayEntry({ agent: { distribution: { local: { ...entry, env: {} } } } }), false)
+  assert.equal(ownOverlayEntry({ agent: { distribution: { local: entry }, name: 'Megachat' } }), false)
+  assert.equal(ownOverlayEntry({ agent: { distribution: { local: { command: 'node', args: ['/x/dist/index.js'] } } } }), false)
+})
+
 test('the earlier entry is an entry of install 0.2.0 that starts a copy in an _npx directory with Node.js', () => {
   assert.equal(earlierEntry(earlier), true)
   assert.equal(earlierEntry({ command: '/usr/local/bin/node', args: ['/cache/_npx/0123/node_modules/megachat/bin/megachat.mjs', 'acp'] }), true)
@@ -207,6 +305,7 @@ test('install in a git checkout writes the entry that starts the checkout once, 
     'Central gives a valid configuration.', `A Claude child uses Claude Code at ${join(home, '.local', 'bin', 'claude')}.`,
     `A Claude child gets its key from the Central entry in ${join(home, '.claude', 'settings.json')}.`,
     `A Codex child uses Codex at ${join(tools, 'codex')}.`, `Megachat created ${path} with the entry Megachat.`,
+    `Next step in Air: select Megachat in the agent list. The entry Megachat in ${path} starts Megachat, and the IDE reads the change itself, with no restart.`,
     `Megachat ${megachatVersion()} runs from ${dirname(dirname(launcher))}.`]) {
     assert.ok(first.stdout.includes(line), `${line}\n${first.stdout}`)
   }
@@ -439,6 +538,77 @@ test('install in a copy without .git writes the npx entry of the last release, a
   assert.equal(different.stdout.trimEnd().split('\n').at(-1), failed)
   assert.equal(different.stdout.trimEnd().split('\n').at(-2), last)
   assert.equal(await readFile(path, 'utf8'), checkout)
+})
+
+test('with the registry agent, install in a checkout writes the overlay entry, removes its acp.json entry and names the case in one line', { timeout: 60000 }, async t => {
+  const directory = await temporary(t)
+  const { home, tools, nodes } = await fakeMachine(directory)
+  const path = join(directory, 'acp.json')
+  const overlay = join(directory, 'jetbrains', 'acp-registry-installed-overlay.json')
+  const installed = join(directory, 'installed.json')
+  await writeFile(installed, installedJson)
+  const acp = JSON.stringify({ agent_servers: { Other: { command: '/bin/other' }, Megachat: { command: join(nodes, 'node'), args: [launcher, 'acp'] } } })
+  await writeFile(path, acp)
+  const env = { HOME: home, PATH: [nodes, tools, '/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: path, [OVERLAY_VARIABLE]: overlay, [INSTALLED_VARIABLE]: installed }
+  const first = await run(['install', join(directory, 'state')], env)
+  assert.equal(first.code, process.platform === 'darwin' ? 0 : 1, first.stdout + first.stderr)
+  const backup = (await readdir(directory)).find(name => name.startsWith('acp.json.before-megachat-'))
+  assert.ok(first.stdout.includes(`Megachat created ${overlay} with the overlay entry of the registry agent Megachat.`), first.stdout)
+  const lines = first.stdout.trimEnd().split('\n')
+  assert.equal(lines.at(-3), `Next step in Air: open the Megachat row. Air has Megachat from the registry already, and the overlay entry in ${overlay} starts this checkout for it. Its name in Air ends with [*]. Megachat removed its earlier entry Megachat from ${path}. The backup is ${join(directory, backup)}.`)
+  assert.ok(lines.at(-2).startsWith(air), first.stdout)
+  assert.deepEqual(JSON.parse(await readFile(overlay, 'utf8')), { agents: { [ID]: overlayEntry({ command: join(nodes, 'node'), args: [launcher, 'acp'] }) } })
+  assert.equal(await mode(overlay), 0o600)
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { agent_servers: { Other: { command: '/bin/other' } } })
+  assert.equal(await readFile(join(directory, backup), 'utf8'), acp)
+
+  // An overlay file with comments stays, and the acp.json entry stays too, so the checkout keeps a start.
+  await writeFile(path, acp)
+  await rm(join(directory, backup))
+  const commented = '// The overlay of a developer.\n{ "agents": {} }\n'
+  await writeFile(overlay, commented)
+  const refused = await run(['install', join(directory, 'state')], env)
+  assert.equal(refused.code, 1, refused.stdout + refused.stderr)
+  assert.ok(refused.stdout.includes(`Megachat cannot read ${overlay} as JSON`), refused.stdout)
+  assert.ok(refused.stdout.includes(`Next step: Megachat did not put its start in place in ${overlay}.`), refused.stdout)
+  assert.equal(await readFile(overlay, 'utf8'), commented)
+  assert.equal(await readFile(path, 'utf8'), acp)
+})
+
+test('with the registry agent, install in a copy without .git writes no entry, removes its own entry and keeps an entry of the user', { timeout: 60000 }, async t => {
+  const directory = await temporary(t)
+  const { home, tools, nodes } = await fakeMachine(directory)
+  const copy = await releaseCopy(directory)
+  const path = join(directory, 'acp.json')
+  const installed = join(directory, 'installed.json')
+  await writeFile(installed, installedJson)
+  const env = { HOME: home, PATH: [nodes, tools, '/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: path, [INSTALLED_VARIABLE]: installed,
+    [OVERLAY_VARIABLE]: join(directory, 'overlay.json') }
+  const install = () => run(['install', join(directory, 'state')], env, [], join(copy, 'bin', 'megachat.mjs'))
+  const summary = 'Next step in Air: open the Megachat row. Air has Megachat from the registry already, so the install writes no entry to acp.json.'
+
+  const first = await install()
+  assert.equal(first.code, process.platform === 'darwin' ? 0 : 1, first.stdout + first.stderr)
+  assert.deepEqual((await readdir(directory)).filter(name => ['acp.json', 'overlay.json'].includes(name)), [])
+  const lines = first.stdout.trimEnd().split('\n')
+  assert.equal(lines.at(-3), summary)
+  assert.ok(lines.at(-2).startsWith(air), first.stdout)
+  assert.ok(!first.stdout.includes(network), first.stdout)
+
+  const original = JSON.stringify({ agent_servers: { First: { command: '/bin/first' }, Megachat: RELEASE_ENTRY } })
+  await writeFile(path, original)
+  const removed = await install()
+  const backup = (await readdir(directory)).find(name => name.startsWith('acp.json.before-megachat-'))
+  assert.ok(removed.stdout.includes(`${summary} Megachat removed its earlier entry Megachat from ${path}. The backup is ${join(directory, backup)}.`), removed.stdout)
+  assert.equal(await readFile(join(directory, backup), 'utf8'), original)
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { agent_servers: { First: { command: '/bin/first' } } })
+
+  const proxy = JSON.stringify({ agent_servers: { Megachat: { ...withoutTimeLimits, env: { HTTPS_PROXY: 'http://proxy.example.com:3128' } } } })
+  await writeFile(path, proxy)
+  const kept = await install()
+  assert.equal(kept.code, first.code, kept.stdout + kept.stderr)
+  assert.ok(kept.stdout.includes(`${path} holds an entry Megachat that Megachat did not write, so it stays.`), kept.stdout)
+  assert.equal(await readFile(path, 'utf8'), proxy)
 })
 
 test('the launcher prints the reason when Megachat fails to load, and a failed install prints its error', async t => {

@@ -54,6 +54,7 @@ ${logLine('npx')}printf 'npx-path %s\\n' "$0" >>"$FAKE_LOG"
 printf 'npx-node %s\\n' "$(command -v node)" >>"$FAKE_LOG"
 printf 'npx-acp %s\\n' "$(cat "$MEGACHAT_ACP_CONFIG" 2>/dev/null | tr -d '\\n')" >>"$FAKE_LOG"
 echo "[megachat] The output of the install line."
+echo "Next step in Air: select Megachat in the agent list. The entry Megachat in acp.json starts Megachat."
 exit "\${FAKE_NPX_CODE:-0}"
 `
 
@@ -174,7 +175,9 @@ test('a ready machine runs only the checks and the install line, also in a secon
     assert.ok(ran(commands, 'npx-path ')[0].endsWith('/fake-bin/npx'))
     assert.match(output, /Node\.js v22\.19\.0 from the PATH/)
     assert.match(output, /The output of the install line\./)
-    assert.match(output, /select Megachat in the agent list of Air/)
+    // The script shows the summary line of the install line again after its own end line.
+    assert.match(output, /Megachat is installed\.\n\[megachat setup\] Next step in Air: select Megachat in the agent list\./)
+    assert.doesNotMatch(output, /reads the change of acp\.json itself/)
     assert.match(output, /30 to 100 seconds/)
     assert.doesNotMatch(output, /restart the IDE/i)
     assert.ok(!output.includes(SECRET))
@@ -207,7 +210,7 @@ test('an empty Mac gets Node.js, Central, the login and the Claude key, and a se
   assert.equal(await readFile(mac.acpConfig, 'utf8'), '{}\n')
   assert.match(await readFile(join(mac.home, '.claude', 'settings.json'), 'utf8'), /"apiKeyHelper": "central proxy start/)
   assert.ok(!first.output.includes(SECRET), first.output)
-  assert.match(first.output, /select Megachat in the agent list of Air/)
+  assert.match(first.output, /\[megachat setup\] Next step in Air: select Megachat in the agent list\./)
 
   const settings = await readFile(join(mac.home, '.claude', 'settings.json'), 'utf8')
   const second = await setup(mac)

@@ -189,7 +189,9 @@ main() {
 
   # 9. The steps in the IDE.
   say "Megachat is installed."
-  say "In the IDE, select Megachat in the agent list of Air. The IDE reads the change of acp.json itself, so it needs no restart."
+  # The install line names the next step in Air for the case that it took, in its line that starts with "Next step".
+  summary=$(grep '^Next step' "$log" | tail -n 1)
+  if [ -n "$summary" ]; then say "$summary"; fi
   say "Megachat needs an IDE build with the Air support for Megachat."
   say "The first start of Megachat in the IDE takes about 30 to 100 seconds, because npx installs the last release. Each start needs the network."
 }

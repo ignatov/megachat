@@ -15,6 +15,15 @@ import { gitCheckout } from './sourceBuildId.mjs'
 export const ACP_CONFIG_VARIABLE = 'MEGACHAT_ACP_CONFIG'
 /** Air derives the agent ID `acp.megachat` from this name. */
 const ENTRY = 'Megachat'
+/**
+ * The agent ID of Megachat as an agent of the ACP registry. Air gives the application session to this agent and to the
+ * agent `acp.megachat` of the entry [ENTRY]. Both use one state directory, so both rows show one conversation.
+ */
+export const REGISTRY_AGENT = 'acp.registry.megachat-acp'
+/** A test sets this variable, so that no test can reach the overlay file of the user. */
+export const OVERLAY_VARIABLE = 'MEGACHAT_ACP_OVERLAY'
+/** A test sets this variable, so that no test reads the `installed.json` of the user. */
+export const INSTALLED_VARIABLE = 'MEGACHAT_ACP_INSTALLED'
 /** The package spec of the last release for npx. `#semver:x` selects the tag `v<version>` with the highest version. */
 export const RELEASE_SPEC = 'github:ignatov/megachat#semver:x'
 /** The command and the arguments of the npx entry. `install` 0.3.0 and 0.4.0 wrote an entry with only these keys. */
@@ -29,6 +38,43 @@ export const RELEASE_ENTRY = { ...NPX_START, env: { ...ENTRY_GIT_VARIABLES } }
 /** The ACP configuration of the JetBrains IDEs: `~/.jetbrains/acp.json`, or the file that the variable names. */
 export function acpConfigPath(environment = process.env) {
   return environment[ACP_CONFIG_VARIABLE] ? resolve(environment[ACP_CONFIG_VARIABLE]) : join(homedir(), '.jetbrains', 'acp.json')
+}
+
+/**
+ * The overlay file of Air: `~/.jetbrains/acp-registry-installed-overlay.json`, or the file that the variable names. Air
+ * starts an installed registry agent with the `local` command of its overlay entry.
+ */
+export function overlayPath(environment = process.env) {
+  // The variable of this process also counts, so that a caller with its own environment in a test stays on the test file.
+  const variable = environment[OVERLAY_VARIABLE] || process.env[OVERLAY_VARIABLE]
+  return variable ? resolve(variable)
+    : join(homedir(), '.jetbrains', 'acp-registry-installed-overlay.json')
+}
+
+/**
+ * The file of the installed ACP agents that all JetBrains IDEs of the user share, in the common data directory of the
+ * IDE, or the file that the variable names. macOS: `~/Library/Application Support/JetBrains`. Windows: `%APPDATA%\JetBrains`.
+ * Linux: `$XDG_DATA_HOME/JetBrains`, else `~/.local/share/JetBrains`.
+ */
+export function installedAgentsPath(environment = process.env, platform = process.platform) {
+  const variable = environment[INSTALLED_VARIABLE] || process.env[INSTALLED_VARIABLE]
+  if (variable) return resolve(variable)
+  const base = platform === 'darwin' ? join(homedir(), 'Library', 'Application Support')
+    : platform === 'win32' ? environment.APPDATA || join(homedir(), 'AppData', 'Roaming')
+      : environment.XDG_DATA_HOME && isAbsolute(environment.XDG_DATA_HOME) ? environment.XDG_DATA_HOME : join(homedir(), '.local', 'share')
+  return join(base, 'JetBrains', 'acp-agents', 'installed.json')
+}
+
+/**
+ * Whether Air installed the registry agent of Megachat: `installed` when `agents` of the file [path] has
+ * [REGISTRY_AGENT], `absent` when it has not or when the file does not exist, else `unreadable`.
+ */
+export async function registryAgent(path) {
+  let installed
+  try { installed = JSON.parse(await readFile(path, 'utf8')) }
+  catch (error) { return error.code === 'ENOENT' ? 'absent' : 'unreadable' }
+  if (!plainObject(installed) || (installed.agents !== undefined && !plainObject(installed.agents))) return 'unreadable'
+  return plainObject(installed.agents?.[REGISTRY_AGENT]) ? 'installed' : 'absent'
 }
 
 /**
@@ -164,6 +210,96 @@ export async function removeEntry(path, now = new Date(), ours = ownEntry) {
   return { status: 'removed', backup, existing }
 }
 
+/**
+ * Reads the file [path] as an overlay file. The result is `missing`, `unreadable`, or `read` with the `overlay`. Air
+ * also accepts comments and trailing commas, but a write of the JSON loses them, so such a file is `unreadable` here.
+ * A file that is not a JSON object, or whose `agents` is not an object, is `unreadable` too.
+ */
+async function readOverlay(path) {
+  let text
+  try { text = await readFile(path, 'utf8') }
+  catch (error) { return { status: error.code === 'ENOENT' ? 'missing' : 'unreadable' } }
+  let overlay
+  try { overlay = JSON.parse(text) }
+  catch { return { status: 'unreadable' } }
+  if (!plainObject(overlay) || (overlay.agents !== undefined && !plainObject(overlay.agents))) return { status: 'unreadable' }
+  return { status: 'read', overlay }
+}
+
+/** The overlay entry that starts [local], a `command` with its `args`, for the registry agent of Megachat. */
+export const overlayEntry = local => ({ agent: { distribution: { local } } })
+
+/**
+ * Whether `install` in a git checkout wrote the overlay entry [entry]: only `agent.distribution.local`, and the local
+ * command is a [checkoutEntry]. The directory can be another checkout than this copy.
+ */
+export function ownOverlayEntry(entry) {
+  const keys = value => plainObject(value) ? Object.keys(value).join() : ''
+  return keys(entry) === 'agent' && keys(entry.agent) === 'distribution' && keys(entry.agent.distribution) === 'local'
+    && checkoutEntry(entry.agent.distribution.local)
+}
+
+/**
+ * Adds [entry] as [REGISTRY_AGENT] to `agents` of the overlay file [path]. The result is `created`, `added`, `same`,
+ * `different` or `unreadable`, as for [writeEntry]. Only `created` and `added` write a file. Before `added`, this copies the file to
+ * `<path>.before-megachat-<UTC time>`. It keeps each other key, the key order and the mode of the file.
+ */
+export async function writeOverlayEntry(path, entry, now = new Date()) {
+  const read = await readOverlay(path)
+  if (read.status === 'missing') {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, `${JSON.stringify({ agents: { [REGISTRY_AGENT]: entry } }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+    return { status: 'created' }
+  }
+  if (read.status === 'unreadable') return read
+  const existing = read.overlay.agents?.[REGISTRY_AGENT]
+  if (existing !== undefined && isDeepStrictEqual(existing, entry)) return { status: 'same' }
+  if (existing !== undefined) return { status: 'different', existing }
+  const backup = await backUp(path, now)
+  read.overlay.agents = { ...read.overlay.agents, [REGISTRY_AGENT]: entry }
+  await writeFile(path, `${JSON.stringify(read.overlay, null, 2)}\n`)
+  return { status: 'added', backup }
+}
+
+/**
+ * Removes the entry [REGISTRY_AGENT] from `agents` of the overlay file [path] when [ownOverlayEntry] accepts it. The
+ * result is `absent`, `removed`, `different` or
+ * `unreadable`. A missing file gives `absent`. Only `removed` writes a file, after a copy to
+ * `<path>.before-megachat-<UTC time>`. It keeps each other key, the key order, the mode and the file itself.
+ */
+export async function removeOverlayEntry(path, now = new Date()) {
+  const read = await readOverlay(path)
+  if (read.status === 'missing') return { status: 'absent' }
+  if (read.status === 'unreadable') return read
+  const existing = read.overlay.agents?.[REGISTRY_AGENT]
+  if (existing === undefined) return { status: 'absent' }
+  if (!ownOverlayEntry(existing)) return { status: 'different', existing }
+  const backup = await backUp(path, now)
+  delete read.overlay.agents[REGISTRY_AGENT]
+  await writeFile(path, `${JSON.stringify(read.overlay, null, 2)}\n`)
+  return { status: 'removed', backup, existing }
+}
+
+/**
+ * The second start of Megachat in Air: `installed.json` has the registry agent [REGISTRY_AGENT], and `acp.json` has
+ * an entry `Megachat`. Gives the `path` of `acp.json`, the `existing` entry, and `own` when an `install` wrote it
+ * ([ownEntry]), else `undefined`. An unreadable file gives `undefined`.
+ */
+export async function secondEntry({ environment = process.env, platform = process.platform } = {}) {
+  if (await registryAgent(installedAgentsPath(environment, platform)) !== 'installed') return undefined
+  const path = acpConfigPath(environment)
+  const found = await findEntry(path, ownEntry)
+  if (found.status !== 'ours' && found.status !== 'different') return undefined
+  return { path, existing: found.existing, own: found.status === 'ours' }
+}
+
+/**
+ * Removes the entry `Megachat` from `acp.json` at [path] after the choice of the user, also an entry that the user
+ * changed, when [ours] accepts it, with a copy to `acp.json.before-megachat-<UTC time>`. The result is the result of
+ * [removeEntry].
+ */
+export const removeSecondEntry = (path, now = new Date(), ours = () => true) => removeEntry(path, now, ours)
+
 async function executable(path) {
   try { await access(path, constants.X_OK); return (await stat(path)).isFile() }
   catch { return false }
@@ -221,11 +357,48 @@ async function checks({ configuration, platform, path, binaries }) {
 }
 
 /**
- * The command `install`: checks the machine and adds the entry `Megachat` to `acp.json`. In a git checkout, the entry
+ * The start of Megachat when Air has the registry agent [REGISTRY_AGENT]. In a git checkout, it adds the overlay entry
+ * that starts [entry] for that agent. Then it removes the `acp.json` entry that an `install` wrote ([ownEntry]), with a
+ * backup. Another entry stays: Megachat asks in Air about it. It prints one line for each result and the summary line,
+ * and gives true when the start is in place. A failed overlay entry keeps the `acp.json` entry.
+ */
+async function registryStart({ path, entry, checkout, environment, print, pasted }) {
+  const now = new Date()
+  let placed = true
+  let summary = message('install.summary.registry')
+  if (checkout) {
+    const overlay = overlayPath(environment)
+    const local = overlayEntry(entry)
+    const pastedLocal = value => `"${REGISTRY_AGENT}": ${JSON.stringify(value)}`
+    const result = await writeOverlayEntry(overlay, local, now)
+    switch (result.status) {
+      case 'created': print(message('install.overlayCreated', overlay)); break
+      case 'added': print(message('install.overlayAdded', overlay, result.backup)); break
+      case 'same': print(message('install.overlaySame', overlay)); break
+      case 'different': print(message('install.overlayDifferent', overlay)); print(pastedLocal(result.existing)); print(message('install.overlayEntry')); print(pastedLocal(local)); break
+      default: print(message('install.overlayUnreadable', overlay)); print(pastedLocal(local))
+    }
+    placed = ['created', 'added', 'same'].includes(result.status)
+    summary = message(placed ? 'install.summary.overlay' : 'install.summary.failed', overlay)
+  }
+  if (placed) {
+    const removal = await removeEntry(path, now, ownEntry)
+    if (removal.status === 'removed') summary = `${summary} ${message('install.summary.removed', path, removal.backup)}`
+    if (removal.status === 'different') { print(message('install.acpDifferent', path)); print(pasted(removal.existing)) }
+    if (removal.status === 'unreadable') print(message('install.acpUnreadable', path))
+  }
+  print(summary)
+  return placed
+}
+
+/**
+ * The command `install`: checks the machine and adds the entry `Megachat` to `acp.json`. When `installed.json` of Air
+ * has the registry agent, it writes no entry and removes its earlier entry instead (see [registryStart]). In a git checkout, the entry
  * starts the checkout with the Node.js of this process. In each other copy, the entry is [RELEASE_ENTRY], and it
  * replaces an [earlierEntry] or an [entryWithoutTimeLimits]. The command prints one line for each result, then the lines
  * about the IDE build, the network and npx, then the version and the directory of this copy. It returns 0 only when the
- * entry is in place and the checks passed. The lines about the IDE build and the network do not change it. A test can
+ * entry is in place and the checks passed. The lines about the IDE build and the network do not change it. Before the
+ * line about the IDE build, one summary line starts with "Next step" and names the case that the install took. A test can
  * pass its own [configuration] and [binaries]. The default [configuration] writes no log line: each check prints one
  * plain line, and a log line of a failure has the frames of the stack.
  */
@@ -238,8 +411,11 @@ export async function install({ environment = process.env, platform = process.pl
   const checkout = gitCheckout(root)
   const entry = checkout ? { command: await stableNodePath({ path: environment.PATH ?? '', platform }), args: [join(root, 'bin', 'megachat.mjs'), 'acp'] }
     : RELEASE_ENTRY
-  const result = await writeEntry(path, entry, new Date(), checkout ? () => false : existing => earlierEntry(existing) || entryWithoutTimeLimits(existing))
   const pasted = value => `"${ENTRY}": ${JSON.stringify(value)}`
+  // When Air has the registry agent, an entry gives a second row of the same conversation, so the install writes none.
+  const registry = await registryAgent(installedAgentsPath(environment, platform)) === 'installed'
+  const result = registry ? { status: 'registry', placed: await registryStart({ path, entry, checkout, environment, print, pasted }) }
+    : await writeEntry(path, entry, new Date(), checkout ? () => false : existing => earlierEntry(existing) || entryWithoutTimeLimits(existing))
   switch (result.status) {
     case 'created': print(message('install.created', path)); break
     case 'added': print(message('install.added', path, result.backup)); break
@@ -249,14 +425,16 @@ export async function install({ environment = process.env, platform = process.pl
       break
     case 'same': print(message('install.same', path)); break
     case 'different': print(message('install.different', path)); print(pasted(result.existing)); print(message('install.entry')); print(pasted(entry)); break
+    case 'registry': break
     default: print(message('install.unreadable', path)); print(pasted(entry))
   }
-  const placed = ['created', 'added', 'replaced', 'same'].includes(result.status)
+  const placed = registry ? result.placed : ['created', 'added', 'replaced', 'same'].includes(result.status)
+  if (!registry) print(message(placed ? 'install.summary.entry' : 'install.summary.failed', path))
   // Nothing in a terminal tells which IDE build starts the entry, so this line only names the need.
   print(message('install.air'))
   if (checkout) print(message('install.copy', root, megachatVersion()))
   else {
-    if (placed) {
+    if (placed && !registry) {
       print(message('install.network'))
       print(message('install.ide'))
     }
@@ -324,7 +502,14 @@ export async function uninstall({ environment = process.env, directory, print = 
       failed = true
     }
     else {
-      gone = reported(found.status === 'ours' ? await removeEntry(path, now(), ownEntry) : found)
+      // The overlay entry of a checkout goes too. An overlay entry of the user is not a part of Megachat, so it stays.
+      const overlay = overlayPath(environment)
+      const local = await removeOverlayEntry(overlay, now())
+      if (local.status === 'removed') print(message('uninstall.overlayRemoved', overlay, local.backup))
+      // After the removal of the overlay entry, Megachat was installed, so the line of a missing entry is `absent`.
+      if (local.status === 'removed' && found.status === 'absent') print(message('uninstall.absent', path))
+      gone = local.status === 'removed' && found.status === 'absent' ? true
+        : reported(found.status === 'ours' ? await removeEntry(path, now(), ownEntry) : found)
       failed = !gone
       if (gone && client) {
         try { await client.json('/shutdown', {}) }

@@ -1,12 +1,14 @@
 // `npm test` loads this module with `node --import` before each test file. When a test names no state directory,
 // Megachat then uses a temporary home and no legacy directories. So a test cannot reach the conversation of the user
 // in `~/.jetbrains/air/megachat`, and it cannot start a migration of earlier state. The command `install` then writes
-// a temporary `acp.json`, so a test cannot change `~/.jetbrains/acp.json` of the user.
+// a temporary `acp.json` and a temporary overlay file, and it reads a temporary `installed.json`. So a test cannot
+// change `~/.jetbrains/acp.json` or `~/.jetbrains/acp-registry-installed-overlay.json` of the user, and the registry
+// agent that Air installed for the user does not change a result.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HOME_VARIABLE, LEGACY_VARIABLE } from '../src/MegachatHome.mjs'
-import { ACP_CONFIG_VARIABLE } from '../src/MegachatInstall.mjs'
+import { ACP_CONFIG_VARIABLE, INSTALLED_VARIABLE, OVERLAY_VARIABLE } from '../src/MegachatInstall.mjs'
 
 // `defaultStateDirectory` ignores an empty home variable, so an empty value counts as unset.
 if (!process.env[HOME_VARIABLE]) {
@@ -18,6 +20,12 @@ process.env[LEGACY_VARIABLE] ??= ''
 if (!process.env[ACP_CONFIG_VARIABLE]) {
   const directory = mkdtempSync(join(tmpdir(), 'megachat-acp-guard-'))
   process.env[ACP_CONFIG_VARIABLE] = join(directory, 'acp.json')
+  process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
+}
+if (!process.env[OVERLAY_VARIABLE] || !process.env[INSTALLED_VARIABLE]) {
+  const directory = mkdtempSync(join(tmpdir(), 'megachat-overlay-guard-'))
+  process.env[OVERLAY_VARIABLE] ||= join(directory, 'acp-registry-installed-overlay.json')
+  process.env[INSTALLED_VARIABLE] ||= join(directory, 'installed.json')
   process.once('exit', () => rmSync(directory, { recursive: true, force: true }))
 }
 // A Claude child reads the settings of the user, and the guard of the base URL reads them in the daemon. An empty

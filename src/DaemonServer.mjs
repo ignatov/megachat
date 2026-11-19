@@ -96,6 +96,7 @@ export class DaemonServer {
           return
         }
         case '/state': send(await this.service.state.snapshot()); return
+        case '/acp-entry': send({ keep: this.service.settings.keepsAcpEntry }); return
         case '/main-agent': send(this.service.mainAgent()); return
         case '/conversation': send(await this.service.view()); return
         case '/history': {
@@ -179,6 +180,12 @@ export class DaemonServer {
         response.setHeader('content-type', 'application/json')
         this.keepAlive(response, ' ')
         response.end(JSON.stringify(await this.service.compact()))
+        return
+      }
+      case '/acp-entry': {
+        // The choice Keep in the dialog about a second entry Megachat. The bridge does not ask again after it.
+        await this.service.settings.keepAcpEntry()
+        send({ keep: true })
         return
       }
       case '/shutdown': send({ stopping: true }); setImmediate(this.shutdown); return
