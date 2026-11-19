@@ -27,7 +27,8 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions, showInProject = false } = {}) {
+/** A daemon with the fake agent. The launch of a child waits for [launch], when it is set. */
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions, showInProject = false, launch } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -51,6 +52,7 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
   const launchedAgents = []
   const children = new AcpRunService(service.state, { childLaunch: async agent => {
     launchedAgents.push(agent)
+    await launch
     if (launchError) throw launchError
     return { env: { ...process.env, ...env } }
   } }, {
@@ -65,9 +67,10 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
 
 /**
  * A view of Air. [answer] gives the answer to a permission request. Without it, [approve] selects `yes` at once, else
- * the view never answers. [asked] gets the parameters of each permission request.
+ * the view never answers. [asked] gets the parameters of each permission request. A native view with [taskSessions]
+ * sends `asyncTaskSessions`.
  */
-async function attach(daemon, cwd, { loading = false, approve = false, answer, native = false, sessionId = 'megachat', serviceSessions = false, workspaces = [], reshowMs } = {}) {
+async function attach(daemon, cwd, { loading = false, approve = false, answer, native = false, sessionId = 'megachat', serviceSessions = false, workspaces = [], reshowMs, taskSessions = false } = {}) {
   const updates = []
   const registrations = []
   const asked = []
@@ -79,20 +82,27 @@ async function attach(daemon, cwd, { loading = false, approve = false, answer, n
     .onRequest(methods.client.session.requestPermission, ({ params }) => respond(params))
     .connect(bridge.app())
   await connection.agent.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: native
-    ? { _meta: { jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks', ...(serviceSessions ? ['serviceSessions'] : []), ...(workspaces.length ? ['workspaces'] : [])] } } } } : {} })
+    ? { _meta: { jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks', ...(serviceSessions ? ['serviceSessions'] : []),
+      ...(taskSessions ? ['asyncTaskSessions'] : []), ...(workspaces.length ? ['workspaces'] : [])] } } } } : {} })
   const opened = await connection.agent.request(loading ? methods.agent.session.load : methods.agent.session.new, {
     cwd, mcpServers: [], ...(loading ? { sessionId } : {}),
   })
   return { connection, updates, registrations, asked, sessionId: loading ? sessionId : opened.sessionId }
 }
 
-test('a Codex child requests permission and registers its service session', { timeout: 10000 }, async t => {
-  const { daemon, cwd, service, launchedAgents } = await fixture(t, 'approval', 'codex')
-  const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true, approve: true })
+test('a Codex child requests permission, registers its service session, and its row gets the session in one progress', { timeout: 10000 }, async t => {
+  const launch = Promise.withResolvers()
+  const { daemon, cwd, service, launchedAgents } = await fixture(t, 'approval', 'codex', { launch: launch.promise })
+  const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true, approve: true, taskSessions: true })
   t.after(() => viewer.connection.close())
   await viewer.connection.agent.request(methods.agent.session.prompt, {
     sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Use Codex' }],
   })
+  // The row of the phase running goes out at the launch, before the adapter gives the session.
+  const launching = Object.values((await service.state.snapshot()).runs)[0]
+  const [row] = await rowsOf(viewer, [launching.id], 'running')
+  assert.equal(row.session, undefined)
+  launch.resolve()
   const state = await finishChildren(service)
   assert.deepEqual(launchedAgents, ['codex'])
   const run = Object.values(state.runs)[0]
@@ -101,6 +111,10 @@ test('a Codex child requests permission and registers its service session', { ti
   assert.equal(Object.values(state.permissions)[0].status, 'answered')
   assert.ok(viewer.registrations.some(item => item.agentId === 'codex' && item.sessionId === run.providerSessionId))
   assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: false })
+  const session = { agentId: 'codex', sessionId: run.providerSessionId, cwd }
+  assert.deepEqual(progressOf(viewer), [{ sessionUpdate: 'async_task_progress', asyncTaskId: `${run.id}:running`, session }])
+  // The row of the permission request comes after the session, so it holds the session from its spawn.
+  assert.deepEqual(spawnedRows(viewer).find(update => update.asyncTaskId === `${run.id}:approval`).session, session)
 })
 
 test('a child registers no service session with the default of children.showInProject', { timeout: 10000 }, async t => {
@@ -127,7 +141,7 @@ test('an explicit Codex resume preserves the user session and supports cancellat
     fauxAssistantMessage(fauxToolCall('agents_resume', { cwd, agent: 'codex', sessionId: 'active', prompt: 'wait' }), { stopReason: 'toolUse' }),
     fauxAssistantMessage('Resumed in the background.'),
   ])
-  const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true })
+  const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true, taskSessions: true })
   t.after(() => viewer.connection.close())
   await viewer.connection.agent.request(methods.agent.session.prompt, {
     sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Continue the existing Codex session' }],
@@ -136,6 +150,11 @@ test('an explicit Codex resume preserves the user session and supports cancellat
   assert.equal((await service.state.snapshot()).current, null)
   assert.equal(run.serviceSession, false)
   assert.equal(run.providerSessionId, 'active')
+  // Each row of the run names the session of the user from its spawn, so the view sends no progress.
+  await rowsOf(viewer, [run.id], 'running')
+  const rows = spawnedRows(viewer).filter(update => update.asyncTaskId.startsWith(`${run.id}:`))
+  assert.ok(rows.length > 0 && rows.every(update => JSON.stringify(update.session) === JSON.stringify({ agentId: 'codex', sessionId: 'active', cwd })))
+  assert.deepEqual(progressOf(viewer), [])
   assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')),
     { operation: 'load', sessionId: 'active', claudeOptions: false })
   fake.setResponses([
@@ -1368,6 +1387,7 @@ test('a turn of a child result or of the sessions summary cannot steer, and a fo
 
 /** The rows of the chat that [viewer] got, by the kind of the update. */
 const spawnedRows = viewer => viewer.updates.map(event => event.update).filter(update => update.sessionUpdate === 'async_task_spawned')
+const progressOf = viewer => viewer.updates.map(event => event.update).filter(update => update.sessionUpdate === 'async_task_progress')
 const stopTask = (viewer, asyncTaskId, sessionId = viewer.sessionId) =>
   viewer.connection.agent.request('_session/async_task/stop', { sessionId, asyncTaskId })
 
@@ -1667,6 +1687,37 @@ test('the Stop of a queued row cancels that run before its start, and the run be
   assert.deepEqual(await stopTask(viewer, running.asyncTaskId), { stopped: true })
   await finishChildren(service)
   assert.equal(await readFile(join(cwd, 'dispatches'), 'utf8'), 'wait\n')
+})
+
+test('each row of a follow-up with agents_send names the session of the child from its spawn, also the queued row', { timeout: 15000 }, async t => {
+  const { daemon, cwd, fake, service } = await fixture(t, 'hello')
+  const viewer = await attach(daemon, cwd, { native: true, taskSessions: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
+  const [first] = Object.values((await finishChildren(service)).runs)
+  assert.equal(first.providerSessionId, 'fake-session')
+  // A child in the same checkout holds the follow-up in the phase queued.
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'wait', title: 'Blocker' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage(fauxToolCall('agents_send', { cwd, childSessionId: first.childSessionId, prompt: 'follow-up' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+    fauxAssistantMessage('Reported.'), fauxAssistantMessage('Reported.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('follow-up', 'Continue')).submissionId}`)
+  const runs = Object.values((await service.state.snapshot()).runs)
+  const blocker = runs.find(run => run.title === 'Blocker')
+  const followUp = runs.find(run => run.childSessionId === first.childSessionId && run.id !== first.id)
+  const session = { agentId: 'claude', sessionId: 'fake-session', cwd }
+  const [queued] = await rowsOf(viewer, [followUp.id], 'queued')
+  assert.deepEqual(queued.session, session)
+  assert.equal(queued.outputFilePath, undefined)
+  await service.state.stopChild(blocker.id)
+  await rowsOf(viewer, [followUp.id], 'running')
+  const state = await finishChildren(service)
+  assert.equal(state.runs[followUp.id].output, 'hello\nfollow-up\n')
+  const rows = spawnedRows(viewer).filter(update => update.asyncTaskId.startsWith(`${followUp.id}:`))
+  assert.deepEqual(rows.map(update => [update.asyncTaskId.slice(followUp.id.length + 1), update.session]), [['queued', session], ['running', session]])
+  assert.deepEqual(progressOf(viewer).filter(update => update.asyncTaskId.startsWith(`${followUp.id}:`)), [])
 })
 
 test('a client without asyncTasks gets no row and no stop', { timeout: 15000 }, async t => {

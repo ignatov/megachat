@@ -25,9 +25,10 @@ const FAKE_ACP = fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))
 
 /**
  * A service with the ACP run service of the fake agent, the pi run service, and the transcripts in the private
- * directory `state/transcripts`. [child] gives the replies of a pi child. [limit] is the limit of a transcript.
+ * directory `state/transcripts`. [child] gives the replies of a pi child. [limit] is the limit of a transcript. The
+ * launch of an ACP child waits for [launch], when it is set.
  */
-async function open(t, { child = [], limit, server = false, transcripts: directoryOf } = {}) {
+async function open(t, { child = [], limit, server = false, transcripts: directoryOf, launch } = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-transcript-')))
   t.after(() => rm(directory, { force: true, recursive: true, maxRetries: 5 }))
   const cwd = join(directory, 'project')
@@ -44,7 +45,7 @@ async function open(t, { child = [], limit, server = false, transcripts: directo
   await transcripts.start(service.state)
   const pool = new ChildPool()
   const pi = new PiRunService(service.state, service.harness, { agent: project => service.childAgent(project), pool, transcripts })
-  const acp = new AcpRunService(service.state, { childLaunch: async () => ({ env: process.env }) }, { args: [FAKE_ACP], pool, transcripts })
+  const acp = new AcpRunService(service.state, { childLaunch: async () => { await launch; return { env: process.env } } }, { args: [FAKE_ACP], pool, transcripts })
   const daemonServer = server ? new DaemonServer(service) : undefined
   const daemon = daemonServer ? new DaemonClient(await daemonServer.listen()) : undefined
   await pi.start()
@@ -255,10 +256,13 @@ function rawClient(bridge) {
 
 async function view(daemon, cwd, options, capabilities = ['asyncTasks']) {
   const client = rawClient(new AcpBridge(daemon, options))
-  await client.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: { _meta: { jetbrains: { air: { version: 1, capabilities } } } } })
-  await client.request(methods.agent.session.new, { cwd, mcpServers: [] })
-  return client
+  const initialized = await client.request(methods.agent.initialize, { protocolVersion: 1, clientCapabilities: { _meta: { jetbrains: { air: { version: 1, capabilities } } } } })
+  const { sessionId } = await client.request(methods.agent.session.new, { cwd, mcpServers: [] })
+  return { ...client, sessionId, initialized }
 }
+
+/** The updates of [kind] that [client] got. */
+const updatesOf = (client, kind) => client.updates.filter(update => update.sessionUpdate === kind)
 
 test('the row of a child that runs names its transcript for Air, a queued row and a client without asyncTasks get none', { timeout: 15000 }, async t => {
   const opened = await open(t, { server: true })
@@ -281,6 +285,47 @@ test('the row of a child that runs names its transcript for Air, a queued row an
   while (!spawned(plain).some(update => update.asyncTaskId === `${first.id}:running`)) await new Promise(resolve => setTimeout(resolve, 10))
   assert.ok(spawned(plain).every(update => update.outputFilePath === undefined))
   assert.deepEqual(other.updates.filter(update => update.sessionUpdate?.startsWith('async_task')), [])
+  // A client without asyncTaskSessions gets no session, also after the run got its provider session.
+  assert.equal((await service.state.snapshot()).runs[first.id].providerSessionId, 'fake-session')
+  assert.ok(spawned(air).every(update => update.session === undefined))
+  assert.deepEqual(updatesOf(air, 'async_task_progress'), [])
   await service.state.stopChild(first.id)
   await ended(service, second.id)
+})
+
+test('a view with asyncTaskSessions gets the session of a new Claude child in one progress after the row, and again after a second load', { timeout: 15000 }, async t => {
+  const launch = Promise.withResolvers()
+  const opened = await open(t, { server: true, launch: launch.promise })
+  const { service, cwd, daemon, path } = opened
+  const air = await view(daemon, cwd, { transcripts: path }, ['asyncTasks', 'asyncTaskSessions'])
+  t.after(() => air.close())
+  // Megachat does not send the capability back: the field in the row tells Air.
+  assert.deepEqual(air.initialized._meta.jetbrains.air.capabilities, ['persistentSession', 'asyncTasks'])
+  const first = await admit(service, { cwd, prompt: 'wait', title: 'First' })
+  const id = `${first.id}:running`
+  // The row of the phase running goes out at the launch, before the adapter gives the session.
+  while (!updatesOf(air, 'async_task_spawned').some(update => update.asyncTaskId === id)) await new Promise(resolve => setTimeout(resolve, 10))
+  const row = { sessionUpdate: 'async_task_spawned', asyncTaskId: id, name: 'First', description: message('child.running', 'Claude', 'project'),
+    canStop: true, outputFilePath: transcriptPath(path, first.id), taskType: 'agent', showInTranscript: false }
+  assert.deepEqual(updatesOf(air, 'async_task_spawned').find(update => update.asyncTaskId === id), row)
+  launch.resolve()
+  const session = { agentId: 'claude', sessionId: 'fake-session', cwd }
+  const progress = { sessionUpdate: 'async_task_progress', asyncTaskId: id, session }
+  while (updatesOf(air, 'async_task_progress').length === 0) await new Promise(resolve => setTimeout(resolve, 10))
+  await waitForState(service.state, state => state.runs[first.id].status === 'dispatched' ? true : undefined)
+  assert.ok((await readFile(row.outputFilePath, 'utf8')).includes(message('transcript.title', 'First')))
+  // The row of the import of past sessions has no run, so it names no session. The view gets the states in their order,
+  // so when its row is there, the view saw each later state of the run, and it sent no second update.
+  await service.state.sessionsTask({ id: 'sessions:pass:0', done: 0, total: 2 })
+  while (!updatesOf(air, 'async_task_spawned').some(update => update.asyncTaskId === 'sessions:pass:0')) await new Promise(resolve => setTimeout(resolve, 10))
+  assert.deepEqual(updatesOf(air, 'async_task_progress'), [progress])
+  // A second load of the same view sends the row again with the session, and then the session in a progress.
+  const before = air.updates.length
+  await air.request(methods.agent.session.load, { sessionId: air.sessionId, cwd, mcpServers: [] })
+  const again = air.updates.slice(before).filter(update => update.sessionUpdate?.startsWith('async_task') && update.asyncTaskId === id)
+  assert.deepEqual(again, [{ ...row, session }, progress])
+  const imports = air.updates.filter(update => update.asyncTaskId === 'sessions:pass:0')
+  assert.deepEqual(imports.map(update => [update.sessionUpdate, update.session]), [['async_task_spawned', undefined], ['async_task_spawned', undefined]])
+  await service.state.stopChild(first.id)
+  await ended(service, first.id)
 })

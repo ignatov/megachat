@@ -24,6 +24,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | Capability | Sender | What the other side does |
 |---|---|---|
 | `asyncTasks` | Air | Megachat sends its child runs as background tasks. Megachat also sends `asyncTasks` back. |
+| `asyncTaskSessions` | Air | With `asyncTasks`, Megachat sends `session` in the rows of the Claude and Codex runs. Megachat does not send it back. See "The session of a child run" below. |
 | `serviceSessions` | Air | Megachat records each delegated session with `_session/service/record`. |
 | `workspaces` | Air | Megachat asks for the open projects with `_workspaces/list`. |
 | `persistentSession` | Megachat, always | Air sends no `session/cancel` and no `session/close` when it releases the runtime. Air loads the session again on each attach. Air sends `clientMessageId` with each prompt. |
@@ -110,7 +111,8 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 
 | Update | Fields | What Air does |
 |---|---|---|
-| `async_task_spawned` | `asyncTaskId`, `name`, `taskType`, `showInTranscript`, `description`, `canStop`, `outputFilePath` | Air lists the task in the Background Tasks tab of the chat. The session row shows work until the last task ends. |
+| `async_task_spawned` | `asyncTaskId`, `name`, `taskType`, `showInTranscript`, `description`, `canStop`, `outputFilePath`, `session` | Air lists the task in the Background Tasks tab of the chat. The session row shows work until the last task ends. |
+| `async_task_progress` | `asyncTaskId`, `session` | Air keeps the session of the task. Only a client with `asyncTaskSessions` gets it. See "The session of a child run" below. |
 | `async_task_state_update` | `asyncTaskId`, `state` | Air ends the task. `state` is `completed`, `failed` or `stopped`. |
 
 - `asyncTaskId`, `name`, `taskType` and `showInTranscript` are required.
@@ -150,8 +152,46 @@ This is a field that Air of today reads. It is not an extension of Megachat, and
   `transcripts/<run ID>.txt` in the state directory. A queued row has no file yet, so it sends none. A row ends when
   its run ends, and Air keeps no ended task in the Background Tasks tab. So the transcript opens from the chat only
   while the run is unfinished.
-- Megachat sends no `async_task_progress`. With an attached file, Air shows the file and not the progress. The row
-  shows the `description` of the spawn, and Air keeps each progress update in its session log.
+- A click on the title opens the file only for a row without `session`, or when Air cannot open the session (see "The
+  session of a child run" below).
+- Megachat sends no `async_task_progress` other than the one that gives the session of a row. That update holds only
+  `asyncTaskId` and `session`. With an attached file, Air shows the file and not the progress. The row shows the
+  `description` of the spawn, and Air keeps each progress update in its session log.
+
+## The session of a child run
+
+This is an extension of Megachat. Megachat sends it only when Air sent `asyncTasks` and `asyncTaskSessions`.
+
+- The field `session` is `{ "agentId", "sessionId", "cwd" }`, the same address as the parameters of
+  `_session/service/record`. `agentId` is `claude` or `codex`, `sessionId` is the session of the provider, and `cwd` is
+  the absolute directory of the run.
+- The row of a Claude or Codex run holds `session` in each phase (`queued`, `resuming`, `approval`, `running`) when the
+  daemon knows the session at the spawn of the row. So the row of a follow-up (`agents_send`) and of a continued
+  session of the user (`agents_resume`) holds it from its first update. A queued row holds `session` and no
+  `outputFilePath`.
+- A new child gets its provider session when the adapter answers `session/new`, after the spawn of its row `running`.
+  Then Megachat sends one update:
+
+  ```json
+  { "sessionUpdate": "async_task_progress", "asyncTaskId": "<run ID>:running",
+    "session": { "agentId": "claude", "sessionId": "<provider session>", "cwd": "/abs/project" } }
+  ```
+
+  The update holds no `description`, `summary`, `lastToolName`, `usage` or `outputFilePath`, so the row keeps its look.
+  Megachat sends at most one such update for a row.
+- On each attach, Megachat sends each unfinished row again, with `session` when the daemon knows it, and then one
+  `async_task_progress` with `session` for each such row. Air can keep an open task from before the attach and drop the
+  second spawn, and the progress still gives it the session. Air keeps the first value of a task.
+- A pi run gets no `session`: its provider session is a conversation of the harness, not a session of Claude Code or
+  Codex. The row of the import of past sessions gets no `session`. A client without `asyncTaskSessions` gets no
+  `session` and no `async_task_progress`.
+- A new child with `children.showInProject` `false` runs in a service session that Air hides. Its row holds `session`
+  all the same, and Air decides how to open it.
+- What Air does: it reads `session` in `async_task_spawned` and `async_task_progress`, and it keeps the first value of a
+  task, as for `outputFilePath`. The title of a row with `session` is a link. A click opens that session in Air and
+  selects it in the sessions tree. When the session is not in the list of Air yet, Air waits a short time, because
+  Claude Code writes the session file at the first prompt. When the open fails, Air opens `outputFilePath`.
+- Open for Air: the open of a hidden service session.
 
 ## The Stop of a row
 

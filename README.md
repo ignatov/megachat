@@ -754,10 +754,11 @@ On other platforms, only the process group of the agent ends, as before.
 
 ## Read the transcript of a task
 
-Click the title of a running task in the Background Tasks tab. The IDE opens the transcript of that run, a plain text
-file in `transcripts/` of the state directory. It holds the task, the messages of the child, each tool call by its name
-and title, each permission request, each message that you added with `agents_steer`, and the end of the run. Claude,
-Codex and pi children have one. The secret filter of the index of past sessions removes the text that looks like a
+Click the title of a running task in the Background Tasks tab. For a Claude or Codex task, an Air build that supports
+it opens the session of the child and selects it in the sessions tree. Else, and for a pi task, the IDE opens the
+transcript of that run, a plain text file in `transcripts/` of the state directory. It holds the task, the messages of
+the child, each tool call by its name and title, each permission request, each message that you added with
+`agents_steer`, and the end of the run. Claude, Codex and pi children have one. The secret filter of the index of past sessions removes the text that looks like a
 key or a password. It also removes the exact key and base URL of Central that the daemon knows, which it keeps in its
 memory only. A transcript stops at 1 MB with a note. The file goes away when the state drops its run. A
 continuation of a task, for example after a restart or a message, is a new run with a new row and a file of its own.
@@ -1022,7 +1023,7 @@ The session text is data for the agent, not instructions.
 | `src/Workday.mjs` | The working day: the pure functions that tell whether a time is in the working hours, the next start of a working day, and the period of a report, with the timezone through `Intl`. |
 | `src/MorningReport.mjs`, `src/Tokprof.mjs` | The timer of the morning report, the collection of its data, and the read of the spend of the other agent sessions from tokprof. |
 | `src/MegachatUpdate.mjs` | The automatic update: the check of the release tags with `git ls-remote`, the notice, the conditions and the time of the stop of a copy of npx, and the message after an update with the notes of the GitHub releases. |
-| `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks, with their Stop and their transcript. |
+| `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks, with their Stop, their session and their transcript. |
 | `src/ChildTranscript.mjs` | The transcript of each child run, its limit, its secret filter and its removal with the run. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs`, `src/RunProcesses.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits, and at a stop or a failure of a task it ends each process that the task started. |
 | `src/ChildPool.mjs` | The places for the child runs, which the ACP and the pi run services share: the limit `children.parallel`, one child in a checkout, and one pi child. |

@@ -10,9 +10,13 @@ import { createModels } from '@earendil-works/pi-ai/models'
 import { fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node'
-import { taskRows } from '../src/AcpBridge.mjs'
+import { methods } from '@agentclientprotocol/sdk/unstable'
+import { AcpBridge, rowSession, taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
 import { ChildPool } from '../src/ChildPool.mjs'
+import { transcriptPath } from '../src/ChildTranscript.mjs'
+import { DaemonClient } from '../src/DaemonClient.mjs'
+import { DaemonServer } from '../src/DaemonServer.mjs'
 import { maxAutomaticResumes, serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
 import { message, minutesOf } from '../src/messages.mjs'
 import { childEnvironment, LIST_LIMIT, lsTool, readTool, repositoryRules } from '../src/PiChild.mjs'
@@ -401,6 +405,44 @@ test('the chat lists a pi child as a background task of the agent Pi', () => {
   const run = { id: 'run', status: 'dispatched', agent: 'pi', cwd: '/work/project', prompt: 'Read the README.', title: 'README' }
   assert.deepEqual([...taskRows({ runs: { run } }).values()], [{ name: 'README', description: message('child.running', 'Pi', 'project'), canStop: true }])
   assert.deepEqual([...taskRows({ runs: { run: { ...run, status: 'admitted' } } }).values()][0].description, message('child.queued', 'Pi', 'project'))
+})
+
+test('the row of a pi child names its transcript and no session for a view with asyncTaskSessions, and the view sends no progress', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd, directory } = project
+  const { service, requests } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Summarize the README.', agent: 'pi', title: 'README' }), fauxAssistantMessage('Started.'),
+      fauxAssistantMessage('It stopped.')],
+    child: [hang],
+  })
+  const server = new DaemonServer(service)
+  const daemon = new DaemonClient(await server.listen())
+  t.after(() => server.close())
+  // A client that keeps each update, as Air keeps the updates that the released client schema rejects.
+  const inbound = new TransformStream()
+  const writer = inbound.writable.getWriter()
+  const updates = []
+  const peer = new AcpBridge(daemon, { transcripts: join(directory, 'transcripts') }).app().connect({ readable: inbound.readable,
+    writable: new WritableStream({ write(item) { if (item.method === 'session/update') updates.push(item.params.update) } }) })
+  t.after(() => peer.close())
+  await writer.write({ jsonrpc: '2.0', id: 1, method: methods.agent.initialize, params: { protocolVersion: 1,
+    clientCapabilities: { _meta: { jetbrains: { air: { version: 1, capabilities: ['asyncTasks', 'asyncTaskSessions'] } } } } } })
+  await writer.write({ jsonrpc: '2.0', id: 2, method: methods.agent.session.new, params: { cwd, mcpServers: [] } })
+  await service.submit('spawn', 'Work')
+  const run = await waitForState(service.state, state => state.current ? undefined : Object.values(state.runs).find(run => run.status === 'dispatched'))
+  await until(() => requests.some(request => request.child))
+  // The pi run has the ID of its conversation, but no session of Claude Code or Codex.
+  assert.match(run.providerSessionId, /^\d+$/)
+  assert.equal(rowSession(run), null)
+  await until(() => updates.some(update => update.asyncTaskId === `${run.id}:running`))
+  const row = updates.find(update => update.asyncTaskId === `${run.id}:running`)
+  assert.equal(row.name, 'README')
+  assert.equal(row.outputFilePath, transcriptPath(join(directory, 'transcripts'), run.id))
+  assert.equal(row.session, undefined)
+  await service.state.stopChild(run.id)
+  await finished(service)
+  assert.ok(updates.every(update => update.session === undefined))
+  assert.deepEqual(updates.filter(update => update.sessionUpdate === 'async_task_progress'), [])
 })
 
 test('an automatic turn cannot start a pi child, and a session of the pi command-line agent cannot continue as one', { timeout: 20000 }, async t => {

@@ -110,6 +110,18 @@ export function taskRows(state) {
   return rows
 }
 
+/**
+ * The session of the provider of [run] for its row in Air, with the same address as `_session/service/record`, or
+ * `null`. Only a Claude or a Codex run with a provider session has one. A pi run has `providerSessionId` too, but it
+ * is the conversation of the harness and not a session of Claude Code or Codex. A run without the field `agent` is
+ * from before the choice of the agent, so it is a Claude run.
+ */
+export function rowSession(run) {
+  const agentId = run?.agent ?? 'claude'
+  if (!run?.providerSessionId || (agentId !== 'claude' && agentId !== 'codex')) return null
+  return { agentId, sessionId: run.providerSessionId, cwd: run.cwd }
+}
+
 /** The run ID of the row [asyncTaskId] of a child run, or `null` for each other ID. */
 export function rowRunId(asyncTaskId) {
   if (typeof asyncTaskId !== 'string' || asyncTaskId.length > 300) return null
@@ -237,6 +249,8 @@ export class AcpBridge {
           process.stderr.write(`${message('log.noAir')}\n`)
         }
         this.nativeTurns = capabilities.includes('asyncTasks')
+        // Air opens the session of a row. Megachat does not send the capability back: the field in the row tells it.
+        this.taskSessions = capabilities.includes('asyncTaskSessions')
         this.serviceSessions = capabilities.includes('serviceSessions')
         this.workspaces = capabilities.includes('workspaces')
         // The client draws the `air-html` fence: Air names the capability `htmlFence`, or until then any Air with version 1.
@@ -301,6 +315,7 @@ class AcpBridgeSession {
     // The bridge of the view, which ends the connection for an update.
     this.bridge = capabilities
     this.nativeTurns = capabilities.nativeTurns
+    this.taskSessions = capabilities.nativeTurns && capabilities.taskSessions === true
     this.serviceSessions = capabilities.serviceSessions
     this.workspaces = capabilities.workspaces
     this.airSupport = capabilities.airSupport === true
@@ -329,7 +344,10 @@ class AcpBridgeSession {
     this.promptRunId = null
     this.currentRunId = null
     this.cancelPending = false
+    // The rows that this view sent, by ID: the run ID, and whether the view sent the session of the row.
     this.childTasks = new Map()
+    // The next rows are the rows of an attach.
+    this.attachRows = true
     this.reply = null
     this.lastReplyTask = 0
     this.closed = false
@@ -479,6 +497,7 @@ class AcpBridgeSession {
     this.clearReshows()
     this.stops.clear()
     this.childTasks.clear()
+    this.attachRows = true
     this.reply = null
     this.lastReplyTask = 0
     this.replayIndex = 0
@@ -812,26 +831,47 @@ class AcpBridgeSession {
     await this.notify(promptSuggestionUpdate(live))
   }
 
-  /** Lists unfinished child runs as background tasks; the coordinator's own tool calls never reach the chat. */
+  /**
+   * Lists unfinished child runs as background tasks; the coordinator's own tool calls never reach the chat. For a
+   * client with `asyncTaskSessions`, a row names the session of its run when the daemon knows it (see [rowSession]).
+   * Air keeps the first value of a task and drops a second spawn of an open task. So the view sends a session that
+   * comes after the spawn of its row one time with `async_task_progress`, and it sends the session of each row of an
+   * attach again in the same way. The update holds only `asyncTaskId` and `session`, so the row keeps its look.
+   */
   async childRows(state) {
     const rows = taskRows(state)
-    for (const [id, runId] of this.childTasks) {
+    const attach = this.attachRows
+    this.attachRows = false
+    for (const [id, task] of this.childTasks) {
       if (rows.has(id)) continue
-      const status = state.runs[runId]?.status
+      const status = state.runs[task.runId]?.status
       await this.notify({ sessionUpdate: 'async_task_state_update', asyncTaskId: id,
         state: status === 'completed' || !terminalStates.has(status) ? 'completed' : status === 'cancelled' ? 'stopped' : 'failed' })
       this.childTasks.delete(id)
     }
+    // A new child gets its provider session after the spawn of its row, when the adapter answers `session/new`.
+    for (const [id, task] of this.childTasks) {
+      const session = this.taskSessions && !task.session ? rowSession(state.runs[task.runId]) : null
+      if (!session) continue
+      task.session = true
+      await this.notify({ sessionUpdate: 'async_task_progress', asyncTaskId: id, session })
+    }
+    const sessions = []
     for (const [id, row] of rows) {
       if (this.childTasks.has(id)) continue
-      this.childTasks.set(id, id.slice(0, id.lastIndexOf(':')))
-      // Air opens the file of `outputFilePath` from the row. The daemon writes the transcript from the start of the run,
-      // so a queued row names no file.
       const runId = rowRunId(id)
+      const session = this.taskSessions && runId ? rowSession(state.runs[runId]) : null
+      this.childTasks.set(id, { runId: id.slice(0, id.lastIndexOf(':')), session: session !== null })
+      // Air opens the session of `session` from the row, and the file of `outputFilePath` when it cannot open the
+      // session or when the row has no session. The daemon writes the transcript from the start of the run, so a queued
+      // row names no file.
       const output = this.transcripts && runId && !/:(queued|resuming)$/.test(id) ? { outputFilePath: transcriptPath(this.transcripts, runId) } : {}
-      await this.notify({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, ...row, ...output,
+      await this.notify({ sessionUpdate: 'async_task_spawned', asyncTaskId: id, ...row, ...output, ...(session ? { session } : {}),
         taskType: 'agent', showInTranscript: false })
+      if (session && attach) sessions.push([id, session])
     }
+    // Air can keep an open task from before the attach and drop its spawn, so the progress gives it the session.
+    for (const [asyncTaskId, session] of sessions) await this.notify({ sessionUpdate: 'async_task_progress', asyncTaskId, session })
   }
 
   close() {
