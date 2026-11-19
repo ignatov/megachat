@@ -18,7 +18,7 @@ Tests: `test/continue-sessions.test.mjs`
 - **THEN** `idleSessions` has the 20 newest sessions, the newest first
 
 ### Requirement: Entry of an idle child session
-An entry of `idleSessions` MUST have `childSessionId`, `agent`, `cwd`, `title` and `endedAt`, the end time of the last run as an ISO 8601 time in UTC. `title` MUST be the title of the oldest retained run of the session, else the first 80 characters of its prompt. The entry MUST have `lastTitle`, the title of the last run, only when it differs from `title`.
+An entry of `idleSessions` MUST have `childSessionId`, `agent`, `cwd`, `title` and `endedAt`, the end time of the last run as an ISO 8601 time in UTC. `title` MUST be the title of the oldest retained run of the session, else the first 80 characters of its prompt. The entry MUST have `lastTitle`, the title of the last run in the same form, only when it differs from `title`.
 
 Tests: `test/continue-sessions.test.mjs`
 

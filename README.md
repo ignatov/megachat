@@ -674,6 +674,14 @@ The state keeps the date of the last report, so a restart sends no second report
 daemon was down at `workday.start`, the report comes at the first chance on that working day. When you turn the report
 on after the start of a working day, the first report comes on the next working day.
 
+## Continue a task
+
+Ask for a follow-up, a fix of a result or the next step of a task in the main chat. The main agent continues the child
+session of that task with its tool `agents_send`, and it names the session in one short phrase. It does not start a new
+session in the session list of the project. `agents_list` shows the idle child sessions: the last run of each one
+completed less than 24 hours ago, the session is not closed, and its directory is listed. For an unrelated task, the
+main agent starts a new session. To get a new session for the same topic, ask for one, or object to the named session.
+
 ## Add information to a task that runs
 
 Send the information in the main chat while the child works, for example one more link for the same task. The main
