@@ -20,10 +20,11 @@ See proposal.md, "Why". The code shows this today:
   So it sees no skill, no MCP server and no token of a project. A Claude child in a project loads the user and project
   settings, skills, plugins and MCP servers (see the capability `claude-child`).
 
-The change `continue-child-sessions` is approved and in work now. It replaces the line "Use agents_send for a follow-up
-in the same child session." of `resources/instructions.md` and changes `tool.spawn`, `tool.send` and `tool.list`. This
-change touches other lines of the rules, and it adds one sentence to `tool.spawn` and to `tool.list` on top of the text
-of that change (decision 7).
+The change `continue-child-sessions` is on `main` (commit `78f0d4d`). It adds the rules of a hot child session to
+`resources/instructions.md`, from "A hot child session works now, ..." to "Also give information that the user adds to
+a task ...", and it changes `tool.spawn`, `tool.send`, `tool.steer` and `tool.list`. This change touches other lines of
+the rules, and it changes one sentence of `tool.spawn` and adds one sentence to `tool.list` on top of the text of that
+change (decision 7).
 
 ## Goals / Non-Goals
 
@@ -75,8 +76,8 @@ For each other task, pi stays "only when the user names pi". `children.agent` st
 
 ### 3. The rules
 
-The lines replace lines 29, 30 and 32 of `resources/instructions.md`. Line 31 (`agents_spawn`, `agent=claude`,
-`agent=codex`, titles) stays between them.
+The lines replace three lines of `resources/instructions.md`, found by their text: lines 29, 30 and 32 at commit
+`1325acb`. Line 31 (`agents_spawn`, `agent=claude`, `agent=codex`, titles) stays between them.
 
 Line 29, "Start a task without a project in the Megachat workspace, ...", becomes:
 
@@ -89,7 +90,7 @@ Line 30, "Ask the user when the project is unclear. Never guess a directory.", b
 
 ```
 Never ask the user where a thing is in a listed project, such as the data, the entry point or the means of a task. Find it.
-When one listed project fits the request, give the task to a child in that project, and tell the child to find the data, the files and the means itself.
+When one listed project fits the request, give the task to a child in that project, and tell the child to find the data, the files and the means itself. When the request continues the task of a hot child session there, continue that session, as the rules of a hot child session below say.
 When the user asks about the content of a listed project, or you must find the listed project that holds a thing, start a look there. Look in at most 3 projects for one request.
 Ask the user only when no listed project fits, or when two or more projects still fit after the looks and the choice changes the result. Never start a task in a directory that is not listed.
 When the user names the folder or the project that the user just added, take the directory with the newest addedAt of agents_list.
@@ -100,11 +101,12 @@ Line 32, "Use agent=pi only when the user names pi. ...", becomes:
 ```
 Use agent=pi for a look, or when the user names pi. A pi child runs in the daemon with a small model. It can only read and list the files of its project and answer. It runs no command, changes no file, and does not apply the skills or the settings of Claude Code. Send each other task to Claude or Codex.
 A look is a pi task that answers one question about the content of one listed project, such as where a thing is or what the project holds. It changes nothing. Ask for the relative paths and one sentence for each.
+A look needs the agent pi, so it does not continue a hot Claude or Codex session. The task that a look proposes needs Claude or Codex, so it does not continue the pi session of the look. It continues a hot Claude or Codex session only when the request continues the task of that session.
 The result of a look comes in its own turn, and that turn cannot start a task. Report what the look found and the task that you propose, in one short message.
 When a look fails, say so in one sentence, and propose a task for the default agent of that directory that finds the thing itself. Do not ask the user where the thing is.
 ```
 
-A new line follows line 65 ("When a child fails with an error about a login ..."):
+A new line follows the line "When a child fails with an error about a login ..." (line 71 at commit `1325acb`):
 
 ```
 Do not say that a child lacks a tool, a skill, an MCP server, a login or a token unless a child run in the project of the task reported it. agents_accounts sees only the start of Claude Code and Codex in the Megachat workspace, not the skills, the MCP servers or the tokens of a project. Start the task in its project, and report what the child found.
@@ -116,8 +118,10 @@ directory that is not listed" and in the present line "Add a directory only when
 ### 4. `addedAt` in the directory list
 
 The state gets the map `addedAt`: the real path of a directory to the time in milliseconds when it came into the list.
-`addWorkspace`, `addProject`, `addProjects` and `createProject` set it only for a path that is new in its list. So the
-registration of each open project every 15 seconds does not move the time. `removeProject` deletes the entry only when
+`addWorkspace`, `addProject`, `addProjects` and `createProject` set it only for a path that is not in the list of the
+directories yet (`isDirectoryOf`). So the registration of each open project every 15 seconds does not move the time,
+and a project of an IDE that the user also adds to the known list keeps the time of its first registration. A
+directory that an older state lists gets no time from a later add to the other list. `removeProject` deletes the entry only when
 the path is not a project of an IDE. `directoriesOf` gives `addedAt` as an ISO 8601 time in UTC when the map has the
 path, so `agents_list` and `agents_projects` both get it. The workspace of Megachat gets none: it is not an addition of
 the user.
@@ -137,12 +141,23 @@ still need a common order. A time costs the same and also lets the agent say "th
 Without a list, a pi child can read only the files whose names it knows: `README.md`, `package.json`, `.mcp.json`. It
 cannot find `data/2026-11.csv` or the skill in `.claude/skills/youtrack/`. A look then answers "I could not find it" for
 the question that it exists for. So this change adds the tool `ls`, a tool of Megachat in `src/PiChild.mjs` next to
-`readTool`, with the parameter `path`, `.` by default. It calls `listDir` of the environment of the child, which checks
-the real path as `read` does. After the list, it resolves the path again, and it fails when the real path changed, so a
-swap of a directory cannot show the names of an outside directory. The result is the names, with `/` at the end of a
-directory, hidden entries included, sorted by name, at most 500 entries, and `truncated`. It has no size and no time,
-so the output stays short. A list changes nothing, so a call that a daemon stop cut off runs again after the restart, as
-`read` does (`replay: 'safe'`). The text of an error comes from `error.pi.outside`, as for `read`.
+`readTool`, with the parameter `path`, `.` by default. It calls `listEntries` of the environment of the child
+(`ProjectReadEnv`), which checks the real path as `read` does and then calls `listDir` with the real path. After the
+list, it resolves the path again, and it fails with `error.pi.changed` when the real path changed, so a swap of a
+directory cannot show the names of an outside directory. Then each name that the result keeps must be an entry of the
+directory at that real path (one `lstat` for each, at most 500): a name that only a swap and a swap back between the
+two checks showed is not there, and it goes. An error of `listDir` keeps its text only when it names the directory
+itself; an error that names an entry becomes `error.pi.changed`, because that entry can be an entry of a swapped
+directory. Node.js cannot list an open directory handle, so these checks take the place of the check of the open file
+of `read`. A process that can write in the project and times a swap, a swap back and a second swap exactly around
+the checks can still show names of an outside directory. It cannot show the content of a file. This risk is accepted
+for this step. The result is the names, with `/` at the end of a directory, hidden entries
+included, sorted by name, at most 500 entries, and `truncated`. It has no size and no time, so the output stays short.
+A list changes nothing, so a call that a daemon stop cut off runs again after the restart, as `read` does
+(`replay: 'safe'`). The tool gives the absolute path to the environment, so the text of an error comes from
+`error.pi.outside` with the absolute path, as for `read`. Without the environment of a pi child, the tool refuses the
+call with `error.pi.readOnly`. The descriptions of the tool and of its parameter are `child.pi.ls` and
+`child.pi.ls.path`.
 
 `child.pi.instructions` changes "You have one tool: read. ... You cannot run a command, change a file, list a
 directory, or read a file outside the project." to "You have two tools: read and ls. read reads one file of this
@@ -177,20 +192,24 @@ when the user asks you to remember it" gets this one exception. Decision 2 for t
 
 ### 7. Agreement with `continue-child-sessions`
 
-- That change replaces line 41. This change replaces lines 29, 30 and 32 and adds one line after line 65. The two sets
-  of lines do not overlap, so either change can land first. The task of the later change finds its lines by their text,
-  not by their number.
-- `tool.spawn`: that change adds "Before a new task, look at idleSessions of agents_list for the directory, and continue
-  a session of the same topic with agents_send." after its first sentence. This change replaces only the pi sentence
+- That change added the rules of a hot child session after the line about the Stop action of a row. This change
+  replaces three other lines and adds one line after the line about an error of a login. The two sets of lines do not
+  overlap. This change finds its lines by their text, not by their number.
+- `tool.spawn`: that change adds "For a request that continues the task of a hot child session, continue that session
+  instead: agents_send when it is idle, agents_steer when it works now." after its first sentence. This change replaces
+  only the pi sentence
   "Use agent=pi only when the user names pi: a pi child runs in the daemon with a small model, and it can only read the
   files of the project and answer." with "Use agent=pi for a look, a short question about the content of one project,
   or when the user names pi: a pi child runs in the daemon with a small model, and it can only read and list the files
   of the project and answer." Both sentences stay.
-- `tool.list`: both changes add one sentence at the end, `idleSessions` first, then `addedAt`.
-- A look follows the continuation rule as each task does. An idle pi session of the same project and topic can take a
-  look as a follow-up with `agents_send`. A look never continues a Claude or Codex session: its rule "a task that needs
-  another agent than the session has" starts a new pi session. A task that comes from a look needs Claude or Codex, so
-  the same rule starts it in a new session and never in the pi session of the look.
+- `tool.list`: both changes add one sentence at the end, `hotSessions` first, then `addedAt`.
+- A look follows the continuation rule as each task does. A hot pi session of the same project whose task the request
+  continues can take a look as a follow-up. A look never continues a Claude or Codex session: the rule "a task that
+  needs another agent than the session has" starts a new pi session. A task that comes from a look needs Claude or
+  Codex, so the same rule never starts it in the pi session of the look. It continues a hot Claude or Codex session
+  only when the request continues the task of that session, as each task does. The rules state these two points in
+  one line after the definition of a look, and the line "When one listed project fits the request, ..." names the
+  continuation of a hot child session, so that line does not read as "always start a new child".
 
 ### 8. What the other capabilities get
 

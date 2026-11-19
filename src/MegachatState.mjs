@@ -126,6 +126,17 @@ function retain(state) {
   if (Object.keys(state.memoryWrites ?? {}).length >= 200) dropOldest(state.memoryWrites, 100, write => write.createdAt)
 }
 
+/**
+ * Records the time of the addition of [cwd] before it goes into a list. Only a path that is not in the list of the
+ * directories yet gets a time: a second registration of an open project, or a known repository that is also a project
+ * of an IDE, keeps the time of its first addition. A directory that a state of an earlier build listed keeps no time.
+ */
+function noteAddition(state, cwd) {
+  if (isDirectoryOf(state, cwd)) return
+  state.addedAt ??= {}
+  state.addedAt[cwd] = Date.now()
+}
+
 /** Keeps the address of a delegated session after a prune of its runs, so Air still hides that session. */
 function recordServiceSession(state, run) {
   if (!isServiceSession(run)) return
@@ -353,6 +364,9 @@ export class MegachatState {
       // Whether the last client that attached has the Air support (`chat.html` `auto` reads it). An earlier build has none.
       state.airSupport ??= false
       state.projectCreations ??= {}
+      // The time of the addition of each directory by its path. A state of an earlier build has none, so the directories
+      // that it lists get no time, and only a later addition gets one.
+      state.addedAt ??= {}
       // The outcomes of the writes of the tool agents_memory by the request ID. A state of an earlier build has none.
       state.memoryWrites ??= {}
       // The reflection of the memory: its position, the count of the completed turns of the user since the last pass,
@@ -400,7 +414,9 @@ export class MegachatState {
 
   async addWorkspace(cwd) {
     await this.change(state => {
-      if (!state.workspaces.includes(cwd)) state.workspaces.push(cwd)
+      if (state.workspaces.includes(cwd)) return
+      noteAddition(state, cwd)
+      state.workspaces.push(cwd)
     })
   }
 
@@ -421,6 +437,7 @@ export class MegachatState {
       requireCondition(!automaticKinds.has(state.current?.kind), 'proposalOnly')
       if (!state.projects.includes(cwd)) {
         requireCondition(state.projects.length < KNOWN_PROJECTS_LIMIT, 'projectLimit', KNOWN_PROJECTS_LIMIT)
+        noteAddition(state, cwd)
         state.projects.push(cwd)
       }
       if (requestId) state.projectCreations[requestId] = { path, cwd, createdAt: state.projectCreations[requestId]?.createdAt ?? Date.now() }
@@ -456,6 +473,7 @@ export class MegachatState {
       requireCondition(!automaticKinds.has(state.current?.kind), 'proposalOnly')
       const added = [...new Set(resolved)].filter(cwd => !state.projects.includes(cwd))
       requireCondition(state.projects.length + added.length <= KNOWN_PROJECTS_LIMIT, 'projectLimit', KNOWN_PROJECTS_LIMIT)
+      for (const cwd of added) noteAddition(state, cwd)
       state.projects.push(...added)
       return { added, ...(refused.length ? { refused } : {}), ...(skipped.length ? { skipped } : {}) }
     })
@@ -637,6 +655,8 @@ export class MegachatState {
       const index = state.projects.indexOf(cwd)
       requireCondition(index >= 0, 'workspace')
       state.projects.splice(index, 1)
+      // A project of an IDE stays in the list of the directories, so it keeps its time.
+      if (!isDirectoryOf(state, cwd)) delete state.addedAt?.[cwd]
       return { cwd }
     })
   }

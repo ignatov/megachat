@@ -1,8 +1,10 @@
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
-import { defineDoc, defineExtension, GenerationTask, hook } from '@earendil-works/pi-durable'
+import { defineDoc, defineExtension, defineTool, GenerationTask, hook } from '@earendil-works/pi-durable'
+import { getOrThrow } from '@earendil-works/pi-durable/env'
 import { createReadTool } from '@earendil-works/pi-durable/tools'
+import { obj, opt, str } from '@earendil-works/pi-schema'
 import { message } from './messages.mjs'
 import { ProjectReadEnv } from './ProjectReadEnv.mjs'
 
@@ -10,6 +12,8 @@ import { ProjectReadEnv } from './ProjectReadEnv.mjs'
 export const CHILD_EXTENSION = 'air.megachat.child'
 /** The repository rules that a pi child gets, at most this count of bytes. */
 export const RULES_LIMIT = 32000
+/** The tool `ls` gives at most this count of entries of one directory. */
+export const LIST_LIMIT = 500
 const RULES_FILES = ['AGENTS.md', 'CLAUDE.md']
 /** The files of the project rules that Claude Code loads by itself. A symbolic link counts when its target exists. */
 const CLAUDE_FILES = ['CLAUDE.md', '.claude/CLAUDE.md']
@@ -31,11 +35,34 @@ export const PiChildDoc = defineDoc({
 export const readTool = { ...createReadTool(), replay: 'safe' }
 
 /**
- * The extension of a pi child: the tool `read`, and the count of the cost of each model request of the child. A child
- * uses the Central provider of the main agent, so its cost is in the daily spend.
+ * The tool `ls` of a pi child: the names of the entries of one directory of the project, `.` by default, with `/` at the
+ * end of a directory, hidden entries included, sorted by name, at most `LIST_LIMIT` entries, and `truncated`. It gives
+ * no size, no time and no content. It lists only through `listEntries` of `ProjectReadEnv`, which has the path checks
+ * of the tool `read`. A list changes nothing, so a call that a daemon stop cut off runs again after the restart.
+ */
+export const lsTool = defineTool({
+  name: 'ls', description: message('child.pi.ls', LIST_LIMIT), replay: 'safe',
+  parameters: obj({ path: opt(str({ description: message('child.pi.ls.path'), maxLength: 4096 })) }),
+  async execute(args, api, context) {
+    // Only the read-only environment of a pi child can list. Without it, the tool refuses the call.
+    if (typeof api.env?.listEntries !== 'function') throw new Error(message('error.pi.readOnly'))
+    // The errors name the absolute path, as the errors of the tool read do.
+    const path = getOrThrow(await api.env.absolutePath(args.path ?? '.', context))
+    const { entries, truncated } = getOrThrow(await api.env.listEntries(path, LIST_LIMIT, context))
+    const listed = { entries: entries.map(entry => entry.kind === 'directory' ? `${entry.name}/` : entry.name), truncated }
+    return { output: [{ type: 'text', text: JSON.stringify(listed) }] }
+  },
+})
+
+/** The tools of a pi child. Both only read. */
+const CHILD_TOOLS = [readTool, lsTool]
+
+/**
+ * The extension of a pi child: the tools `read` and `ls`, and the count of the cost of each model request of the child.
+ * A child uses the Central provider of the main agent, so its cost is in the daily spend.
  */
 export function childExtension(countSpend) {
-  return defineExtension({ name: CHILD_EXTENSION, tools: [readTool], hooks: [
+  return defineExtension({ name: CHILD_EXTENSION, tools: CHILD_TOOLS, hooks: [
     hook(GenerationTask, { afterResponse: (answer, api) => countSpend(answer.usage, api.models.getModel(answer.provider, answer.model)) }),
   ] })
 }
@@ -100,10 +127,10 @@ function rulesBlock(rules, intro, truncated) {
 
 /**
  * The choices of a child conversation at each dispatch: the [model], the directory of the run, only the extension of a
- * child with its tool `read` and the child instructions. The choices hold no `maxTurns`, so Pi Durable gives no turn
+ * child with its tools `read` and `ls` and the child instructions. The choices hold no `maxTurns`, so Pi Durable gives no turn
  * limit, and only the time limit `children.timeoutMinutes` stops a run. A follow-up gets them again, so a change of the
  * model or of the repository rules reaches the next run.
  */
 export async function childAgent(cwd, model, extension) {
-  return { model, cwd, extensions: [extension], tools: [readTool], instructions: await childInstructions(cwd) }
+  return { model, cwd, extensions: [extension], tools: CHILD_TOOLS, instructions: await childInstructions(cwd) }
 }

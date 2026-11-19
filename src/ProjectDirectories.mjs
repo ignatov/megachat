@@ -259,11 +259,15 @@ export async function discoverRepositories({ home = homedir(), roots = projectRo
  * `ide` for a project that an IDE registered, and `known` for a repository of the known list. A linked worktree has
  * `worktreeOf`, the real path of its main repository, and it follows its main repository in the list. A main repository
  * in the list has `worktrees`, the listed paths of its worktrees. So the reader sees one project with its worktrees.
- * Each worktree stays a listed directory, because a child can work in it.
+ * Each worktree stays a listed directory, because a child can work in it. A directory has `addedAt`, the ISO 8601 time
+ * in UTC when it came into the list, when the state has that time. The workspace of Megachat has none.
  */
 export function directoriesOf(state) {
   const directories = new Map()
-  const add = (cwd, origin, name) => { if (!directories.has(cwd)) directories.set(cwd, { cwd, origin, ...(name ? { name } : {}) }) }
+  const addedAt = cwd => Number.isFinite(state.addedAt?.[cwd]) ? { addedAt: new Date(state.addedAt[cwd]).toISOString() } : {}
+  const add = (cwd, origin, name) => {
+    if (!directories.has(cwd)) directories.set(cwd, { cwd, origin, ...(name ? { name } : {}), ...(origin === 'megachat' ? {} : addedAt(cwd)) })
+  }
   if (state.megachatWorkspace) add(state.megachatWorkspace, 'megachat', message('workspace.name'))
   for (const cwd of state.workspaces ?? []) add(cwd, 'ide')
   for (const cwd of state.projects ?? []) add(cwd, 'known')

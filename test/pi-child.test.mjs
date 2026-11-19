@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +15,7 @@ import { AcpRunService } from '../src/AcpRunService.mjs'
 import { ChildPool } from '../src/ChildPool.mjs'
 import { maxAutomaticResumes, serviceSessionsOf, terminalStates } from '../src/MegachatState.mjs'
 import { message, minutesOf } from '../src/messages.mjs'
-import { childEnvironment, readTool, repositoryRules } from '../src/PiChild.mjs'
+import { childEnvironment, LIST_LIMIT, lsTool, readTool, repositoryRules } from '../src/PiChild.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { PiRunService } from '../src/PiRunService.mjs'
 import { ProjectReadEnv } from '../src/ProjectReadEnv.mjs'
@@ -46,7 +46,7 @@ function prompt(messages) {
 
 /**
  * A fake provider with a free model for the main agent and a priced model for a pi child. A request with the tool
- * `read` is a request of a child, and it gets the next reply of [child]. Each other request gets the next reply of
+ * `read` is a request of a child (a child also has `ls`, and the main agent has neither), and it gets the next reply of [child]. Each other request gets the next reply of
  * [main]. A reply can be a function of the request.
  */
 function fakeModels(main, child) {
@@ -132,7 +132,7 @@ async function reports(service) {
   return items.filter(entry => entry.kind === 'air.megachat.event' && entry.data?.type === 'children')
 }
 
-test('a pi child reads its project in the daemon process with only the tool read and no rule of the main agent, and the main agent gets one report', { timeout: 30000 }, async t => {
+test('a pi child reads its project in the daemon process with only the tools read and ls and no rule of the main agent, and the main agent gets one report', { timeout: 30000 }, async t => {
   const project = await temporary(t)
   const { cwd } = project
   const { service, requests, turn } = await open(t, project, {
@@ -155,7 +155,7 @@ test('a pi child reads its project in the daemon process with only the tool read
   for (const request of childRequests) {
     // children.piModel names a model that the fake registry does not know, so the child uses the model of the main agent.
     assert.equal(request.model, MAIN)
-    assert.deepEqual(request.tools, ['read'])
+    assert.deepEqual(request.tools.sort(), ['ls', 'read'])
     assert.deepEqual(request.sectionKeys, ['instructions'])
     assert.ok(request.system.startsWith(`<instructions>\n${message('child.pi.instructions', cwd)}`))
     assert.match(request.system, /<repository_rules file="AGENTS.md">\nName each file that you read\.\n<\/repository_rules>/)
@@ -166,7 +166,8 @@ test('a pi child reads its project in the daemon process with only the tool read
   assert.ok(childRequests[1].messages.includes(message('error.pi.outside', join(project.directory, 'secret.txt'))))
   assert.ok(!childRequests[1].messages.includes('TOP SECRET'))
   const mainRequests = requests.filter(request => !request.child)
-  assert.ok(mainRequests.every(request => request.model === MAIN && request.tools.includes('agents_spawn') && !request.tools.includes('read')))
+  assert.ok(mainRequests.every(request => request.model === MAIN && request.tools.includes('agents_spawn') && !request.tools.includes('read')
+    && !request.tools.includes('ls')))
   // Only the conversation of a child gets an environment.
   assert.equal(await childEnvironment({ conversationId: service.root.id, read: service.harness }, context), undefined)
   assert.ok(await childEnvironment({ conversationId: Number(run.providerSessionId), read: service.harness }, context) instanceof ProjectReadEnv)
@@ -763,4 +764,128 @@ test('the continuation of a pi run keeps no copy of the output of the run before
   assert.ok(Object.values(state.runs).every(item => !('carriedOutput' in item) && !('carriedTruncated' in item)))
   const inspected = await service.state.readRun(continued.id)
   assert.equal(occurrences(JSON.stringify(inspected), 'Reading the README.'), 1)
+})
+
+test('the instructions of a pi child name its two tools and forbid a copy of a secret value', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const { cwd } = project
+  const { requests, turn } = await open(t, project, {
+    main: [call('agents_spawn', { cwd, prompt: 'Where is the key of the service?', agent: 'pi', title: 'Key' }), fauxAssistantMessage('Started.')],
+  })
+  await turn('spawn')
+  const [request] = requests.filter(item => item.child)
+  assert.match(request.system, /You have two tools: read and ls\./)
+  assert.match(request.system, /Never copy the value of a token, a key or a password into your answer\. Name its file\./)
+  assert.doesNotMatch(request.system, /list a directory/)
+})
+
+/** The relative path and the content of each file below [root], and each directory with `/`, sorted. */
+async function treeOf(root) {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true })
+  return Promise.all(entries.map(async entry => {
+    const path = join(entry.parentPath, entry.name).slice(root.length + 1)
+    return entry.isDirectory() ? `${path}/` : `${path}=${await readFile(join(root, path), 'utf8')}`
+  })).then(items => items.sort())
+}
+
+test('a pi child lists a directory of its project with the tool ls: the names, hidden entries included, sorted, and no change', { timeout: 30000 }, async t => {
+  const project = await temporary(t)
+  const cwd = join(project.directory, 'look')
+  await mkdir(join(cwd, 'data'), { recursive: true })
+  await mkdir(join(cwd, '.claude', 'skills', 'youtrack'), { recursive: true })
+  await writeFile(join(cwd, 'README.md'), README)
+  await writeFile(join(cwd, '.mcp.json'), '{"mcpServers":{"youtrack":{"env":{"TOKEN":"perm:TOP SECRET"}}}}')
+  await writeFile(join(cwd, 'data', '2026-11.csv'), 'day,value\n')
+  await writeFile(join(cwd, '.claude', 'skills', 'youtrack', 'SKILL.md'), 'Create a ticket.')
+  const before = await treeOf(cwd)
+  const { requests, turn } = await open(t, { directory: project.directory, cwd }, {
+    main: [call('agents_spawn', { cwd, prompt: 'Which skills does the project have?', agent: 'pi', title: 'Skills' }), fauxAssistantMessage('Started.')],
+    child: [call('ls', {}), call('ls', { path: '.claude/skills' }), fauxAssistantMessage('The skill youtrack is in .claude/skills/youtrack.')],
+  })
+  const state = await turn('spawn')
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  const childRequests = requests.filter(request => request.child)
+  assert.equal(childRequests.length, 3)
+  const results = toolResultsOf(childRequests[2].messages)
+  assert.deepEqual(results, [{ entries: ['.claude/', '.mcp.json', 'README.md', 'data/'], truncated: false },
+    { entries: ['youtrack/'], truncated: false }])
+  // A list gives the names only: no content of a file, so no secret value.
+  assert.ok(!childRequests[2].messages.includes('TOP SECRET'))
+  assert.deepEqual(await treeOf(cwd), before)
+})
+
+/** The JSON results of the tool calls in the serialized [messages] of a request. */
+function toolResultsOf(messages) {
+  return JSON.parse(messages).filter(item => item.role === 'toolResult')
+    .map(item => JSON.parse(item.content.filter(block => block.type === 'text').map(block => block.text).join('')))
+}
+
+test('the tool ls of a pi child refuses each path out of the project and gives at most 500 entries of a directory', async t => {
+  const { directory, cwd } = await temporary(t)
+  await symlink(directory, join(cwd, 'outside-link'))
+  await mkdir(join(cwd, 'many'))
+  const names = Array.from({ length: LIST_LIMIT + 1 }, (_, index) => `file-${String(index).padStart(3, '0')}`)
+  for (let start = 0; start < names.length; start += 50) await Promise.all(names.slice(start, start + 50).map(name => writeFile(join(cwd, 'many', name), '')))
+  const api = { env: new ProjectReadEnv(cwd) }
+  const ls = path => lsTool.execute(path === undefined ? {} : { path }, api, context).then(result => JSON.parse(result.output[0].text))
+  // The errors are the errors of the tool read: an outside path that exists and a missing one give the same text.
+  for (const [path, outside] of [['..', directory], ['/etc', '/etc'], ['outside-link', join(cwd, 'outside-link')],
+    ['outside-link/missing', join(cwd, 'outside-link', 'missing')], ['../missing', join(directory, 'missing')]])
+    await assert.rejects(ls(path), { message: message('error.pi.outside', outside) }, path)
+  const many = await ls('many')
+  assert.equal(LIST_LIMIT, 500)
+  assert.equal(many.entries.length, 500)
+  assert.deepEqual([many.entries[0], many.entries[499], many.truncated], ['file-000', 'file-499', true])
+  assert.deepEqual(await ls(), { entries: ['AGENTS.md', 'README.md', 'many/', 'outside-link'], truncated: false })
+  // A file is not a directory, and the list of a missing directory of the project keeps its own error.
+  await assert.rejects(ls('README.md'), /not a directory|ENOTDIR/i)
+  await assert.rejects(ls('missing'), /ENOENT|no such file|not found/i)
+  // Without the read-only environment of a pi child, the tool lists nothing.
+  await assert.rejects(lsTool.execute({}, { env: undefined }, context), { message: message('error.pi.readOnly') })
+})
+
+/**
+ * Makes the environment of [cwd] swap the directory [directory] for a symbolic link to [target] after the path check of
+ * its first list. With [restore], the swap goes back after the list, before the second path check.
+ */
+function swapDuringList(cwd, directory, target, restore = false) {
+  const env = new ProjectReadEnv(cwd)
+  const list = env.inner.listDir.bind(env.inner)
+  env.inner.listDir = async (...args) => {
+    await rename(directory, `${directory}-old`)
+    await symlink(target, directory)
+    try { return await list(...args) }
+    finally {
+      if (restore) {
+        await unlink(directory)
+        await rename(`${directory}-old`, directory)
+      }
+    }
+  }
+  return env
+}
+
+test('a directory that another process swaps after the path check does not show the names of an outside directory to ls', async t => {
+  const { directory, cwd } = await temporary(t)
+  await mkdir(join(cwd, 'docs'))
+  await writeFile(join(cwd, 'docs', 'notes.txt'), 'inside')
+  await mkdir(join(directory, 'outside'))
+  await writeFile(join(directory, 'outside', 'notes.txt'), 'TOP SECRET')
+  await writeFile(join(directory, 'outside', 'secret-plan.txt'), 'TOP SECRET')
+  const failure = await lsTool.execute({ path: 'docs' }, { env: swapDuringList(cwd, join(cwd, 'docs'), join(directory, 'outside')) }, context)
+    .then(() => assert.fail('the list must fail'), error => error.message)
+  assert.equal(failure, message('error.pi.changed', join(cwd, 'docs')))
+  assert.ok(!failure.includes('secret-plan'))
+  // A swap back before the second path check: only the names of the directory of the project stay.
+  await unlink(join(cwd, 'docs'))
+  await rename(join(cwd, 'docs-old'), join(cwd, 'docs'))
+  const restored = await lsTool.execute({ path: 'docs' }, { env: swapDuringList(cwd, join(cwd, 'docs'), join(directory, 'outside'), true) }, context)
+  assert.deepEqual(JSON.parse(restored.output[0].text), { entries: ['notes.txt'], truncated: false })
+  // An error of the list that names an entry, such as an entry of a swapped directory that went away, gives no name.
+  const failing = new ProjectReadEnv(cwd)
+  failing.inner.listDir = async () => {
+    const entry = join(cwd, 'docs', 'secret-plan.txt')
+    return { ok: false, error: Object.assign(new Error(`ENOENT: no such file or directory, lstat '${entry}'`), { code: 'not_found', path: entry }) }
+  }
+  await assert.rejects(lsTool.execute({ path: 'docs' }, { env: failing }, context), { message: message('error.pi.changed', join(cwd, 'docs')) })
 })

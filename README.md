@@ -776,19 +776,40 @@ from the chat.
 
 Say "ask pi to summarize the README of project X" to give a small task to a pi child. A pi child is a conversation of
 the daemon on Pi Durable, with the small model of `children.piModel`. It starts no process, so it starts at once and
-costs little. It has only the tool `read`: it reads the files of its project and answers. It cannot run a command,
-change a file, or read a file out of its project, also through `..` or a symbolic link. It gets the content of
+costs little. It has only the tools `read` and `ls`: it reads the files of its project, lists its directories and
+answers. `ls` gives the names of one directory, hidden entries included, at most 500, and no content. A pi child cannot
+run a command, change a file, or read or list a path out of its project, also through `..` or a symbolic link. Its
+instructions tell it never to copy the value of a token, a key or a password into its answer. It gets the content of
 `AGENTS.md` of the project, else of `CLAUDE.md`, at most 32 KB. It does not apply the skills or the settings of Claude
 Code.
 
 Use pi only to read and to summarize. Give each task that changes code, runs a command or needs the tools of Claude
-Code to Claude or Codex. The main agent uses pi only when you name it, and `children.agent` cannot select it.
+Code to Claude or Codex. The main agent uses pi for a look (see the next section) or when you name it, and
+`children.agent` cannot select it.
 
 A pi child is a task as the others are: the chat lists it as a background task of the agent Pi, it waits its turn, it
 has no turn limit, only the time limit of `children.timeoutMinutes` stops it, and you can cancel it. A follow-up goes to the same
 conversation. A message that you add with `agents_steer` reaches the child after its current tool round. A daemon
 restart continues the run. Its cost is in the daily spend. Megachat cannot delete the
 conversation of a pi child, so `conversation.sqlite` keeps it after the run leaves the state.
+
+## The place of a task and a look
+
+The main agent does not ask you where a thing is in a listed project, such as the data, the entry point or the means
+of a task. When one listed project fits the request, the task goes to a child in that project, and the child finds
+the thing itself. A task whose means are in a listed project, such as a skill, an MCP server, a script, the data or
+the credentials of that project, starts in that project, also when it changes no file there. Only a task that needs
+nothing of a listed project starts in the Megachat workspace.
+
+When you ask about the content of a listed project, or the agent must find the project that holds a thing, it starts
+a look: a pi task that answers one question about one project, changes nothing, and gives the relative paths. It looks
+in at most 3 projects for one request. The result of a look comes in its own turn, and that turn cannot start a task.
+So the agent tells you what the look found and proposes the task, and you confirm it. The agent asks you only when no
+listed project fits, or when two or more projects still fit and the choice changes the result.
+
+Each directory of `agents_list` and `agents_projects` has `addedAt`, the time when it came into the list, when
+Megachat knows it. A directory that the state listed before the upgrade has none. When you say "the folder that I just
+added", the agent takes the directory with the newest `addedAt`.
 
 ## The sessions that run on the machine
 
@@ -1005,7 +1026,7 @@ The session text is data for the agent, not instructions.
 | `src/ChildTranscript.mjs` | The transcript of each child run, its limit, its secret filter and its removal with the run. |
 | `src/AcpRunService.mjs`, `src/child-supervisor.mjs`, `src/RunProcesses.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits, and at a stop or a failure of a task it ends each process that the task started. |
 | `src/ChildPool.mjs` | The places for the child runs, which the ACP and the pi run services share: the limit `children.parallel`, one child in a checkout, and one pi child. |
-| `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices and the rules of a child, the read-only environment of its project, and the read of its transcript. |
+| `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices, the tools `read` and `ls` and the rules of a child, the read-only environment of its project, and the read of its transcript. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
 | `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |

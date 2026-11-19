@@ -1,5 +1,5 @@
 import { lstat, realpath } from 'node:fs/promises'
-import { dirname, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { err, ExecutionError, FileError, ok } from '@earendil-works/pi-durable/env'
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node'
 import { message } from './messages.mjs'
@@ -91,6 +91,34 @@ export class ProjectReadEnv {
     catch { return false }
   }
   listDir(path, context) { return this.checked(path, context, real => this.inner.listDir(real, context)) }
+
+  /**
+   * The tool `ls` lists only through this method. It gives the names of the entries of the directory [path] in the
+   * project, sorted by name, with the kind of each, at most [limit] entries, and `truncated` when the directory has more.
+   * Another process can swap a directory of the path between the check and the list. So after the list, the path must
+   * still have the same real path, else the list is refused. Then each name that the result keeps must be an entry of
+   * the directory at that real path: a name that only a swap and a swap back showed is not there, and it goes. An error
+   * of the list keeps its text only when it names the directory itself, because the path of an entry can hold the name
+   * of an entry of a swapped directory.
+   */
+  async listEntries(path, limit, context) {
+    const real = await this.resolve(path, context)
+    if (!real.ok) return real
+    const listed = await this.inner.listDir(real.value, context)
+    const changed = () => err(new FileError('permission_denied', message('error.pi.changed', path), path))
+    const again = await this.resolve(path, context).catch(() => undefined)
+    if (!again?.ok || again.value !== real.value) return changed()
+    if (!listed.ok) return listed.error.path === real.value ? listed : changed()
+    const names = listed.value.map(entry => entry.name).sort((a, b) => a < b ? -1 : a > b ? 1 : 0)
+    const entries = []
+    for (const name of names.slice(0, limit)) {
+      let entry
+      try { entry = await lstat(join(real.value, name)) }
+      catch { continue }
+      entries.push({ name, kind: entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file' })
+    }
+    return ok({ entries, truncated: names.length > limit })
+  }
   openDirReader(path, context) { return this.checked(path, context, real => this.inner.openDirReader(real, context)) }
 
   async refused(path) { return err(new FileError('permission_denied', message('error.pi.readOnly'), path)) }

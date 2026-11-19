@@ -237,6 +237,69 @@ test('the list of the directories gives each directory one time with its origin'
     { cwd: directories.repository, origin: 'ide' },
     { cwd: join(directories.home, 'second'), origin: 'known' },
   ]
+  // Each addition of the user has its time. The case "Time of the addition of a directory" checks the values.
+  const withoutTime = ({ addedAt, ...item }) => item
+  assert.deepEqual(list.workspaces.map(withoutTime), expected.map(item => ({ ...item, defaultAgent: 'claude' })))
+  assert.deepEqual(projects.workspaces.map(withoutTime), expected)
+  assert.deepEqual(projects.workspaces.map(item => typeof item.addedAt), ['undefined', 'string', 'string', 'string'])
+})
+
+const at = time => Date.parse(time)
+
+test('each directory of agents_list and agents_projects has the time of its first addition, and the workspace of Megachat has none', { timeout: 10000 }, async t => {
+  const directories = await tree(t)
+  const metrics = join(directories.home, 'src', 'metrics')
+  await mkdir(metrics)
+  const opened = await open(t, directories)
+  const { state } = opened.service
+  t.mock.timers.enable({ apis: ['Date'], now: at('2026-11-19T09:00:00.000Z') })
+  await state.addWorkspace(directories.outside)
+  // An IDE registers each open project again every 15 seconds. The second registration keeps the first time.
+  t.mock.timers.setTime(at('2026-11-19T09:00:15.000Z'))
+  await state.addWorkspace(directories.outside)
+  t.mock.timers.setTime(at('2026-11-19T10:00:00.000Z'))
+  await state.addProject('~/src/metrics')
+  // A project of an IDE that the user also adds to the known list does not come into the list again.
+  t.mock.timers.setTime(at('2026-11-19T10:30:00.000Z'))
+  await state.addProjects([directories.outside])
+  t.mock.timers.reset()
+  const [list, projects] = await turn(opened, 'added', ['agents_list', {}], ['agents_projects', { action: 'list' }])
+  const expected = [
+    { cwd: join(directories.stateDirectory, 'workspace'), origin: 'megachat', name: 'Megachat workspace' },
+    { cwd: directories.outside, origin: 'ide', addedAt: '2026-11-19T09:00:00.000Z' },
+    { cwd: metrics, origin: 'known', addedAt: '2026-11-19T10:00:00.000Z' },
+  ]
   assert.deepEqual(list.workspaces, expected.map(item => ({ ...item, defaultAgent: 'claude' })))
   assert.deepEqual(projects.workspaces, expected)
+  // A remove of a known repository that is also a project of an IDE keeps the directory and its time.
+  await state.removeProject(directories.outside)
+  assert.equal((await state.snapshot()).addedAt[directories.outside], at('2026-11-19T09:00:00.000Z'))
+})
+
+test('a directory of an older state has no addedAt, and a remove and a new add give it a new time', { timeout: 20000 }, async t => {
+  const directories = await tree(t)
+  const database = join(directories.root, 'conversation.sqlite')
+  let opened = await open(t, directories, await openNodeSqliteStorage(database))
+  await opened.service.state.addProject('~/src/repository')
+  // A state of an older version has no map of the times.
+  await opened.service.state.change(value => { delete value.addedAt })
+  await opened.close()
+  opened = await open(t, directories, await openNodeSqliteStorage(database))
+  const { state } = opened.service
+  const known = async () => (await turn(opened, `list-${Math.random()}`, ['agents_projects', { action: 'list' }]))[0].workspaces
+    .find(item => item.cwd === directories.repository)
+  assert.deepEqual(await known(), { cwd: directories.repository, origin: 'known' })
+  await state.removeProject('~/src/repository')
+  t.mock.timers.enable({ apis: ['Date'], now: at('2026-11-19T11:00:00.000Z') })
+  await state.addProject('~/src/repository')
+  t.mock.timers.reset()
+  assert.deepEqual(await known(), { cwd: directories.repository, origin: 'known', addedAt: '2026-11-19T11:00:00.000Z' })
+})
+
+test('the description of agents_list describes addedAt', async t => {
+  const directories = await tree(t)
+  const { service } = await open(t, directories)
+  const { description } = service.extension().tools.find(item => item.name === 'agents_list')
+  assert.match(description, /addedAt/)
+  assert.match(description, /the directory that the user added last/)
 })
