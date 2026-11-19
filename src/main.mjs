@@ -15,13 +15,13 @@ import { CentralConfigurationService } from './CentralConfigurationService.mjs'
 import { AcpRunService } from './AcpRunService.mjs'
 import { ChildTranscripts } from './ChildTranscript.mjs'
 import { ChildPool } from './ChildPool.mjs'
-import { DaemonClient } from './DaemonClient.mjs'
+import { DaemonClient, processEnded } from './DaemonClient.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
 import { restrictFileMask } from './fileMask.mjs'
 import { daemonBuild, megachatVersion, needsReplacement } from './MegachatBuild.mjs'
 import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
-import { install } from './MegachatInstall.mjs'
+import { install, uninstall } from './MegachatInstall.mjs'
 import { startOnboardingNote } from './MegachatOnboarding.mjs'
 import { ANNOUNCE_MS, installKind, listRelease, recordVersion, removeRetired, retireCopy, startDelay, UpdateCheck } from './MegachatUpdate.mjs'
 import { PiMegachatService } from './PiMegachatService.mjs'
@@ -169,11 +169,6 @@ async function connect(target = directory, signal) {
   return client
 }
 
-function alive(pid) {
-  try { process.kill(pid, 0); return true }
-  catch (error) { return error.code === 'EPERM' }
-}
-
 /** Stops a daemon of another build and waits until its process exits, so that this build can take the lock. */
 async function stopOtherBuild(client) {
   if (!needsReplacement(client.health.build, build)) return false
@@ -182,10 +177,7 @@ async function stopOtherBuild(client) {
   log(message('daemon.replacing', client.health.build ?? '?', build))
   try { await client.json('/shutdown', {}) }
   catch { /* The daemon may close the connection while it stops. */ }
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (!alive(client.health.pid)) return true
-    await delay(100)
-  }
+  if (await processEnded(client.health.pid)) return true
   throw new MegachatError('unavailable')
 }
 
@@ -295,6 +287,8 @@ try {
       break
     }
     case 'install': process.exitCode = await install(); break
+    // The command never calls `start`, so it starts no daemon.
+    case 'uninstall': process.exitCode = await uninstall({ directory }); break
     case 'acp': {
       const bridge = new AcpBridge(await start(), { transcripts: join(directory, 'transcripts') })
       const connection = bridge.app().connect(ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)))
@@ -309,6 +303,7 @@ catch (error) {
   // The daemon writes to its log, so the reason of its stop goes there. Each other command writes for the user.
   if (command === 'daemon' && !(error instanceof MegachatError)) logFailure('log.daemon', error)
   if (command === 'install') process.stderr.write(`${message('install.crashed', error?.message ?? String(error))}\n`)
+  else if (command === 'uninstall') process.stderr.write(`${message('uninstall.crashed', error?.message ?? String(error))}\n`)
   else process.stderr.write(`${error instanceof MegachatError ? error.message : message('error.unavailable')}\n`)
   process.exitCode = command === 'daemon' && error.code === 'lock' ? LOCK_EXIT_CODE : 1
 }

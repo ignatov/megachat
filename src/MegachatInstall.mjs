@@ -1,10 +1,11 @@
-import { constants } from 'node:fs'
+import { constants, existsSync } from 'node:fs'
 import { access, chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { bundledBinaries, CentralConfigurationService } from './CentralConfigurationService.mjs'
+import { DaemonClient, processEnded, STOP_WAIT_MS } from './DaemonClient.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { message } from './messages.mjs'
 import { ENTRY_GIT_VARIABLES, npmPathEntry } from './npmEnvironment.mjs'
@@ -67,36 +68,100 @@ export function entryWithoutTimeLimits(entry) {
 }
 
 /**
- * Adds [entry] as `Megachat` to `agent_servers` of the file [path]. The result is `created`, `added`, `replaced`,
- * `same`, `different` or `unreadable`. Only `created`, `added` and `replaced` write a file. A different entry gives
- * `replaced` when [replaceable] accepts it, else `different`. Before `added` and `replaced`, this copies the file to
- * `<path>.before-megachat-<UTC time>`. They keep each other key, the key order and the mode of the file.
+ * Reads the file [path] as an ACP configuration. The result is `missing`, `unreadable`, or `read` with the
+ * `configuration`. A file that is not a JSON object, or whose `agent_servers` is not an object, is `unreadable`.
  */
-export async function writeEntry(path, entry, now = new Date(), replaceable = () => false) {
+async function readConfiguration(path) {
   let text
   try { text = await readFile(path, 'utf8') }
-  catch (error) {
-    if (error.code !== 'ENOENT') return { status: 'unreadable' }
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, `${JSON.stringify({ agent_servers: { [ENTRY]: entry } }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
-    return { status: 'created' }
-  }
+  catch (error) { return { status: error.code === 'ENOENT' ? 'missing' : 'unreadable' } }
   let configuration
   try { configuration = JSON.parse(text) }
   catch { return { status: 'unreadable' } }
   if (!plainObject(configuration) || (configuration.agent_servers !== undefined && !plainObject(configuration.agent_servers))) {
     return { status: 'unreadable' }
   }
-  const existing = configuration.agent_servers?.[ENTRY]
-  if (existing !== undefined && isDeepStrictEqual(existing, entry)) return { status: 'same' }
-  if (existing !== undefined && !replaceable(existing)) return { status: 'different', existing }
+  return { status: 'read', configuration }
+}
+
+/** Copies the file [path] to `<path>.before-megachat-<UTC time>` with the mode of the file, and gives the copy. */
+async function backUp(path, now) {
   const backup = `${path}.before-megachat-${now.toISOString().replace(/[-:]|\.\d+/g, '')}`
   await copyFile(path, backup, constants.COPYFILE_EXCL)
   await chmod(backup, (await stat(path)).mode & 0o777)
+  return backup
+}
+
+/**
+ * Adds [entry] as `Megachat` to `agent_servers` of the file [path]. The result is `created`, `added`, `replaced`,
+ * `same`, `different` or `unreadable`. Only `created`, `added` and `replaced` write a file. A different entry gives
+ * `replaced` when [replaceable] accepts it, else `different`. Before `added` and `replaced`, this copies the file to
+ * `<path>.before-megachat-<UTC time>`. They keep each other key, the key order and the mode of the file.
+ */
+export async function writeEntry(path, entry, now = new Date(), replaceable = () => false) {
+  const read = await readConfiguration(path)
+  if (read.status === 'missing') {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, `${JSON.stringify({ agent_servers: { [ENTRY]: entry } }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
+    return { status: 'created' }
+  }
+  if (read.status === 'unreadable') return read
+  const { configuration } = read
+  const existing = configuration.agent_servers?.[ENTRY]
+  if (existing !== undefined && isDeepStrictEqual(existing, entry)) return { status: 'same' }
+  if (existing !== undefined && !replaceable(existing)) return { status: 'different', existing }
+  const backup = await backUp(path, now)
   // An entry that the file holds keeps its place among the keys.
   configuration.agent_servers = { ...configuration.agent_servers, [ENTRY]: entry }
   await writeFile(path, `${JSON.stringify(configuration, null, 2)}\n`)
   return existing === undefined ? { status: 'added', backup } : { status: 'replaced', backup, existing }
+}
+
+/**
+ * Whether [entry] is the entry that `install` writes in a git checkout: Node.js starts `bin/megachat.mjs acp` of a
+ * directory, and the entry has no other key. The directory can be another checkout than this copy.
+ */
+export function checkoutEntry(entry) {
+  return plainObject(entry) && Object.keys(entry).sort().join() === 'args,command'
+    && typeof entry.command === 'string' && /(^|[\\/])node(\.exe)?$/.test(entry.command)
+    && Array.isArray(entry.args) && entry.args.length === 2 && entry.args[1] === 'acp' && typeof entry.args[0] === 'string'
+    && /(^|[\\/])bin[\\/]megachat\.mjs$/.test(entry.args[0])
+}
+
+/**
+ * Whether an `install` of Megachat wrote [entry]: [RELEASE_ENTRY], an [entryWithoutTimeLimits], an [earlierEntry] or a
+ * [checkoutEntry]. An entry with another key, such as an `env` of the user, is the entry of another program.
+ */
+export function ownEntry(entry) {
+  return isDeepStrictEqual(entry, RELEASE_ENTRY) || entryWithoutTimeLimits(entry) || earlierEntry(entry) || checkoutEntry(entry)
+}
+
+/**
+ * Finds the entry `Megachat` of the file [path]. The result is `absent`, `ours` when [ours] accepts the entry,
+ * `different` or `unreadable`. A missing file gives `absent`. `ours` and `different` give the entry as `existing`.
+ */
+async function findEntry(path, ours) {
+  const read = await readConfiguration(path)
+  if (read.status === 'missing') return { status: 'absent' }
+  if (read.status === 'unreadable') return read
+  const existing = read.configuration.agent_servers?.[ENTRY]
+  if (existing === undefined) return { status: 'absent' }
+  return { status: ours(existing) ? 'ours' : 'different', existing, configuration: read.configuration }
+}
+
+/**
+ * Removes the entry `Megachat` from `agent_servers` of the file [path] when [ours] accepts it. The result is `absent`,
+ * `removed`, `different` or `unreadable`. Only `removed` writes a file. Before it writes, it copies the file to
+ * `<path>.before-megachat-<UTC time>`. It keeps each other key, the key order, the mode of the file and the file
+ * itself, also when `agent_servers` becomes empty.
+ */
+export async function removeEntry(path, now = new Date(), ours = ownEntry) {
+  const { status, existing, configuration } = await findEntry(path, ours)
+  if (status !== 'ours') return status === 'different' ? { status, existing } : { status }
+  const backup = await backUp(path, now)
+  delete configuration.agent_servers[ENTRY]
+  await writeFile(path, `${JSON.stringify(configuration, null, 2)}\n`)
+  return { status: 'removed', backup, existing }
 }
 
 async function executable(path) {
@@ -200,4 +265,82 @@ export async function install({ environment = process.env, platform = process.pl
   // An exit code 1 always has a reason on the screen: the lines above name each failed check.
   if (!(passed && placed)) print(message('install.failed'))
   return passed && placed ? 0 : 1
+}
+
+/** The longest wait of `uninstall` for the answer of `/health`. A daemon that does not answer in this time counts as gone. */
+const HEALTH_TIMEOUT_MS = 2000
+
+/** The client of the daemon of the state directory [directory], or `undefined` when no daemon answers `/health`. */
+async function runningDaemon(directory) {
+  try {
+    const client = await DaemonClient.connect(directory)
+    client.health = await client.json('/health', undefined, AbortSignal.timeout(HEALTH_TIMEOUT_MS))
+    return client
+  }
+  catch { return undefined }
+}
+
+/** One line for the turn and one line for each child run that is not in a final state, from the `/state` [state]. */
+async function workLines(state) {
+  // The module of the state is large, and only this check needs it. So each other command does not load it.
+  const { terminalStates } = await import('./MegachatState.mjs')
+  return [...(state.current ? [message('uninstall.busyTurn')] : []),
+    ...Object.values(state.runs ?? {}).filter(run => !terminalStates.has(run.status))
+      .map(run => message('uninstall.busyRun', run.id, run.agent ?? 'claude', run.status, run.title ?? ''))]
+}
+
+/**
+ * The command `uninstall`: removes the entry `Megachat` that an `install` wrote from `acp.json`, then stops the daemon
+ * of the state directory [directory]. First it reads `acp.json`: another entry or an unreadable file ends the command,
+ * and the daemon continues to run. Then it refuses while the daemon runs a turn or a child run. The entry goes before
+ * the stop, so an IDE that reads the file again does not start a new daemon. The command starts no daemon and writes no
+ * file of the state directory. It prints the result, the state line, the reason of a failure, the line about the
+ * switch of Air, and the version and the directory of this copy. It returns 0 only when the file holds no entry
+ * `Megachat` and no daemon runs. A test can pass a short [stopTimeoutMs].
+ */
+export async function uninstall({ environment = process.env, directory, print = line => process.stdout.write(`${line}\n`),
+  root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, ''), now = () => new Date(), stopTimeoutMs = STOP_WAIT_MS } = {}) {
+  const path = acpConfigPath(environment)
+  let client
+  let gone = false
+  let failed = false
+  // The result of the file. It gives true when the file holds no entry `Megachat`.
+  const reported = result => {
+    switch (result.status) {
+      case 'removed': print(message('uninstall.removed', path, result.backup)); return true
+      case 'absent': print(message(client ? 'uninstall.absent' : 'uninstall.notInstalled', path)); return true
+      case 'different': print(message('uninstall.different', path)); print(`"${ENTRY}": ${JSON.stringify(result.existing)}`); return false
+      default: print(message('uninstall.unreadable', path)); return false
+    }
+  }
+  const found = await findEntry(path, ownEntry)
+  if (found.status === 'different' || found.status === 'unreadable') failed = !reported(found)
+  else {
+    client = await runningDaemon(directory)
+    const work = client ? await workLines(await client.json('/state')) : []
+    if (work.length > 0) {
+      print(message('uninstall.busy', path))
+      for (const line of work) print(line)
+      failed = true
+    }
+    else {
+      gone = reported(found.status === 'ours' ? await removeEntry(path, now(), ownEntry) : found)
+      failed = !gone
+      if (gone && client) {
+        try { await client.json('/shutdown', {}) }
+        catch { /* The daemon may close the connection while it stops. */ }
+        if (await processEnded(client.health.pid, stopTimeoutMs)) print(message('uninstall.stopped', client.health.pid))
+        else {
+          print(message('uninstall.stopTimeout', client.health.pid, stopTimeoutMs / 1000))
+          failed = true
+        }
+      }
+    }
+  }
+  if (gone && existsSync(directory)) print(message('uninstall.state', directory))
+  // An exit code 1 always has a reason on the screen.
+  if (failed) print(message('uninstall.failed'))
+  print(message('uninstall.switch'))
+  print(message('uninstall.release', root, megachatVersion()))
+  return failed ? 1 : 0
 }

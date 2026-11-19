@@ -127,6 +127,7 @@ function settingsRules(values, onboarding, rules, notice, projects = [], offers 
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? onboardingRules(values, rules) : message('instructions.settings'),
     message('instructions.update'),
+    message('instructions.uninstall'),
     ...(offers.length ? [rules.offers.head, message('instructions.offers.open'),
       ...offers.map(({ key, value, trigger }) => `${key} (${value}): ${trigger}`)] : []),
     message('instructions.notes', notesOn(values) ? 'on' : 'off'),

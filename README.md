@@ -240,9 +240,30 @@ Before the daemon stops for an update, it moves the directory `_npx/<hash>` of i
 `<hash>.megachat-old-<time>` in the same directory, so npx cannot reuse the old copy. The next daemon removes such
 directories of its own entry. It changes no other directory of the npm cache.
 
-**Removal.** Delete the entry `Megachat` from `~/.jetbrains/acp.json`. Then delete the directory `_npx/<hash>` that
-holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. `install` printed the directory of the
-terminal copy in its last line.
+**Removal.** Close the Megachat sessions in the IDE first. Then run the uninstall line in a terminal:
+
+```bash
+npx -y "github:ignatov/megachat#semver:x" uninstall
+```
+
+The line needs the network, as the install line does. Without the network, run `node <copy>/bin/megachat.mjs
+uninstall` with the terminal copy that `install` named in its last line, or `node src/main.mjs uninstall` in a
+checkout. `uninstall` removes the entry `Megachat` from `~/.jetbrains/acp.json` (or from the file of
+`MEGACHAT_ACP_CONFIG`) and copies the earlier file to `acp.json.before-megachat-<UTC time>`. It removes only an entry
+that an `install` of Megachat wrote. It keeps another entry `Megachat` and tells you to remove it by hand. Then it stops
+the daemon and waits until its process ends, at most 30 seconds. It starts no daemon. While a turn or a child task
+runs, it changes nothing, lists the work and exits with 1: wait until the work ends, or stop it in the chat, then run
+it again. It exits with 0 only when the file has no entry `Megachat` and no daemon runs.
+
+The state directory `~/.jetbrains/air/megachat` stays, with the conversation, the memory and the settings. The install
+line brings Megachat back as it was. To delete all of it, delete the directory yourself. `uninstall` also keeps the
+directory `_npx/<hash>` that holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. Delete these
+directories yourself when you do not want them.
+
+To hide Megachat without a removal, turn off Megachat on the Agents page of the Air settings. The switch does not
+change `acp.json` and does not stop the daemon: the daemon continues to run, with its tasks, its keep-alive requests and
+its timers, until `stop` or a restart of the computer. When you ask the agent to remove itself, it gives you the
+uninstall line and does not run it.
 
 ## Report a problem
 
@@ -304,6 +325,7 @@ optional directory selects a state directory of its own, for a test or for devel
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
 | `daemon` | Runs the daemon in the foreground. `start` runs this command. It ends with the exit code 3 when another daemon owns the directory. |
 | `install` | Checks the machine and adds the entry `Megachat` to `~/.jetbrains/acp.json`. The entry starts the last release with `npx`, or in a checkout the checkout directly. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
+| `uninstall` | Removes the entry `Megachat` that `install` wrote from `~/.jetbrains/acp.json`, then stops the daemon. It refuses while work runs, and it keeps the state directory. `MEGACHAT_ACP_CONFIG` replaces the path of the file. See "Removal". |
 
 ## The state directory
 

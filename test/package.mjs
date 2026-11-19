@@ -142,6 +142,16 @@ test('the packed copy starts its daemon and both agents, and install writes the 
   assert.deepEqual(JSON.parse(await readFile(acpConfig, 'utf8')).agent_servers.Megachat, RELEASE_ENTRY)
   assert.deepEqual(RELEASE_ENTRY.env, { GIT_HTTP_LOW_SPEED_LIMIT: '1000', GIT_HTTP_LOW_SPEED_TIME: '20' })
 
+  // `uninstall` of the installed copy removes the entry and stops the daemon. A second `uninstall` finds nothing.
+  const daemonProcess = descriptor.pid
+  const uninstall = await execute(process.execPath, [launcher, 'uninstall', state], { env: { ...daemonEnvironment, MEGACHAT_ACP_CONFIG: acpConfig } })
+  t.diagnostic(`uninstall:\n${uninstall.stdout}`)
+  assert.deepEqual(JSON.parse(await readFile(acpConfig, 'utf8')), { agent_servers: {} })
+  assert.ok(uninstall.stdout.includes(`Megachat stopped its daemon (process ${daemonProcess}).`), uninstall.stdout)
+  assert.equal(alive(daemonProcess), false)
+  const again = await execute(process.execPath, [launcher, 'uninstall', state], { env: { ...daemonEnvironment, MEGACHAT_ACP_CONFIG: acpConfig } })
+  assert.match(again.stdout, /Megachat is not installed:/)
+
   await stopDaemon(state)
   for (let attempt = 0; attempt < 100 && (await processesIn(scratch)).length > 0; attempt++) await delay(100)
   assert.deepEqual(await processesIn(scratch), [])

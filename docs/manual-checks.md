@@ -306,3 +306,7 @@ These checks need the author by hand. Each one names its OpenSpec change.
   in the IDE with the Air support. Start a short cloud session in Air. Verify that one note "Megachat note: one cloud
   session changed its state." shows in the chat at most 2 minutes after the session finished, and that the replay of a
   new view shows it again. Ask "what runs in the cloud?", and verify that the answer names the session.
+- `uninstall` (task 5.2, open): on a real IDE build with the Air support, on a machine where the author allows a change
+  of `~/.jetbrains/acp.json`, such as a test VM, install Megachat and open a Megachat session in Air. Run `uninstall`
+  in a terminal, then send a message in that session. Record whether Air reads `acp.json` again, whether it starts
+  `acp` again and so a new daemon, and what the chat shows.

@@ -1,9 +1,31 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { MegachatError, requireCondition } from './messages.mjs'
 
 /** The limit of one event line of the daemon stream, in MB. */
 const MAX_EVENT_MB = 32
+/** The longest wait for the end of the process of a daemon after `/shutdown`. */
+export const STOP_WAIT_MS = 30000
+
+/** Whether the process [pid] runs. A process of another user counts too. */
+export function processAlive(pid) {
+  try { process.kill(pid, 0); return true }
+  catch (error) { return error.code === 'EPERM' }
+}
+
+/**
+ * Waits until the process [pid] of a daemon ends, at most [timeoutMs]. Gives true when the process ended, and false
+ * after the time limit.
+ */
+export async function processEnded(pid, timeoutMs = STOP_WAIT_MS) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (!processAlive(pid)) return true
+    if (Date.now() >= deadline) return false
+    await delay(100)
+  }
+}
 
 export class DaemonClient {
   static async connect(directory) {
