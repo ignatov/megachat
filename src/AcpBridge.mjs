@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { basename } from 'node:path'
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk/unstable'
 import { megachatVersion } from './MegachatBuild.mjs'
+import { removeSecondEntry, secondEntry } from './MegachatInstall.mjs'
 import { CENTRAL_CAUSES, MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
 import { transcriptPath } from './ChildTranscript.mjs'
@@ -87,6 +89,28 @@ function archivePermission(request) {
 }
 
 const stopToolCallId = id => `megachat-stop-${id}`
+
+/** The wait after the answer of an attach before the dialog about a second entry, so that Air binds the view first. */
+const ENTRY_DIALOG_DELAY_MS = 1000
+/** The wait between two checks for an idle conversation before the removal of the entry. */
+const ENTRY_IDLE_MS = 2000
+
+/**
+ * The dialog about a second entry Megachat, as the stop dialog: [found] is the result of `secondEntry`. The option
+ * `remove` removes the entry with a backup, and `keep` keeps it for good. `rawInput.command` shows the entry.
+ */
+export function entryPermission(found) {
+  const title = message('entry.dialog.title')
+  return {
+    toolCall: { toolCallId: `megachat-acp-entry-${randomUUID()}`, title, kind: 'edit', status: 'pending',
+      rawInput: { command: `"Megachat": ${JSON.stringify(found.existing)}` } },
+    options: [
+      { optionId: 'remove', kind: 'allow_once', name: message('entry.option.remove'), _meta: permissionMeta({ description: message('entry.option.remove.description') }) },
+      { optionId: 'keep', kind: 'reject_once', name: message('entry.option.keep'), _meta: permissionMeta({ description: message('entry.option.keep.description') }) },
+    ],
+    _meta: permissionMeta({ title, description: message(found.own ? 'entry.dialog.description' : 'entry.dialog.description.changed', found.path) }),
+  }
+}
 
 /** The phases of a child run in the ID of its row. */
 const phases = ['queued', 'resuming', 'approval', 'running']
@@ -179,10 +203,13 @@ export class AcpBridge {
    * [daemon] is the client of the daemon of the start of the bridge. The bridge never starts another daemon: when its
    * daemon is gone, it ends the ACP connection, so the next start of the agent goes through the entry again (see the
    * capability `daemon`). [healthIntervalMs] replaces the interval of the check of `/health`, and [reshowMs] replaces
-   * [RESHOW_MS], for a test.
+   * [RESHOW_MS], for a test. [entries] finds and removes a second entry Megachat (see [offerEntryRemoval]), and
+   * [entryDelayMs] and [entryIdleMs] replace its waits, for a test.
    */
-  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS, reshowMs = RESHOW_MS } = {}) {
+  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS, reshowMs = RESHOW_MS,
+    entries = { find: secondEntry, remove: removeSecondEntry }, entryDelayMs = ENTRY_DIALOG_DELAY_MS, entryIdleMs = ENTRY_IDLE_MS } = {}) {
     this.daemon = daemon
+    Object.assign(this, { entries, entryDelayMs, entryIdleMs })
     this.transcripts = transcripts
     this.healthIntervalMs = healthIntervalMs
     this.reshowMs = reshowMs
@@ -277,13 +304,57 @@ export class AcpBridge {
     requireCondition(this.views.has(id) || this.views.size < MAX_VIEWS, 'viewLimit', MAX_VIEWS)
     const view = new AcpBridgeSession(this.daemon, this.connection, id, this)
     this.views.set(id, view)
-    try { return await view.attach(ctx, loading) }
+    try {
+      const result = await view.attach(ctx, loading)
+      // Air binds the view after this answer. Only then can a dialog show outside a turn.
+      setTimeout(() => this.offerEntryRemoval(id), this.entryDelayMs).unref?.()
+      return result
+    }
     catch (error) {
       view.close()
       // A later attach of the same ID can have replaced this view. Then the entry belongs to the later view.
       if (this.views.get(id) === view) this.views.delete(id)
       throw error
     }
+  }
+
+  /**
+   * Asks the user one time about a second entry Megachat: Air has the registry agent, and `acp.json` has the entry, so
+   * Air shows two rows of one conversation. Only one dialog runs at a time. The answer `remove` removes the entry with
+   * a backup when no turn runs. The answer `keep` goes to `settings.json` through the daemon, and no later start asks
+   * again. The outcome `cancelled` is no choice: the next attach asks again.
+   */
+  offerEntryRemoval(sessionId) {
+    if (this.entryOffer || this.entryDone || this.ended || !this.views.has(sessionId)) return
+    this.entryOffer = (async () => {
+      const found = await this.entries.find()
+      if (!found) return false
+      if ((await this.daemon.json('/acp-entry')).keep) return true
+      const request = entryPermission(found)
+      const result = await this.connection.client.request(methods.client.session.requestPermission, { ...request, sessionId })
+      const choice = result.outcome.outcome === 'selected' ? result.outcome.optionId : undefined
+      // The answer ends the tool call of the dialog, as for a stop request, so Air shows no open row.
+      if (choice) await this.views.get(sessionId)?.notify({ sessionUpdate: 'tool_call_update', toolCallId: request.toolCall.toolCallId,
+        status: choice === 'remove' ? 'completed' : 'failed' }).catch(() => {})
+      if (choice === 'keep') {
+        await this.daemon.json('/acp-entry', {})
+        process.stderr.write(`${message('log.entry.kept')}\n`)
+        return true
+      }
+      if (choice !== 'remove') return false
+      const gone = () => this.ended || this.connection.signal.aborted
+      while (!gone() && (await this.daemon.json('/state')).current) {
+        await new Promise(resolve => setTimeout(resolve, this.entryIdleMs).unref?.())
+      }
+      // After the wait, the entry must be the entry of the dialog, and Air must still have the registry agent.
+      const again = gone() ? undefined : await this.entries.find()
+      if (!again || !isDeepStrictEqual(again.existing, found.existing)) return false
+      const removal = await this.entries.remove(found.path, new Date(), entry => isDeepStrictEqual(entry, found.existing))
+      if (removal.status === 'removed') process.stderr.write(`${message('log.entry.removed', found.path, removal.backup)}\n`)
+      return true
+    })().then(done => { this.entryDone = done }, error => {
+      if (!this.connection.signal.aborted) process.stderr.write(`${message('log.entry.failed', error?.message ?? String(error))}\n`)
+    }).finally(() => { this.entryOffer = null })
   }
 
   close() {

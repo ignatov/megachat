@@ -188,6 +188,13 @@ another entry. When `acp.json` has another entry
 `Megachat`, the line does not change the file. It prints both entries and what to do. Two copies of Megachat on one
 machine replace the daemon of each other.
 
+**The registry agent.** The ACP registry of JetBrains also gives Megachat, as the agent `acp.registry.megachat-acp`.
+Both agents open the same conversation. When `installed.json` of Air has that agent, the install line writes no entry,
+and it removes the entry `Megachat` of an earlier install, with a backup. In a checkout, it then writes an overlay entry
+to `~/.jetbrains/acp-registry-installed-overlay.json`, so the registry agent starts the checkout. When both agents are
+there, Megachat asks in Air whether to remove the entry. The answer Keep stays in `settings.json`. The last lines of the
+install name the next step in Air in a line that starts with "Next step".
+
 **Update.** The update is automatic. The next start of the agent after a release installs the new release, and its
 daemon replaces the daemon of the earlier release. In two runs of a test with a local repository, that start took 10.6 and 12 seconds.
 Nobody measured it against GitHub. Nobody tested what happens to an unfinished delegated task when a new release

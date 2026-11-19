@@ -679,6 +679,14 @@ export class MegachatSettings {
     return key === undefined ? { directory, removed } : this.report(key, directory)
   }
 
+  /** True when the user chose to keep the entry Megachat of `acp.json` next to the registry agent (key `acpEntry`). */
+  get keepsAcpEntry() { return this.store.data.acpEntry === 'keep' }
+
+  /** Stores the choice to keep the entry Megachat of `acp.json`, so Megachat does not ask again. */
+  async keepAcpEntry() {
+    await this.store.change(data => { data.acpEntry = 'keep' })
+  }
+
   async setOnboarding(status) {
     requireCondition(ONBOARDING_STATES.includes(status), 'settingValue')
     await this.store.change(data => { data.onboarding = status })

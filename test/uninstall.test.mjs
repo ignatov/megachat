@@ -17,7 +17,7 @@ import manifest from '../package.json' with { type: 'json' }
 import { DaemonClient, processEnded } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
 import { megachatVersion } from '../src/MegachatBuild.mjs'
-import { ACP_CONFIG_VARIABLE, checkoutEntry, ownEntry, RELEASE_ENTRY, removeEntry, uninstall } from '../src/MegachatInstall.mjs'
+import { ACP_CONFIG_VARIABLE, checkoutEntry, overlayEntry, OVERLAY_VARIABLE, ownEntry, RELEASE_ENTRY, removeEntry, uninstall } from '../src/MegachatInstall.mjs'
 import { message } from '../src/messages.mjs'
 import { PiMegachatService } from '../src/PiMegachatService.mjs'
 import { waitForState } from '../src/waitForState.mjs'
@@ -272,6 +272,34 @@ test('uninstall from this checkout removes the entry of another checkout', { tim
   const backup = (await readdir(directory)).find(name => name.startsWith('acp.json.before-megachat-'))
   assert.ok(result.lines.includes(`Megachat removed the entry Megachat from ${path}. The earlier file is in ${join(directory, backup)}.`), result.stdout)
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { agent_servers: {} })
+})
+
+test('uninstall removes the overlay entry of a checkout and keeps an overlay entry of the user and a file with comments', { timeout: 30000 }, async t => {
+  const directory = await temporary(t)
+  const overlay = join(directory, 'overlay.json')
+  const claude = { agent: { distribution: { local: { command: 'node', args: ['/x.js'] } } } }
+  await writeFile(overlay, JSON.stringify({ agents: { 'acp.registry.claude-acp': claude, 'acp.registry.megachat-acp': overlayEntry(checkout) } }))
+  const env = { [ACP_CONFIG_VARIABLE]: join(directory, 'acp.json'), [OVERLAY_VARIABLE]: overlay }
+  const result = await run(['uninstall', join(directory, 'state')], env)
+  assert.equal(result.code, 0, result.stdout + result.stderr)
+  const backup = (await readdir(directory)).find(name => name.startsWith('overlay.json.before-megachat-'))
+  assert.ok(result.lines.includes(`Megachat removed the overlay entry of the registry agent Megachat from ${overlay}. The earlier file is in ${join(directory, backup)}.`), result.stdout)
+  assert.deepEqual(JSON.parse(await readFile(overlay, 'utf8')), { agents: { 'acp.registry.claude-acp': claude } })
+  // acp.json has no entry, but the overlay entry was a part of Megachat, so the line is not "not installed".
+  assert.ok(result.lines.includes(`${join(directory, 'acp.json')} has no entry Megachat.`), result.stdout)
+
+  const user = JSON.stringify({ agents: { 'acp.registry.megachat-acp': { agent: { distribution: { local: { ...checkout, env: { A: '1' } } } } } } })
+  await writeFile(overlay, user)
+  const kept = await run(['uninstall', join(directory, 'state')], env)
+  assert.equal(kept.code, 0, kept.stdout + kept.stderr)
+  assert.equal(await readFile(overlay, 'utf8'), user)
+
+  // A file with comments stays, because a write of the JSON loses them.
+  const commented = `// The checkout of Megachat.\n${JSON.stringify({ agents: { 'acp.registry.megachat-acp': overlayEntry(checkout) } })}\n`
+  await writeFile(overlay, commented)
+  const refused = await run(['uninstall', join(directory, 'state')], env)
+  assert.equal(refused.code, 0, refused.stdout + refused.stderr)
+  assert.equal(await readFile(overlay, 'utf8'), commented)
 })
 
 test('an unexpected error of uninstall prints its message and the steps by hand', { skip: process.getuid?.() === 0, timeout: 30000 }, async t => {

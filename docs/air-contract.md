@@ -7,8 +7,23 @@ A change of an extension needs the same change in Air. Change this file in the s
 
 ## The agent identity
 
-- The `acp.json` entry of the user has the name `Megachat`. Air derives the agent ID `acp.megachat` from that name.
-- Air shows the Gothic M icon and the first row of the session list for the agent `acp.megachat`.
+- Megachat has two agent IDs. The `acp.json` entry of the user has the name `Megachat`, and Air derives the agent ID
+  `acp.megachat` from that name. The ACP registry of the organization gives the agent `megachat-acp`, with the agent ID
+  `acp.registry.megachat-acp`: `npx` with the package `github:ignatov/megachat#v<version>`, the arguments `["acp"]` and
+  the `env` `{}`. Air records an installed registry agent in `acp-agents/installed.json` of the common data directory
+  of the IDE.
+- Air shows the Gothic M icon and the first row of the session list (the application session) for both agent IDs
+  (JetBrains/ultimate#1899). Both use the state directory `~/.jetbrains/air/megachat`, so both rows show one
+  conversation.
+- When `installed.json` has the registry agent, `install` writes no `acp.json` entry, and it removes the entry of an
+  earlier `install`. In a git checkout, it writes the overlay entry `acp.registry.megachat-acp` with
+  `agent.distribution.local` (`command`, `args`) to `~/.jetbrains/acp-registry-installed-overlay.json`, so Air starts the
+  checkout for the registry agent. See the Air spec `plugins/air/spec/launch/acp-installed-overlay.spec.md`.
+- When both agents are there, Megachat asks after an attach of a view, with `session/request_permission` as for a stop
+  request: the title "Megachat is installed two times", the entry in `rawInput.command`, and the options `remove`
+  (`allow_once`) and `keep` (`reject_once`). `remove` removes the entry with a backup when no turn runs. `keep` goes to
+  the key `acpEntry` of `settings.json`, and Megachat does not ask again. The outcome `cancelled` is no choice: the next
+  attach asks again. One process shows one dialog at a time.
 - An IDE build without the Air support for Megachat starts it as an ordinary custom ACP agent. That build sends no
   capability, so Megachat sends no `_workspaces/list` and no `_session/service/record`. Nobody tested that case.
 - Megachat gives the agent name `air-megachat` in `agentInfo`, and the version of the build. A release copy gives the
