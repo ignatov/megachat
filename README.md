@@ -698,16 +698,19 @@ on after the start of a working day, the first report comes on the next working 
 
 ## Continue a task
 
-Ask for a follow-up, a fix of a result or the next step of a task in the main chat. The main agent continues the child
-session of that task with its tool `agents_send`, and it names the session in one short phrase. It does not start a new
-session in the session list of the project. `agents_list` shows the idle child sessions: the last run of each one
-completed less than 24 hours ago, the session is not closed, and its directory is listed. For an unrelated task, the
-main agent starts a new session. To get a new session for the same topic, ask for one, or object to the named session.
+Ask for a follow-up, a fix of a result or the next step of a task in the main chat. When the main agent sees that the
+request continues the task of a hot child session, it continues that session, and it names the session in one short
+phrase. It does not start a new session in the session list of the project. A hot session works now, or its last run
+ended less than 24 hours ago. The session is not closed, and its directory is listed. The main agent sends the request
+to an idle session with its tool `agents_send`. A session that works now gets the request with `agents_steer`, as the
+next section says, and its task keeps one result. Each child result names its child session, and `agents_list` shows
+the hot sessions. For an unrelated task, the main agent starts a new session. To get a new session for the same task,
+ask for one, or object to the named session.
 
 ## Add information to a task that runs
 
-Send the information in the main chat while the child works, for example one more link for the same task. The main
-agent calls its tool `agents_steer`, and the child gets the message during its turn, without a wait for the end of the
+Send the information in the main chat while the child works, for example one more link, a correction or the next step
+of the same task. The main agent calls its tool `agents_steer`, and the child gets the message during its turn, without a wait for the end of the
 task. Claude Code and Codex take the message through the ACP extension `_session/steering`. An agent without it, or a
 request to stop the current step, gets a cancel of the turn and then a continuation in the same session with the
 message. A task that waits in the queue gets the message in its prompt. The task keeps one result. The daemon records

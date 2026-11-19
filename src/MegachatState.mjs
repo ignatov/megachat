@@ -1040,7 +1040,8 @@ export class MegachatState {
       retain(state)
       clearPromptSuggestion(state.initiative)
       // A continuation reports the task of the user, not its own prompt: the report of a steered task is the only one.
-      const results = runs.map(run => ({ runId: run.id, cwd: run.cwd, prompt: run.task ?? run.prompt,
+      // The child session lets the main agent continue the task with agents_send. Air does not get the results.
+      const results = runs.map(run => ({ runId: run.id, childSessionId: run.childSessionId, cwd: run.cwd, prompt: run.task ?? run.prompt,
         ...(run.title === undefined ? {} : { title: run.title }), status: run.status, output: run.output, truncated: run.truncated, error: run.error ?? null,
         ...(run.resumedBy ? { resumedBy: run.resumedBy } : {}), ...(run.resumeOf ? { resumeOf: run.resumeOf } : {}) }))
       const mainRunId = randomUUID()

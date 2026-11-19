@@ -47,10 +47,10 @@ const STREAM_TIMEOUT_MS = 60000
 const STEER_WAIT_MS = 30000
 /** The lifetimes of the prompt cache of a model that states none: those of Anthropic. */
 const CACHE_LIFETIME_SECONDS = { short: 300, long: 3600 }
-/** A follow-up continues a child session only when its last run ended less than this time ago (see `idleSessionsOf`). */
-const IDLE_SESSION_MS = 24 * 60 * 60 * 1000
-/** The most entries of `idleSessions` in the result of `agents_list`. */
-const IDLE_SESSION_LIMIT = 20
+/** An idle child session is hot only when its last run ended less than this time ago (see `hotSessionsOf`). */
+const HOT_SESSION_MS = 24 * 60 * 60 * 1000
+/** The most entries of `hotSessions` in the result of `agents_list`. */
+const HOT_SESSION_LIMIT = 20
 const resource = name => readFile(new URL(`../resources/${name}`, import.meta.url), 'utf8')
 /** The clock of the working day without a test. A timer does not keep the process alive. */
 const workdayClock = {
@@ -215,28 +215,35 @@ function withoutImageData(item) {
 const runLabel = run => run.title ?? run.prompt.slice(0, 80)
 
 /**
- * The child sessions that a follow-up with `agents_send` can continue, one entry for each session, the newest first. The
- * last run of a session is the run with the newest `createdAt`. It must be completed less than `IDLE_SESSION_MS` before
- * [now]. No run of the session is closed, and its directory is listed, because `agents_send` refuses another directory.
- * A run of an older state directory without `finishedAt` counts as too old. Only the main agent compares the topics.
+ * The hot child sessions: the sessions that a request can continue, one entry for each session. The last run of a
+ * session is the run with the newest `createdAt`. A session works when its last run did not end, and then `agents_steer`
+ * gives it the request. Else it is idle, and its last run must have ended less than `HOT_SESSION_MS` before [now], with
+ * each status. Then `agents_send` continues it. No run of the session is closed, and its directory is listed, because
+ * both tools refuse another directory. A run of an older state directory without `finishedAt` counts as too old. The
+ * sessions that work come first, the newest start first, then the idle sessions, the newest end first. Only the main
+ * agent compares the topics.
  */
-function idleSessionsOf(state, now) {
+function hotSessionsOf(state, now) {
   const sessions = new Map()
   for (const run of Object.values(state.runs)) sessions.set(run.childSessionId, [...(sessions.get(run.childSessionId) ?? []), run])
+  const working = []
   const idle = []
   for (const [childSessionId, runs] of sessions) {
     runs.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
     const first = runs[0]
     const last = runs.at(-1)
-    if (last.status !== 'completed' || runs.some(run => run.closed) || !isDirectoryOf(state, last.cwd)) continue
-    if (typeof last.finishedAt !== 'number' || now - last.finishedAt >= IDLE_SESSION_MS) continue
+    if (runs.some(run => run.closed) || !isDirectoryOf(state, last.cwd)) continue
+    const works = !terminalStates.has(last.status)
+    if (!works && (typeof last.finishedAt !== 'number' || now - last.finishedAt >= HOT_SESSION_MS)) continue
     const title = runLabel(first)
     const lastTitle = runLabel(last)
-    idle.push({ childSessionId, agent: last.agent ?? 'claude', cwd: last.cwd, title, ...(lastTitle !== title ? { lastTitle } : {}),
-      endedAt: last.finishedAt })
+    const entry = { childSessionId, agent: last.agent ?? 'claude', cwd: last.cwd, title, ...(lastTitle !== title ? { lastTitle } : {}),
+      state: works ? 'working' : 'idle', status: last.status }
+    if (works) working.push({ entry, time: last.createdAt ?? 0 })
+    else idle.push({ entry: { ...entry, endedAt: new Date(last.finishedAt).toISOString() }, time: last.finishedAt })
   }
-  return idle.sort((a, b) => b.endedAt - a.endedAt).slice(0, IDLE_SESSION_LIMIT)
-    .map(item => ({ ...item, endedAt: new Date(item.endedAt).toISOString() }))
+  const newest = (a, b) => b.time - a.time
+  return [...working.sort(newest), ...idle.sort(newest)].slice(0, HOT_SESSION_LIMIT).map(item => item.entry)
 }
 
 export class PiMegachatService {
@@ -720,7 +727,7 @@ export class PiMegachatService {
         // Each directory names the agent of a new task in it: a project value of children.agent wins over the global value.
         const workspaces = directoriesOf(state).map(item => ({ ...item, defaultAgent: this.settings.values(item.cwd)['children.agent'] }))
         return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces, runs,
-          idleSessions: idleSessionsOf(state, this.workdayClock.now()),
+          hotSessions: hotSessionsOf(state, this.workdayClock.now()),
           ...(this.suggestions !== 'off' ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),
       // The check and the request of the user to update (see the capability `update`).
