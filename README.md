@@ -2,6 +2,8 @@
 
 Megachat is one durable chat for a user on a machine. It is an ACP agent for JetBrains Air.
 Each project window and each JetBrains product of the user opens the same conversation.
+You add it with "Spawn Megachat" in Agent Sessions: for the IDE, or for one project, and then it works only in that
+project (see [The scopes of Megachat](#the-scopes-of-megachat)).
 The main agent delegates file and command work to Claude Code and Codex, and lists that work as background tasks.
 A daemon keeps the conversation and the work when the IDE closes.
 All model traffic goes through JetBrains Central.
@@ -22,9 +24,13 @@ curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh
 ```
 
    Without the line: [Install without the setup line](#install-without-the-setup-line).
-2. In Air, select Megachat in the agent list. The IDE needs no restart. The first start takes 30 to 100 seconds.
+2. In Air, press "Spawn Megachat" in Agent Sessions. The button at the top adds the Megachat of the IDE, for all the
+   projects. The action "Spawn Megachat" in the menu of a project or a folder adds a Megachat for that project only
+   (see [The scopes of Megachat](#the-scopes-of-megachat)). The IDE needs no restart. The first start takes 30 to 100
+   seconds. Before you add a Megachat, the IDE starts nothing of Megachat.
 3. Megachat writes "Welcome to Megachat" and asks four setup questions: the agents, the index of past sessions, the
-   known repositories and the folder of new projects. Answer, or skip. See [Settings and the first run](#settings-and-the-first-run).
+   known repositories and the folder of new projects. The Megachat of a project asks the first two. Answer, or skip.
+   See [Settings and the first run](#settings-and-the-first-run).
 4. Check it: write a message in the chat. Or run `npx -y "github:ignatov/megachat#semver:x" status` in a terminal.
    It prints JSON with the `version` of the running daemon.
 5. If it does not work, look in `idea.log` (Help | Show Log in Finder) for the line "This ACP client has no Air
@@ -43,8 +49,8 @@ curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh
 
 1. Run the line.
 2. Log in when Central asks. The line starts `central login` in the terminal.
-3. In the IDE, select Megachat in the agent list of Air. The IDE reads the change of `~/.jetbrains/acp.json` itself,
-   so it needs no restart.
+3. In the IDE, press "Spawn Megachat" in Agent Sessions of Air. The IDE reads the change of `~/.jetbrains/acp.json`
+   itself, so it needs no restart.
 
 Megachat needs Node.js 22.19 or later, and any newer Node.js works (22, 24 and 25 are tested). When the `PATH` has
 no such Node.js, the script downloads one. When the line fails, read `$TMPDIR/megachat-setup.log`, and try
@@ -79,7 +85,7 @@ machine changes nothing. The script runs no `central add codex` (see "The machin
 ### Install without the setup line
 
 When the setup line cannot run, install what "The machine needs" lists. Then run this line once in a terminal, and
-select Megachat in the agent list of Air:
+press "Spawn Megachat" in Agent Sessions of Air:
 
 ```sh
 npx -y "github:ignatov/megachat#semver:x" install
@@ -240,6 +246,20 @@ Before the daemon stops for an update, it moves the directory `_npx/<hash>` of i
 `<hash>.megachat-old-<time>` in the same directory, so npx cannot reuse the old copy. The next daemon removes such
 directories of its own entry. It changes no other directory of the npm cache.
 
+Each Megachat has its own daemon (see [The scopes of Megachat](#the-scopes-of-megachat)), and the daemons of the IDE
+run from one copy. A daemon loads files of its copy also after its start. So the daemons of one copy stop for an update
+together: the daemon that starts the update asks each other daemon of its copy, and it stops only when each of them
+has no turn, no child task and no request that waits. Then it stops them, stops itself, and moves the copy. When one
+daemon has work, no daemon stops, and the next check of the conditions asks again. The copy is one, so the update is
+one: a daemon with `update.auto` off starts no update, but a daemon of the same copy with `update.auto` on stops it.
+A daemon of a git checkout or of another copy continues to run.
+
+**Remove one Megachat.** The action "Remove Megachat" of Air sends the request `_agent/stop` to that Megachat. The
+daemon of that Megachat stops when no turn and no child task runs, and the row leaves the session list. While work
+runs, nothing changes, and Air shows the reason: stop the work in the chat, or wait, then remove Megachat again. The
+state directory stays, so a new "Spawn Megachat" gives the same conversation, settings and memory. Each IDE keeps its
+own list of the added Megachats: a second IDE that still shows the row starts the daemon again when you open it there.
+
 **Removal.** Close the Megachat sessions in the IDE first. Then run the uninstall line in a terminal:
 
 ```bash
@@ -251,12 +271,14 @@ uninstall` with the terminal copy that `install` named in its last line, or `nod
 checkout. `uninstall` removes the entry `Megachat` from `~/.jetbrains/acp.json` (or from the file of
 `MEGACHAT_ACP_CONFIG`) and copies the earlier file to `acp.json.before-megachat-<UTC time>`. It removes only an entry
 that an `install` of Megachat wrote. It keeps another entry `Megachat` and tells you to remove it by hand. Then it stops
-the daemon and waits until its process ends, at most 30 seconds. It starts no daemon. While a turn or a child task
-runs, it changes nothing, lists the work and exits with 1: wait until the work ends, or stop it in the chat, then run
-it again. It exits with 0 only when the file has no entry `Megachat` and no daemon runs.
+the daemon of each Megachat, the one of the IDE and the one of each project, and waits until each process ends, at
+most 30 seconds. It starts no daemon. While a turn or a child task of one of them runs, it changes nothing, lists the
+work and exits with 1: wait until the work ends, or stop it in the chat, then run it again. A line about the Megachat
+of a project names the directory of that project. `MEGACHAT_PROJECT` has no effect on `uninstall`. It exits with 0 only
+when the file has no entry `Megachat` and no daemon runs.
 
-The state directory `~/.jetbrains/air/megachat` stays, with the conversation, the memory and the settings. The install
-line brings Megachat back as it was. To delete all of it, delete the directory yourself. `uninstall` also keeps the
+The state directory `~/.jetbrains/air/megachat` stays, with the conversation, the memory and the settings of each
+Megachat. The install line brings Megachat back as it was. To delete all of it, delete the directory yourself. `uninstall` also keeps the
 directory `_npx/<hash>` that holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. Delete these
 directories yourself when you do not want them.
 
@@ -316,6 +338,11 @@ build` writes the version of the checkout into the bundle.
 Run each command as `node bin/megachat.mjs <command> [<directory>]`, or as `node src/main.mjs` in a checkout. The
 optional directory selects a state directory of its own, for a test or for development.
 
+`start`, `status`, `stop`, `compact`, `acp` and `daemon` act on the Megachat of the IDE. With the variable
+`MEGACHAT_PROJECT` set to a project directory, they act on the Megachat of that project, for example
+`MEGACHAT_PROJECT=~/src/app node bin/megachat.mjs status`. Use an absolute path in the variable. `install` and
+`uninstall` do not read the variable.
+
 | Command | What it does |
 |---|---|
 | `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. It also replaces a daemon with other agent commands, when this command passes agent commands. |
@@ -325,7 +352,52 @@ optional directory selects a state directory of its own, for a test or for devel
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
 | `daemon` | Runs the daemon in the foreground. `start` runs this command. It ends with the exit code 3 when another daemon owns the directory. |
 | `install` | Checks the machine and adds the entry `Megachat` to `~/.jetbrains/acp.json`. The entry starts the last release with `npx`, or in a checkout the checkout directly. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
-| `uninstall` | Removes the entry `Megachat` that `install` wrote from `~/.jetbrains/acp.json`, then stops the daemon. It refuses while work runs, and it keeps the state directory. `MEGACHAT_ACP_CONFIG` replaces the path of the file. See "Removal". |
+| `uninstall` | Removes the entry `Megachat` that `install` wrote from `~/.jetbrains/acp.json`, then stops the daemon of each Megachat. It refuses while work runs, and it keeps the state directory. `MEGACHAT_ACP_CONFIG` replaces the path of the file. See "Removal". |
+
+## The scopes of Megachat
+
+A Megachat has one of two scopes. You select the scope when you press "Spawn Megachat" in Agent Sessions of Air.
+
+- **The machine scope** is the Megachat of the IDE: one conversation for the machine, which each window and each
+  JetBrains product opens. It lists each open project and each known repository. Its state is in
+  `~/.jetbrains/air/megachat`.
+- **A project scope** is a Megachat for one project directory. It starts tasks only in that directory, in a directory
+  in it that the IDE has open, and in a linked git worktree of the project that the IDE has open. `agents_list` gives
+  the project directory with the origin `project`.
+
+The two scopes can exist at the same time, and each project can have its own Megachat.
+
+What a Megachat of a project does not see or do:
+
+- It lists no other open project, no known repository and no workspace of Megachat. `agents_projects` gives only
+  `action=list`: it adds, removes, finds and makes no directory.
+- A session of Claude Code, Codex, pi or OpenCode in another directory is absent for `agents_running`, `agents_stop`,
+  `agents_archive`, `agents_session_history`, the live table of the session files and the notes about the sessions
+  that wait. Megachat reads of such a log only the first lines, which give its directory.
+- It has no cloud sessions: the setting `cloud.sessions` stays off, so the tool `agents_cloud` is not there.
+- When you ask it for work in another project, it tells you to add a Megachat for that project, or the Megachat of the
+  IDE.
+
+The variable `MEGACHAT_PROJECT` selects a project scope: the absolute path of the project directory. Air sets it when
+it starts the command of the entry for a project. Megachat uses the real path of the directory. It refuses a path that
+cannot be a known repository, such as the home directory or the state directory, with one line and the exit code 1.
+Without the variable, Megachat has the machine scope.
+
+The state of a project scope is in `~/.jetbrains/air/megachat/projects/<name>-<digest>`: the last segment of the
+project directory, and 12 hexadecimal digits of the SHA-256 of its real path. The file `project.json` in it names the
+project directory, so `status` or `stop` with only that directory as the argument finds the scope. Each Megachat has
+its own daemon, conversation, settings, learned memory, spend limit and index of past sessions. A Megachat of a project
+copies nothing from the Megachat of the IDE, and it asks its own short setup.
+
+Know these limits:
+
+- Each Megachat is a daemon. Each daemon sends its own keep-alive requests of the prompt cache, runs its own automatic
+  turns and counts its own `budget.dailyUsd`. Remove a Megachat that you do not use (see "Remove one Megachat").
+- One daemon runs one child in a checkout at a time. The Megachat of the IDE and the Megachat of a project are two
+  daemons, so each of them can run a child in the same checkout at the same time. Two Megachats of nested directories
+  can do so too.
+- A project directory that moves or gets another name gets a new, empty Megachat. The earlier state directory stays in
+  `projects/`, and its `project.json` names the earlier path. Delete it yourself when you do not want it.
 
 ## The state directory
 
@@ -347,6 +419,8 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `session-archive.jsonl` | The cards of the archived sessions (see "Archive a session"), one JSON line for each step. The first archive makes the file. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
+| `projects/<name>-<digest>/` | The state directory of the Megachat of one project, with the same files as this table. Only the state directory of the machine scope has it. See [The scopes of Megachat](#the-scopes-of-megachat). |
+| `project.json` | The project directory of a project scope: `{"schema":1,"directory":"<real path>"}`. Only the state directory of a project scope has it. |
 | `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For each child run, it holds a line for the start, a line for the end, and for an error a line with its class. For a failed child run, it also holds the answer of the agent and the end of its error output, without the known secrets. No line holds a prompt. |
 
 Each directory has the mode 0700, and each file has the mode 0600. When the shared directory has no conversation, the
@@ -400,7 +474,9 @@ requests and on the summary, and the results still wait.
 
 ## Settings and the first run
 
-Megachat keeps its settings in `settings.json` in the state directory. The file is apart from the conversation, so a
+Megachat keeps its settings in `settings.json` in the state directory. Each Megachat has its own file: the Megachat of
+a project keeps its own settings, and its setup asks two questions, the pair of agents and the index of the past
+sessions of this project. The file is apart from the conversation, so a
 compaction does not change it. Change a setting in the chat, for example "answer in German" or "use Sonnet 5.5 for the
 main agent". The main agent stores the value with its tool `agents_settings`. A change applies at once when no turn
 runs, else at the end of the current turn. No setting needs a restart.
@@ -1016,7 +1092,7 @@ The session text is data for the agent, not instructions.
 |---|---|
 | `bin/megachat.mjs` | The launcher. It checks the version of Node.js, then loads `src/main.mjs`. |
 | `src/main.mjs` | The commands. `start` connects to the daemon, replaces a daemon of another build, uses a live daemon of a legacy directory, or starts a new daemon. |
-| `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
+| `src/MegachatHome.mjs` | The state directory, the project scope (`MEGACHAT_PROJECT`, its state directory and `project.json`), the state tree, the legacy directories, the migration, the schema check, and the rules of the user. `resources/instructions-project.md` and `resources/instructions-onboarding-project.md` hold the rules and the setup of a project scope. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
@@ -1031,6 +1107,7 @@ The session text is data for the agent, not instructions.
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
 | `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
+| `src/DaemonWork.mjs` | The work of a daemon that keeps it from a stop, and the stop of a daemon with the wait for its end. `uninstall` and the request `_agent/stop` use it. |
 | `src/ReplyStream.mjs` | The stream of the partial reply of the main agent from the daemon to each client. |
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version of the build, from `git describe` in a checkout, and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |

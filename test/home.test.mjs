@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -12,7 +12,7 @@ import test from 'node:test'
 import { CURRENT_SQLITE_SCHEMA_VERSION } from '@earendil-works/pi-durable/storage/sqlite'
 import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
 import { assertSupportedState, composeInstructions, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories,
-  migrateLegacyState } from '../src/MegachatHome.mjs'
+  migrateLegacyState, projectStateDirectory } from '../src/MegachatHome.mjs'
 import { stopDaemon } from './stop-daemon.mjs'
 
 const main = fileURLToPath(new URL('../src/main.mjs', import.meta.url))
@@ -34,6 +34,11 @@ test('the shared home resolves per platform and the variable overrides it', () =
   assert.deepEqual(legacyStateDirectories({ platform: 'darwin', env: {}, homedir }),
     ['/Users/me/Library/Application Support/JetBrains/AirMegachat'])
   assert.deepEqual(legacyStateDirectories({ platform: 'linux', env: {}, homedir }), [])
+})
+
+test('the state directory of a project scope is in the state directory of the machine scope', () => {
+  const machine = defaultStateDirectory({ platform: 'darwin', env: {}, homedir: () => '/Users/me' })
+  assert.equal(projectStateDirectory(machine, '/work/app', 'darwin'), '/Users/me/.jetbrains/air/megachat/projects/app-70467eff2e0a')
 })
 
 test('the test guard gives each test process a temporary home and no legacy directories', () => {
@@ -371,4 +376,30 @@ test('a start during the end of another daemon starts a daemon again, with a lim
   assert.ok(all.length <= 5, `The start made ${all.length} daemon processes`)
   assert.equal((await published(home)).pid, all.at(-1))
   for (const pid of all.slice(0, -1)) assert.equal(alive(pid), false)
+})
+
+test('a project scope gets no copy of an earlier directory, and its client does not use the daemon of that directory', { timeout: 60000 }, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'megachat-project-legacy-')))
+  const legacy = join(root, 'legacy')
+  const home = join(root, 'home')
+  const app = join(root, 'app')
+  const state = projectStateDirectory(home, app)
+  t.after(async () => {
+    try { await stopDaemon(state) }
+    finally { await rm(root, { force: true, recursive: true }) }
+  })
+  await mkdir(legacy)
+  await mkdir(app)
+  const writer = legacyDatabase(join(legacy, 'conversation.sqlite'))
+  writer.exec("INSERT INTO entries (text) VALUES ('Earlier')")
+  writer.close()
+  const result = await run(['start'], { MEGACHAT_HOME: home, MEGACHAT_LEGACY_DIRS: legacy, MEGACHAT_PROJECT: app })
+  assert.equal(result.code, 0, result.output)
+  assert.equal((await published(state)).pid > 0, true)
+  // The conversation of the project scope is new: it has no table of the earlier file, and the earlier directory has no mark.
+  const database = new DatabaseSync(join(state, 'conversation.sqlite'), { readOnly: true })
+  try { assert.equal(database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE name = 'entries' AND sql LIKE '%text TEXT%'").get().count, 0) }
+  finally { database.close() }
+  assert.equal(existsSync(join(legacy, 'MIGRATED_TO')), false)
+  assert.equal(existsSync(join(home, 'conversation.sqlite')), false)
 })

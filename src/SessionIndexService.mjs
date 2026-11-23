@@ -106,7 +106,9 @@ export class SessionIndexService {
       this.directories = directoriesOf(this.subscription.value)
       this.directoryKey = JSON.stringify(this.directories.map(directory => directory.cwd).sort())
       this.subscription.start(call => { if (call.kind === 'value') this.#observe(call.value) })
-      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, secrets: this.secrets, ...this.catalogOptions })
+      // The Megachat of one project keeps only the session files of its listed directories in the live table.
+      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, secrets: this.secrets,
+        ...(this.state.project ? { scope: () => this.directories } : {}), ...this.catalogOptions })
       await this.catalog.start()
     }
     catch (error) {
@@ -151,6 +153,7 @@ export class SessionIndexService {
     this.directories = directories
     if (key === this.directoryKey) return
     this.directoryKey = key
+    this.catalog?.rescope()
     this.#request({ full: true })
   }
 

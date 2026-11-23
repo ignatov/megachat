@@ -4,6 +4,8 @@ import { resolve, sep } from 'node:path'
 import { AGENTS, agentSessions } from './AgentProcesses.mjs'
 import { logFailure, message, requireCondition } from './messages.mjs'
 import { processTable } from './ProcessTable.mjs'
+import { directoriesOf } from './ProjectDirectories.mjs'
+import { directoryOf } from './SessionLog.mjs'
 import { linkLogs } from './SessionLinks.mjs'
 import { ACTIVE_MS, OPEN_STEPS, processWaitStatus, sessionStatus } from './SessionStatus.mjs'
 
@@ -107,6 +109,12 @@ export class RunningAgents {
       files: catalog?.source(row.agent)?.keepsOpen ? this.directories.get(row.pid)?.files ?? [] : [] }))
     const unreadable = rows.filter(row => row.cwd === null).length
     if (unreadable) incomplete.push(message('running.incomplete.cwd', unreadable))
+    // The Megachat of one project has only the sessions of its listed directories: a session of another directory, and a
+    // session without a known directory, is absent for the tools, the notes and the stop (see `project-scope`).
+    if (this.state.project) {
+      const listed = directoriesOf(snapshot)
+      for (let index = rows.length - 1; index >= 0; index--) if (!(rows[index].cwd && directoryOf(rows[index].cwd, listed))) rows.splice(index, 1)
+    }
     const uncertain = rows.filter(row => row.ownership === 'unknown').length
     if (uncertain) incomplete.push(message('running.incomplete.owner', uncertain))
     const view = catalog ? await this.#withLogs(rows, catalog, scannedAt, incomplete)

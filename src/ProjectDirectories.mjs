@@ -255,7 +255,16 @@ export async function discoverRepositories({ home = homedir(), roots = projectRo
 }
 
 /**
+ * Tells whether the real path [cwd] is a directory of the project scope of [project]: the project directory, a directory
+ * in it, or a linked worktree of git whose main repository is the project directory.
+ */
+export function inProjectScope(project, cwd) {
+  return isWithin(cwd, project) || mainRepositoryOf(cwd) === project
+}
+
+/**
  * The directories where a child can work, each one time, with its origin: `megachat` for the workspace of Megachat,
+ * `project` for the project directory of a project scope, which comes first and has no workspace of Megachat,
  * `ide` for a project that an IDE registered, and `known` for a repository of the known list. A linked worktree has
  * `worktreeOf`, the real path of its main repository, and it follows its main repository in the list. A main repository
  * in the list has `worktrees`, the listed paths of its worktrees. So the reader sees one project with its worktrees.
@@ -269,6 +278,7 @@ export function directoriesOf(state) {
     if (!directories.has(cwd)) directories.set(cwd, { cwd, origin, ...(name ? { name } : {}), ...(origin === 'megachat' ? {} : addedAt(cwd)) })
   }
   if (state.megachatWorkspace) add(state.megachatWorkspace, 'megachat', message('workspace.name'))
+  if (state.projectDirectory) add(state.projectDirectory, 'project')
   for (const cwd of state.workspaces ?? []) add(cwd, 'ide')
   for (const cwd of state.projects ?? []) add(cwd, 'known')
   const items = [...directories.values()]
@@ -287,7 +297,8 @@ export function directoriesOf(state) {
 }
 
 export function isDirectoryOf(state, cwd) {
-  return state.megachatWorkspace === cwd || (state.workspaces ?? []).includes(cwd) || (state.projects ?? []).includes(cwd)
+  return state.megachatWorkspace === cwd || state.projectDirectory === cwd || (state.workspaces ?? []).includes(cwd)
+    || (state.projects ?? []).includes(cwd)
 }
 
 /**

@@ -239,11 +239,14 @@ export function updateNoteText({ from, to, notes, autoOn }) {
  * whether the work and the time allow the automatic stop now. [work] gives what runs or waits, as a list (see
  * `PiMegachatService.updateWork`); a stop that the user asked for needs an empty list. [failed] gives the release for
  * which an automatic stop gave no update, or `null`. [stop] records the stop, tells the bridges and stops the daemon.
- * [values] gives the effective settings.
+ * [values] gives the effective settings. [others] gives the other daemons that run from the same copy, as
+ * `{ ready, stop }`: `ready` is true when each of them has no work, and `stop(from, to)` stops each of them. The stop
+ * moves the copy away, and a daemon loads files of its copy later, so the daemons of one copy stop together or not at all.
  */
 export class UpdateCheck {
-  constructor({ version, selfUpdating, kind = selfUpdating ? 'npx' : 'other', release, ready, work = async () => [], failed, stop, values, clock = systemClock }) {
-    Object.assign(this, { version, selfUpdating, kind, release, ready, work, failed, stop, values, clock })
+  constructor({ version, selfUpdating, kind = selfUpdating ? 'npx' : 'other', release, ready, work = async () => [], failed, stop, values, clock = systemClock,
+    others = async () => ({ ready: true, stop: async () => {} }) }) {
+    Object.assign(this, { version, selfUpdating, kind, release, ready, work, failed, stop, values, clock, others })
     this.available = undefined
     this.latest = undefined
     this.checkedAt = undefined
@@ -361,8 +364,17 @@ export class UpdateCheck {
       this.schedule('condition', this.requested ? APPLY_POLL_MS : CONDITION_INTERVAL_MS)
       return
     }
+    // A daemon of the same copy with work keeps each daemon of the copy. The next check of the conditions asks again.
+    const others = await this.others()
+    if (this.closed) return
+    if (!others.ready) {
+      this.schedule('condition', this.requested ? APPLY_POLL_MS : CONDITION_INTERVAL_MS)
+      return
+    }
     this.stopping = true
     logEvent('log.update.stop', baseVersion(this.version), this.available)
+    // The other daemons end first, so no daemon runs from the copy when it moves away.
+    await others.stop(baseVersion(this.version), this.available)
     await this.stop(baseVersion(this.version), this.available)
   }
 

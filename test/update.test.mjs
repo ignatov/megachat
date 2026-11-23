@@ -22,6 +22,7 @@ import { client, methods } from '@agentclientprotocol/sdk/unstable'
 import { AcpBridge } from '../src/AcpBridge.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonServer } from '../src/DaemonServer.mjs'
+import { projectStateDirectory } from '../src/MegachatHome.mjs'
 import { message } from '../src/messages.mjs'
 import {
   APPLY_POLL_MS, baseVersion, CHECK_INTERVAL_MS, CONDITION_INTERVAL_MS, fetchReleaseNotes, higherVersion, highestRelease, listRelease, NOTES_LINES,
@@ -651,4 +652,106 @@ test('the note after an update tells that the automatic update is on, within the
   assert.ok(withNote.endsWith(message('update.autoOn')))
   assert.ok(withNote.split('\n').length <= NOTES_LINES)
   assert.match(updateNoteText({ from: '0.4.0', to: '0.5.0', notes: null, autoOn: true }), /ask me to set update\.auto to false/)
+})
+
+test('a daemon stops for an update only when each other daemon of its copy is ready, and it stops them first', async () => {
+  let otherReady = false
+  const order = []
+  const clock = fakeClock('2026-11-12T03:00:00Z')
+  const update = new UpdateCheck({ version: '0.4.0', selfUpdating: true, release: async () => '0.5.0', ready: async () => true, failed: async () => null,
+    values: () => ({ 'update.auto': true }), clock,
+    others: async () => ({ ready: otherReady, stop: async (from, to) => { order.push(['others', from, to]) } }),
+    stop: async (from, to) => { order.push(['own', from, to]) } })
+  const advance = ms => clock.advance(ms, () => update.running)
+  update.start()
+  await advance(0)
+  // A daemon of the same copy has work: no daemon stops, and the next check of the conditions asks again.
+  assert.deepEqual(order, [])
+  await advance(CONDITION_INTERVAL_MS)
+  assert.deepEqual(order, [])
+  otherReady = true
+  await advance(CONDITION_INTERVAL_MS)
+  assert.deepEqual(order, [['others', '0.4.0', '0.5.0'], ['own', '0.4.0', '0.5.0']])
+  // A request of the user waits for the other daemons too.
+  otherReady = false
+  const asked = []
+  const requested = new UpdateCheck({ version: '0.4.0', selfUpdating: true, release: async () => '0.5.0', ready: async () => false, failed: async () => null,
+    values: () => ({ 'update.auto': false }), clock, others: async () => ({ ready: otherReady, stop: async () => { asked.push('others') } }),
+    stop: async () => { asked.push('own') } })
+  assert.equal((await requested.apply()).applied, true)
+  await clock.advance(APPLY_POLL_MS, () => requested.running)
+  assert.deepEqual(asked, [])
+  otherReady = true
+  await clock.advance(APPLY_POLL_MS, () => requested.running)
+  assert.deepEqual(asked, ['others', 'own'])
+  update.close()
+  requested.close()
+})
+
+test('the daemon tells another daemon of its copy whether it is ready, and it stops for the update of that daemon', { timeout: 20000 }, async t => {
+  const { service, server, daemon } = await open(t)
+  // A server without a copy gives no root, so it counts as a daemon of another copy.
+  assert.deepEqual(await daemon.json('/update/ready'), { root: null, ready: true })
+  server.root = '/copy/'
+  assert.deepEqual(await daemon.json('/update/ready'), { root: '/copy/', ready: true })
+  await service.state.change(state => { state.runs.child = { id: 'child', status: 'running', agent: 'claude', prompt: 'Work', cwd: REPOSITORY, createdAt: Date.now() } })
+  assert.deepEqual(await daemon.json('/update/ready'), { root: '/copy/', ready: false })
+  await service.state.change(state => { state.runs.child.status = 'completed' })
+  // The stop for the update of another daemon needs the two versions, and a server that can stop.
+  await assert.rejects(daemon.json('/update/stop', { from: '0.4.0', to: '0.5.0' }))
+  const stops = []
+  server.updateStop = (from, to) => stops.push([from, to])
+  await assert.rejects(daemon.json('/update/stop', { from: '0.4.0' }))
+  assert.deepEqual(await daemon.json('/update/stop', { from: '0.4.0', to: '0.5.0' }), { stopping: true })
+  await delay(20)
+  assert.deepEqual(stops, [['0.4.0', '0.5.0']])
+})
+
+test('the daemons of one copy stop together for an update, and a daemon of another copy continues to run', { timeout: 90000 }, async t => {
+  const { copy, version } = await npxPackage(t)
+  const { directory: releases } = await releaseRepository(t, [`v${version}`, 'v99.0.0'])
+  const home = await temporary(t, 'megachat-update-tree-')
+  const work = await temporary(t, 'megachat-update-work-')
+  const app = join(work, 'app')
+  const lib = join(work, 'lib')
+  const appState = projectStateDirectory(home, app)
+  const libState = projectStateDirectory(home, lib)
+  for (const directory of [app, lib, appState, libState]) await mkdir(directory, { recursive: true })
+  // The conversation of the machine scope sleeps: today and yesterday are no working days, and the idle time is 0.
+  const today = (new Date().getUTCDay() + 6) % 7
+  await writeFile(join(home, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', values: { 'update.auto': true, 'workday.enabled': true,
+    'workday.days': [WEEKDAYS[(today + 3) % 7]], 'workday.start': '09:00', 'workday.end': '10:00', 'workday.timezone': 'UTC', 'workday.idleMinutes': 0 } }), { mode: 0o600 })
+  // The daemons of the projects do not start an update: `update.auto` is off, and their own check comes late.
+  for (const state of [appState, libState]) {
+    await writeFile(join(state, 'settings.json'), JSON.stringify({ schema: 1, onboarding: 'done', defaults: 2, values: { 'update.auto': false } }), { mode: 0o600 })
+  }
+  const environment = { MEGACHAT_HOME: home, MEGACHAT_RELEASE_REPOSITORY: releases }
+  const late = { ...environment, MEGACHAT_UPDATE_START_DELAY_MS: '600000' }
+  // The daemon of `app` runs from the copy of npx, and the daemon of `lib` runs from this checkout.
+  const appDaemon = startDaemon(t, copy, appState, { ...late, MEGACHAT_PROJECT: app })
+  const libDaemon = startDaemon(t, REPOSITORY, libState, { ...late, MEGACHAT_PROJECT: lib })
+  const appClient = await connected(appState)
+  const libClient = await connected(libState)
+  assert.equal((await appClient.json('/state')).projectDirectory, app)
+  const events = []
+  const watching = appClient.watch(event => { events.push(event) }).catch(() => {})
+  const machine = startDaemon(t, copy, home, { ...environment, MEGACHAT_UPDATE_START_DELAY_MS: '1500' })
+  await connected(home)
+  assert.equal((await machine.exited)[0], 0, machine.log)
+  assert.equal((await appDaemon.exited)[0], 0, appDaemon.log)
+  await watching
+  // The daemon of `app` told its views about the update before its stop.
+  assert.deepEqual(events.filter(event => event.type === 'update'), [{ type: 'update', value: { from: version, to: '99.0.0' } }])
+  assert.match(appDaemon.log, new RegExp(`Megachat stops for the update from ${version.replace(/\./g, '\\.')} to 99\\.0\\.0\\.`))
+  assert.equal(existsSync(join(appState, 'daemon', 'connection.json')), false)
+  assert.equal(existsSync(join(home, 'daemon', 'connection.json')), false)
+  // The copy moved away one time, after both of its daemons ended.
+  const entry = dirname(dirname(copy))
+  assert.equal(existsSync(copy), false)
+  assert.equal((await readdir(dirname(entry))).filter(name => name.startsWith('0123abcd.megachat-old-')).length, 1)
+  // The daemon of the checkout is a daemon of another copy: it continues to run.
+  assert.equal(libDaemon.child.exitCode, null, libDaemon.log)
+  assert.equal((await libClient.json('/health')).pid, libDaemon.child.pid)
+  await libClient.json('/shutdown', {})
+  assert.equal((await libDaemon.exited)[0], 0)
 })
