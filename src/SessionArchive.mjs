@@ -6,7 +6,8 @@ import { promisify } from 'node:util'
 import { AirStore } from './AirArchive.mjs'
 import { message, MegachatError, requireCondition } from './messages.mjs'
 import { OPEN_STEPS } from './SessionStatus.mjs'
-import { parseLine, readLines } from './SessionLog.mjs'
+import { directoriesOf } from './ProjectDirectories.mjs'
+import { directoryOf, isCompressed, parseLine, readLines } from './SessionLog.mjs'
 import { indexedText } from './SessionText.mjs'
 
 const execute = promisify(execFile)
@@ -25,6 +26,8 @@ export const AIR_RECHECK_MS = 1500
 export const CODEX_QUIET_MS = 10 * 60 * 1000
 /** A row with a log write in this time gets a warning. */
 export const RECENT_MS = 60 * 60 * 1000
+/** The bytes that the archive reads at most to find the `cwd` of a session file, for the Megachat of one project. */
+const PEEK_BYTES = 1024 * 1024
 const STATUSES_REFUSED = new Set(['working', 'stuck', 'waiting_for_permission'])
 const OWNERS_STOPPED = new Set(['terminal', 'multiplexer'])
 const HELPERS = /mcp|helper|caffeinate/i
@@ -262,9 +265,27 @@ export class SessionArchive {
     for (const { path } of await source.files(undefined, this.fs).catch(() => [])) {
       if (source.nameId(path) !== sessionId) continue
       const stat = await this.fs.stat(path).catch(() => undefined)
-      if (stat?.isFile()) return { path, agent, nameId: sessionId, mtimeMs: stat.mtimeMs, read: false }
+      if (!stat?.isFile()) continue
+      // The Megachat of one project takes only a session of its listed directories. The first lines of the file tell.
+      if (this.state.project && !await this.inScope(source, path)) return undefined
+      return { path, agent, nameId: sessionId, mtimeMs: stat.mtimeMs, read: false }
     }
     return undefined
+  }
+
+  /** True when the first lines of the session file at [path] give a `cwd` that is a listed directory or a directory in one. */
+  async inScope(source, path) {
+    const listed = directoriesOf(await this.state.snapshot())
+    try {
+      for await (const batch of readLines(this.fs, path, { end: PEEK_BYTES, batchLines: 8, compressed: isCompressed(path) })) {
+        for (const line of batch.lines) {
+          const cwd = parseLine(source, line, path)?.parsed.meta?.cwd
+          if (cwd) return Boolean(directoryOf(cwd, listed))
+        }
+      }
+    }
+    catch { /* A file that Megachat cannot read is no session of the scope. */ }
+    return false
   }
 
   /** The live rows of a session now, with the owner of each process, from one read of the table. */

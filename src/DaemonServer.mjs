@@ -95,6 +95,9 @@ export class DaemonServer {
             ...(update ? { update } : {}) })
           return
         }
+        // Another daemon of the same copy asks before it stops for an update: the copy moves away, so each daemon of the
+        // copy must be without work (see the capability `project-scope`). `root` tells the copy of this daemon.
+        case '/update/ready': send({ root: this.root ?? null, ready: (await this.service.updateWork()).length === 0 }); return
         case '/state': send(await this.service.state.snapshot()); return
         case '/main-agent': send(this.service.mainAgent()); return
         case '/conversation': send(await this.service.view()); return
@@ -182,6 +185,14 @@ export class DaemonServer {
         return
       }
       case '/shutdown': send({ stopping: true }); setImmediate(this.shutdown); return
+      // Another daemon of the same copy stops this daemon for an update. This daemon tells its views and then stops.
+      case '/update/stop': {
+        const version = value => typeof value === 'string' && /^[\w.+-]{1,64}$/.test(value)
+        requireCondition(version(body.from) && version(body.to) && this.updateStop)
+        send({ stopping: true })
+        setImmediate(() => this.updateStop(body.from, body.to))
+        return
+      }
       default: throw new MegachatError('invalid')
     }
   }

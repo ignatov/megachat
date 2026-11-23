@@ -468,8 +468,9 @@ export class SettingsStore {
  * the run. [home] replaces the home directory for a `~` in a project path, for a test.
  */
 export class MegachatSettings {
-  constructor(store, { environment = process.env, overrides = {}, models, home } = {}) {
-    Object.assign(this, { store, environment, overrides, models, home })
+  /** [projectScope] is true for the Megachat of one project: the cloud sessions then stay off (see `set` and `entry`). */
+  constructor(store, { environment = process.env, overrides = {}, models, home, projectScope = false } = {}) {
+    Object.assign(this, { store, environment, overrides, models, home, projectScope })
   }
 
   get onboarding() { return this.store.onboarding }
@@ -510,7 +511,9 @@ export class MegachatSettings {
         : project ? [project.value, 'project']
           : valid !== undefined ? [valid, 'setting'] : [fallback, 'default']
     // A stored level that the model does not know becomes the nearest level of the model, so each request agrees.
-    const effective = key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
+    // In a project scope, the cloud sessions are off, whatever the file or a variable says.
+    const effective = this.projectScope && key === 'cloud.sessions' ? 'off'
+      : key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
     return { key, value: effective, source, default: fallback,
       ...(definition.variable ? { variable: definition.variable } : {}),
       ...(stored === undefined ? {} : { stored }),
@@ -644,6 +647,8 @@ export class MegachatSettings {
     const directory = project === undefined ? undefined : await this.projectDirectory(project)
     const normalized = definition.validate(value, this.context())
     requireCondition(normalized !== undefined, 'settingValue')
+    // The cloud sessions belong to the login of Central, not to a directory, so a project scope does not have them.
+    requireCondition(!(this.projectScope && key === 'cloud.sessions' && normalized === 'on'), 'projectScope')
     await this.store.change(data => {
       if (directory === undefined) { data.values[key] = normalized; return }
       if (!isRecord(data.projects)) data.projects = {}

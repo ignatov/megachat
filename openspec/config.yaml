@@ -3,9 +3,11 @@ schema: spec-driven
 # Project context: the constraints that an agent cannot find in the code. The behavior is in openspec/specs/, the use
 # is in README.md.
 context: |
-  Product: Megachat, an ACP agent for JetBrains Air in plain Node.js ESM. Megachat is one conversation shared by the
-  projects on a machine. A separate daemon runs Pi Durable, Claude Code, and Codex through Central. The main agent
-  delegates tasks to Claude Code, Codex and pi, and searches the Claude Code and Codex histories.
+  Product: Megachat, an ACP agent for JetBrains Air in plain Node.js ESM. A Megachat has the machine scope or a project
+  scope. The machine scope is one conversation shared by the projects on a machine. A project scope is one conversation
+  for one project directory, with its own state directory and daemon (see the capability `project-scope`). A separate
+  daemon runs Pi Durable, Claude Code, and Codex through Central. The main agent delegates tasks to Claude Code, Codex
+  and pi, and searches the Claude Code and Codex histories.
 
   Constraints:
   - The state of the user: `~/.jetbrains/air/megachat` holds the real conversation of the user. Never start

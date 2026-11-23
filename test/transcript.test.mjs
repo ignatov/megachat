@@ -300,7 +300,7 @@ test('a view with asyncTaskSessions gets the session of a new Claude child in on
   const air = await view(daemon, cwd, { transcripts: path }, ['asyncTasks', 'asyncTaskSessions'])
   t.after(() => air.close())
   // Megachat does not send the capability back: the field in the row tells Air.
-  assert.deepEqual(air.initialized._meta.jetbrains.air.capabilities, ['persistentSession', 'asyncTasks'])
+  assert.deepEqual(air.initialized._meta.jetbrains.air.capabilities, ['persistentSession', 'asyncTasks', 'agentStop'])
   const first = await admit(service, { cwd, prompt: 'wait', title: 'First' })
   const id = `${first.id}:running`
   // The row of the phase running goes out at the launch, before the adapter gives the session.

@@ -264,7 +264,7 @@ export class PiMegachatService {
    * `agents_memory` and no reflection, for a test. [memory] gives the hooks of the memory, for a test.
    * [centralFailure] gives the last failure of Central, `{ cause, at }`, as `CentralConfigurationService.lastFailure`.
    */
-  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, archive: archiveOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {}, cloud: cloudOptions = {} } = {}) {
+  static async open(storage, models, model, sessionProviders, { secrets, searchPath, sessionsPath, sessionIndex: indexOptions = {}, resumeDelayMs, reportRetryDelayMs, userInstructionsPath, settingsPath, memoryPath, memory: memoryOptions = {}, compactTokens: limit, keepAlive: keepAliveOptions = {}, workspacePath, stateDirectory, home, projectRoots, suggestions, environment = process.env, spendPath, clock, accountCheck, centralFailure, processTable, stop: stopOptions = {}, archive: archiveOptions = {}, promptSuggestionLifetimeMs, morningReport: reportOptions = {}, notes: notesOptions = {}, cloud: cloudOptions = {}, project } = {}) {
     // A task without a project works in this directory of Megachat, not in a directory of an IDE.
     if (workspacePath) await ensurePrivateDirectory(workspacePath)
     const workspace = workspacePath ? await realpath(workspacePath) : undefined
@@ -276,12 +276,17 @@ export class PiMegachatService {
       'keepAlive.enabled': enabled, 'keepAlive.hours': windowMs === undefined ? undefined : windowMs / 3600000,
       'cache.ttl': retention === undefined ? undefined : retention === 'short' ? '5m' : '1h',
     }).filter(([, value]) => value !== undefined))
-    const settings = new MegachatSettings(await SettingsStore.open(settingsPath), { environment, overrides, models, home })
+    const settings = new MegachatSettings(await SettingsStore.open(settingsPath), { environment, overrides, models, home, projectScope: project !== undefined })
     const values = settings.values()
     // The rules of the user come from the file at the start of the daemon only.
-    const rules = { bundled: await resource('instructions.md'), suggestions: await resource('instructions-suggestions.md'),
+    // In a project scope, the rules of that scope follow the bundled rules, and the setup has the questions of a project.
+    // Both texts are the same for each project: they hold no path, and the main agent reads the directory from agents_list.
+    const bundled = await resource('instructions.md')
+    const rules = { bundled: project === undefined ? bundled : `${bundled.trimEnd()}\n\n${(await resource('instructions-project.md')).trimEnd()}\n`,
+      suggestions: await resource('instructions-suggestions.md'),
       ghost: await resource('instructions-suggestions-ghost.md'), html: await resource('air-html.md'),
-      onboarding: await resource('instructions-onboarding.md'), onboardingGhost: await resource('instructions-onboarding-ghost.md'),
+      onboarding: await resource(project === undefined ? 'instructions-onboarding.md' : 'instructions-onboarding-project.md'),
+      onboardingGhost: await resource('instructions-onboarding-ghost.md'),
       offers: parseOffers(await resource('instructions-offers.md')), user: await readUserInstructions(userInstructionsPath) }
     const live = { harness: harnessSettings(values, models) }
     const registry = createRegistry()
@@ -296,12 +301,14 @@ export class PiMegachatService {
     const agent = agentOf(values, rules)
     const root = await harness.root(context, { agent: { ...agent, maxTurns: 20 } })
     await root.configure(agent, context)
-    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace, stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'], promptSuggestionLifetimeMs, secrets })
+    // In a project scope, the workspace of Megachat is no listed directory: each task works in a directory of the project.
+    const state = new MegachatState(harness, root, { resumeDelayMs, reportRetryDelayMs, workspace: project === undefined ? workspace : undefined, project,
+      stateDirectory, home, projectRoots, suggestions: values['reply.suggestions'], promptSuggestionLifetimeMs, secrets })
     await state.initialize()
     await state.recover()
     const service = new PiMegachatService(harness, root, state, sessionProviders)
     Object.assign(service, { models, registry, settings, rules, live, agent, keepAliveOptions, accountCheck, centralFailure, reportOptions, home,
-      stateDirectory, environment,
+      stateDirectory, environment, project,
       spend: await DailySpend.open(spendPath, clock),
       // The live table of the session logs exists only with the consent of the user, as the index does.
       running: new RunningAgents(state, { table: processTable, clock, logs: () => service.sessionIndex?.logs }) })
@@ -779,6 +786,8 @@ export class PiMegachatService {
       tool('projects', obj({ action: str(), cwd: opt(str({ maxLength: 4096 })), cwds: opt(arr(str({ maxLength: 4096 }), { maxItems: 200 })),
         name: opt(str({ maxLength: 100 })) }), async (args, api) => {
         requireCondition(['list', 'add', 'remove', 'discover', 'create'].includes(args.action))
+        // In a project scope, the list of the directories does not change: no scan, no known repository, no new project.
+        requireCondition(args.action === 'list' || this.project === undefined, 'projectScope')
         if (args.action === 'discover') return result(await this.state.discoverProjects(args.cwd))
         const changed = args.action === 'add' && args.cwds ? await this.state.addProjects(args.cwd === undefined ? args.cwds : [args.cwd, ...args.cwds])
           : args.action === 'add' ? { added: (await this.state.addProject(args.cwd)).cwd }

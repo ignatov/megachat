@@ -8,7 +8,9 @@ A change of an extension needs the same change in Air. Change this file in the s
 ## The agent identity
 
 - The `acp.json` entry of the user has the name `Megachat`. Air derives the agent ID `acp.megachat` from that name.
-- Air shows the Gothic M icon and the first row of the session list for the agent `acp.megachat`.
+- Air shows the Gothic M icon for the agent `acp.megachat`. Before the user adds a Megachat, Air shows the button
+  "Spawn Megachat" in the place of the first row of the session list, and it starts no command of the entry. After the
+  add, the session of the Megachat of the IDE is the first row of the session list. See "The scopes of Megachat" below.
 - An IDE build without the Air support for Megachat starts it as an ordinary custom ACP agent. That build sends no
   capability, so Megachat sends no `_workspaces/list` and no `_session/service/record`. Nobody tested that case.
 - Megachat gives the agent name `air-megachat` in `agentInfo`, and the version of the build. A release copy gives the
@@ -30,6 +32,8 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | `persistentSession` | Megachat, always | Air sends no `session/cancel` and no `session/close` when it releases the runtime. Air loads the session again on each attach. Air sends `clientMessageId` with each prompt. |
 | `htmlFence` | Air (read only, no Air release sends it yet) | Air draws an `air-html` code fence of a reply as a page. Megachat gives the page rules to the main agent (setting `chat.html`). Until Air sends the name, `auto` takes each client with `version` 1 or more. The daemon keeps the answer of the last view that attached. See "The pages in the chat" below. |
 | `asyncTasks` | Megachat, when Air sent it | Air lists the background tasks of the session. |
+| `agentStop` | Megachat, always | Air can send `_agent/stop` for the action "Remove Megachat". A release without the capability does not know the request. See "The removal of a Megachat" below. |
+| `projectScope` | Megachat, only in a project scope | This Megachat belongs to the project of `MEGACHAT_PROJECT`. Air checks it for each process that it started with the variable. See "The scopes of Megachat" below. |
 
 ## The requests
 
@@ -39,6 +43,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code or Codex, so Megachat sends no record for it. |
 | `session/request_permission` | Megachat | `sessionId`, `toolCall`, `options`, `_meta.jetbrains.air.permission` | Air shows the request of a child, and the stop request of the main agent, as a permission dialog. See "The permissions" and "The stop dialog" below. |
 | `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat cancels the child run of that row, and no other work. It answers `{ "stopped": true }` when it accepted the stop, and `{ "stopped": false }` for each other case. Then the row ends with its terminal update. See "The Stop of a row" below. |
+| `_agent/stop` | Air | `{}` | Megachat stops its daemon when no turn and no child run is in work, answers `{ "stopped": true }`, and ends the ACP connection. Else it answers `{ "stopped": false, "reason": "<text>" }`, and nothing changes. See "The removal of a Megachat" below. |
 | `session/set_config_option` | Air | `sessionId`, `configId`, `value` | Megachat stores the choice of the model (`configId` `model`) or of the reasoning level (`thought_level`) of the main agent. It answers with the full `configOptions`. A value that is not in the list, and each other `configId`, get the error `-32602` with a text. See "The model and the reasoning level" below. |
 
 Megachat sends `_session/service/record` once for each attach, for each address in the `serviceSessions` map of the
@@ -51,6 +56,63 @@ delegated sessions too.
 
 Megachat sends the records one after the other, before the view is ready. The map keeps at most 5,000 addresses, so
 one attach can send 5,000 requests. Nobody measured that time in Air. `docs/roadmap.md` has the change.
+
+## The scopes of Megachat
+
+A Megachat has the machine scope or a project scope (see the capability `project-scope`). The entry `Megachat` of
+`acp.json` is the same for both. The scope is a property of the process that Air starts.
+
+- **No Megachat before the user adds one.** Megachat starts nothing by itself. Air starts no command of the entry, and
+  shows no session row of Megachat, before the user adds a Megachat with "Spawn Megachat". Air keeps the record of the
+  added Megachats in its own state. A stored application session of a present user counts as an added Megachat.
+- **The Megachat of the IDE.** The button "Spawn Megachat" in the place of the first row adds it. Air starts the command
+  of the entry as it is, and it creates the application session in the workspace of Megachat, as before.
+- **The Megachat of a project.** The action "Spawn Megachat" in the menu of a project row or of a folder row of Agent
+  Sessions adds it. Air starts the command of the entry with the variable `MEGACHAT_PROJECT` set to the absolute path
+  of the directory, added to the environment of the entry. Each project needs a process of its own, because one `acp`
+  process has one daemon and one conversation. Air sends `session/new` with that directory as `cwd`, and it shows the
+  session as the first row of that project.
+- **The check of the scope.** A release of Megachat before this contract ignores the variable and opens the
+  conversation of the machine. So Air reads `projectScope` in the answer of `initialize` of each process that it
+  started with the variable. Without the capability, Air closes the connection and tells the user to update Megachat.
+- **A refused directory.** For a value that names no project directory, `acp` writes one line to its error output,
+  "MEGACHAT_PROJECT names no project directory: <value>. ...", and exits with the code 1 before it answers
+  `initialize`. Megachat refuses a relative path, a file, the root, the home directory and each directory that holds
+  it, the application data and the hidden directories directly in the home directory, and the state directory of
+  Megachat.
+- **What changes in a project scope.** The session IDs, the title "Megachat", the replay, the background tasks and the
+  permissions are the same. Megachat registers only the `cwd` of `session/new` and the directories of
+  `_workspaces/list` that are the project directory, a directory in it, or a linked git worktree of it. It ignores
+  each other directory. So the rows of the background tasks name only a `cwd` of the project.
+- **The state.** Megachat keeps the state of a project scope in `projects/<name>-<digest>` in its state directory.
+  Air does not read or write it. `application_workspace` of the entry has no effect on a project scope.
+
+## The removal of a Megachat
+
+The action "Remove Megachat" of Air, for the Megachat of the IDE and for the Megachat of a project. Megachat announces
+`agentStop`, and Air sends `_agent/stop` with the parameters `{}` on the connection of that Megachat. The request names
+no session: one `acp` process has one daemon. When Air has no connection to that Megachat, it starts the command of the
+entry first (with `MEGACHAT_PROJECT` for a project), and then sends the request.
+
+- **Without work.** When no turn runs and each child run is in a terminal state, the bridge stops its daemon and waits
+  for the end of the daemon process, at most 30 seconds. Then it answers `{ "stopped": true }`, writes the line
+  "Megachat stopped its daemon at the request of the IDE, ..." to its error output, ends the ACP connection about 100 ms
+  after the answer, and exits with the code 0. Air then removes the row and shows "Spawn Megachat" again.
+- **With work.** The answer is `{ "stopped": false, "reason": "<text>" }`, for example "Megachat has work that runs: a
+  turn and 2 child tasks. Stop the work or wait for its end, then remove Megachat again." The daemon and the connection
+  stay as they are. Air shows `reason` and keeps the row. Air can first send `session/cancel` and
+  `_session/async_task/stop` for each row, behind a question to the user, and then send `_agent/stop` again.
+- **A daemon that does not end.** After 30 seconds, the answer is `{ "stopped": false, "reason": "<text>" }` with the
+  process ID of the daemon, and the connection stays open.
+- **The state stays.** Megachat changes and deletes no file of the state directory but the connection file of the
+  daemon. A new "Spawn Megachat" starts a daemon on the same state directory, so the user gets the same conversation,
+  settings and memory. Megachat keeps no record of the removal.
+- **The other clients.** Each other `acp` process of that daemon ends when its daemon is gone, as after each other stop
+  of the daemon. So a second window or a second IDE loses its connection. An IDE that still has the Megachat in its
+  record starts the command again at its next attach, and that start starts a daemon again. The removal is a state of
+  one IDE.
+- **A release without `agentStop`.** Air sends no `_agent/stop`. It removes only the row, and it tells the user that
+  the daemon continues to run until the command `stop`.
 
 ## The prompt
 
@@ -299,6 +361,9 @@ This is no extension of Megachat, and no ACP message changes. It describes what 
   daemon stopped for the update from <old> to <new>. The next start of Megachat installs it.", and exits with the code
   0. An `acp` process without an open view exits within about 1 minute after its daemon is gone, with the line "The
   Megachat daemon is gone".
+- Each Megachat has its own daemon, and the daemons of one IDE run from one copy. They stop for an update together,
+  and only when each of them has no work (see the capability `project-scope`). So the `acp` processes of the Megachat of
+  the IDE and of each Megachat of a project end at the same time, each with the line above.
 - An `acp` process never starts a daemon after its own start. So only the next start of the command of the entry,
   `npx -y github:ignatov/megachat#semver:x acp`, starts a daemon, and npx installs the new release first.
 - Megachat expects Air to start the agent command again at the next attach or the next prompt, and to load the
@@ -308,7 +373,8 @@ This is no extension of Megachat, and no ACP message changes. It describes what 
   from <old> to <new>.", and at most 4 lines of release notes (5 lines in all). It is a message of its own, as the notes
   about the sessions that wait, and it goes out when no turn runs. A view that is not connected gets it with the replay.
 - On a fresh conversation with a pending setup, the daemon writes one note of Megachat on its own: "Welcome to Megachat." It
-  offers the setup. It is the same kind of note, and it comes once. The first prompt of the user drops it.
+  offers the setup. The note of a project scope starts with "Welcome to Megachat for the project <name>.", and it says
+  that this Megachat works only in that project. It is the same kind of note, and it comes once. The first prompt of the user drops it.
 - Each of these notes has the phase `final_answer` of the reply stream above. A live note that comes when no prompt
   turn runs shows open as before. In the replay, the note joins the turn before it, and the phase keeps that turn open,
   outside a block "Worked for".

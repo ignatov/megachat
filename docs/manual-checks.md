@@ -310,3 +310,22 @@ These checks need the author by hand. Each one names its OpenSpec change.
   of `~/.jetbrains/acp.json`, such as a test VM, install Megachat and open a Megachat session in Air. Run `uninstall`
   in a terminal, then send a message in that session. Record whether Air reads `acp.json` again, whether it starts
   `acp` again and so a new daemon, and what the chat shows.
+- `spawn-megachat` (task 7.3): with `MEGACHAT_HOME=$(mktemp -d)`, start `acp` two times through an ACP client, one time
+  without and one time with `MEGACHAT_PROJECT` for a small project. Verify two daemons, the setup note of the project,
+  a task that starts in the project, a refusal of a task in another directory, and `_agent/stop` with and without a
+  child run. The tests of the change cover each of these with a fake model. Nobody ran them with a real model yet.
+- `spawn-megachat` (task 7.4): with an Air build that has the change of
+  `openspec/changes/spawn-megachat/air-ticket.md`, press "Spawn Megachat" for the IDE and for a project, and "Remove
+  Megachat" for both. Verify that Air starts no command of the entry before the add, that the process of a project has
+  `MEGACHAT_PROJECT` and the capability `projectScope`, and that a new "Spawn Megachat" after a removal gives the same
+  conversation. No released Air build has the change.
+  - A first run on 2026-11-23, with a prototype of the Air side (a local branch of the IDE, not merged), a real model
+    and a separate `MEGACHAT_HOME`: "Spawn Megachat" in the menu of two project rows gave two processes with
+    `MEGACHAT_PROJECT`, and two state directories `projects/<name>-<digest>` with `project.json`, next to the daemon
+    of the machine scope. The setup of a project asked its two questions and ended. A Claude child task ran in the
+    directory of its project. The session was the first row of its project.
+  - Not checked in that run: "Remove Megachat", the button for the IDE, a refusal of a task in another directory, and
+    a new "Spawn Megachat" after a removal.
+  - Found in that run: Air starts the process of the entry at the start of the IDE, for the session list of the
+    application workspace. So the daemon of the machine scope ran before the user added a Megachat. Point 2 of the
+    Air ticket covers this.

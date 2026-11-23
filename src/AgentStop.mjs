@@ -131,6 +131,8 @@ export class AgentStop {
       if (reason) { refused.push({ pid, reason }); continue }
       // The view gives the project and the sessions of the process, when it has the same process.
       const rows = view.rows.filter(row => row.pid === pid && row.startedAt === session.startedAt)
+      // The Megachat of one project stops only a session that its view gives: a session of its listed directories.
+      if (this.state.project && !rows.length) { refused.push({ pid, reason: message('stop.refused.notSession', pid) }); continue }
       targets.push({ pid, startedAt: session.startedAt, identity: session.identity, agent: session.agent, program: session.program,
         cwd: session.run?.cwd ?? rows[0]?.cwd ?? null, parent: session.parent,
         sessions: rows.map(row => ({ sessionId: row.sessionId, title: row.title })) })

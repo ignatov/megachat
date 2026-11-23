@@ -16,11 +16,13 @@ import { AcpRunService } from './AcpRunService.mjs'
 import { ChildTranscripts } from './ChildTranscript.mjs'
 import { ChildPool } from './ChildPool.mjs'
 import { DaemonClient, processEnded } from './DaemonClient.mjs'
+import { HEALTH_TIMEOUT_MS, runningDaemon } from './DaemonWork.mjs'
 import { DaemonDirectory } from './DaemonDirectory.mjs'
 import { DaemonServer } from './DaemonServer.mjs'
 import { restrictFileMask } from './fileMask.mjs'
 import { daemonBuild, megachatVersion, needsReplacement } from './MegachatBuild.mjs'
-import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState } from './MegachatHome.mjs'
+import { assertSupportedState, defaultStateDirectory, ensurePrivateDirectory, legacyStateDirectories, migrateLegacyState, PROJECT_VARIABLE,
+  projectStateDirectory, readProjectRecord, resolveProject, stateDirectories, writeProjectRecord } from './MegachatHome.mjs'
 import { install, uninstall } from './MegachatInstall.mjs'
 import { startOnboardingNote } from './MegachatOnboarding.mjs'
 import { ANNOUNCE_MS, installKind, listRelease, recordVersion, removeRetired, retireCopy, startDelay, UpdateCheck } from './MegachatUpdate.mjs'
@@ -42,13 +44,47 @@ if (environment !== process.env) {
 const command = process.argv[2]
 // An explicit directory selects isolated state for tests and development. Only the shared home migrates legacy state.
 const explicit = process.argv[3] !== undefined
-const directory = explicit ? resolve(process.argv[3]) : defaultStateDirectory()
+/** The state directory of the machine scope. The state directory of each project scope is in it. */
+const machineDirectory = defaultStateDirectory()
+let directory = explicit ? resolve(process.argv[3]) : machineDirectory
+/** The project directory of a project scope, or `undefined` in the machine scope (see `selectScope`). */
+let project
+/**
+ * True when the state directory is fixed: it came from the command argument, or it is the directory of a project scope.
+ * A daemon then gets it as its argument, and it gets no copy of an earlier directory.
+ */
+let pinned = explicit
+/** The commands that open the state of one scope. `install` and `uninstall` do not read `MEGACHAT_PROJECT`. */
+const SCOPED_COMMANDS = ['acp', 'start', 'daemon', 'status', 'stop', 'compact']
 const build = daemonBuild()
 const log = text => process.stderr.write(`${new Date().toISOString()} ${text}\n`)
 /** The exit code of a daemon that found another daemon on its directory. `start` reads it. */
 const LOCK_EXIT_CODE = 3
 /** The longest wait of `start` for a daemon. The first start after a move of the state copies the conversation. */
 const START_TIMEOUT_MS = 120000
+
+/**
+ * Selects the scope of this process one time, before a command opens the state. With `MEGACHAT_PROJECT`, the scope is
+ * the project of that directory, and its state directory is in the state directory of the machine scope. A command
+ * argument still gives the state directory as it is. Without the variable, `project.json` of the state directory gives
+ * the scope, so a state directory of a project never opens with the machine scope. A value that names no project
+ * directory, and a state directory of another project, end the command before it makes a file or starts a daemon.
+ */
+async function selectScope() {
+  const value = process.env[PROJECT_VARIABLE]
+  if (!value) {
+    project = await readProjectRecord(directory)
+    if (project) pinned = true
+    return
+  }
+  project = await resolveProject(value, { stateDirectory: machineDirectory })
+  if (!explicit) {
+    directory = projectStateDirectory(machineDirectory, project)
+    pinned = true
+  }
+  const recorded = await readProjectRecord(directory)
+  requireCondition(recorded === undefined || recorded === project, 'projectState', directory, recorded)
+}
 
 async function daemon() {
   await ensurePrivateDirectory(directory)
@@ -83,15 +119,17 @@ async function daemon() {
   process.once('SIGINT', () => shutdown().catch(() => { process.exitCode = 1 }))
   const proceed = () => requireCondition(stopping === undefined, 'unavailable')
   starting = (async () => {
-    if (!explicit) await migrateLegacyState(directory, legacyStateDirectories(), log)
+    if (!pinned) await migrateLegacyState(directory, legacyStateDirectories(), log)
     proceed()
+    // The record goes first, so each later start on this directory has the scope of this project.
+    if (project) await writeProjectRecord(directory, project)
     assertSupportedState(join(directory, 'conversation.sqlite'))
     const configuration = new CentralConfigurationService()
     service = await PiMegachatService.open(await openNodeSqliteStorage(join(directory, 'conversation.sqlite')), configuration.models(),
       undefined, undefined, { searchPath: join(directory, 'search.sqlite'), sessionsPath: join(directory, 'sessions.sqlite'),
         secrets: configuration.secrets, userInstructionsPath: join(directory, 'instructions.md'),
         settingsPath: join(directory, 'settings.json'), memoryPath: join(directory, 'memory.md'), workspacePath: join(directory, 'workspace'), stateDirectory: directory,
-        spendPath: join(directory, 'spend.json'),
+        spendPath: join(directory, 'spend.json'), project,
         accountCheck: () => checkAccounts(configuration, { cwd: join(directory, 'workspace') }),
         centralFailure: () => configuration.lastFailure,
         cloud: { central: configuration.central, environment: { ...process.env, PATH: configuration.centralPath() } } })
@@ -139,17 +177,26 @@ async function daemon() {
     const kind = installKind(root)
     // A copy that an earlier update moved away is no longer in use: this daemon runs from the new copy.
     removeRetired(root).catch(() => {})
+    // The stop for an update: the state records it, each view gets the event, and then the daemon stops. With [retire],
+    // the copy of npx of this entry moves away after the stop: npx then cannot reuse it, and the next start installs the
+    // highest release. The stop of the daemon closes the check, so it must not wait inside the check.
+    const stopForUpdate = async (from, to, retire) => {
+      await service.state.updateStopped(from, to)
+      await server.announce('update', { from, to })
+      await delay(ANNOUNCE_MS)
+      setImmediate(() => shutdown().then(() => { if (retire) retireCopy(root) }).catch(() => { process.exitCode = 1 }))
+    }
+    // Another daemon of this copy asks through `/update/ready`, and it stops this daemon through `/update/stop`. That
+    // daemon moves the copy away after its own stop.
+    server.root = root
+    server.updateStop = (from, to) => {
+      log(message('log.update.stop', from, to))
+      stopForUpdate(from, to, false).catch(() => { process.exitCode = 1 })
+    }
     update = new UpdateCheck({ version: megachatVersion(), selfUpdating: kind === 'npx', kind,
       release: () => listRelease(), ready: now => service.updateReady(now), work: () => service.updateWork(), clock: service.workdayClock,
       failed: async () => (await service.state.snapshot()).update?.failed ?? null, values: () => service.settings.values(),
-      stop: async (from, to) => {
-        await service.state.updateStopped(from, to)
-        await server.announce('update', { from, to })
-        await delay(ANNOUNCE_MS)
-        // The stop of the daemon closes the check, so it must not wait inside the check. After the stop, the copy of npx
-        // of this entry moves away: npx then cannot reuse it, and the next start installs the highest release.
-        setImmediate(() => shutdown().then(() => retireCopy(root)).catch(() => { process.exitCode = 1 }))
-      } })
+      others: () => otherDaemons(root), stop: (from, to) => stopForUpdate(from, to, true) })
     service.updater = update
     server.update = update
     update.start(startDelay())
@@ -160,6 +207,38 @@ async function daemon() {
     const stopped = stopping !== undefined
     await shutdown()
     if (!stopped) throw error
+  }
+}
+
+/**
+ * The other daemons that run from the copy [root], in the state tree: the state directory of the machine scope and each
+ * state directory of a project scope in it. `ready` is true when each of them has no work. `stop` stops each of them
+ * for the update and waits for the end of its process. A daemon of another copy, and a daemon of an earlier build
+ * without the route, do not count: the move of this copy does not reach them. A daemon whose state directory is out of
+ * the tree is alone.
+ */
+async function otherDaemons(root) {
+  const tree = await stateDirectories(machineDirectory)
+  const own = resolve(directory)
+  const found = []
+  for (const item of tree.some(path => resolve(path) === own) ? tree : []) {
+    if (resolve(item) === own) continue
+    const client = await runningDaemon(item)
+    if (!client) continue
+    let answer
+    try { answer = await client.json('/update/ready', undefined, AbortSignal.timeout(HEALTH_TIMEOUT_MS)) }
+    catch { continue }
+    if (answer.root === root) found.push({ client, ready: answer.ready === true })
+  }
+  return {
+    ready: found.every(item => item.ready),
+    stop: async (from, to) => {
+      for (const { client } of found) {
+        try { await client.json('/update/stop', { from, to }) }
+        catch { /* The daemon may close the connection while it stops. */ }
+        await processEnded(client.health.pid)
+      }
+    },
   }
 }
 
@@ -183,7 +262,7 @@ async function stopOtherBuild(client) {
 
 /** Before migration, an older daemon may still own the legacy state. Use it until it stops. */
 async function connectLegacy() {
-  if (explicit || existsSync(join(directory, 'conversation.sqlite'))) return undefined
+  if (pinned || existsSync(join(directory, 'conversation.sqlite'))) return undefined
   for (const legacy of legacyStateDirectories()) {
     if (existsSync(join(legacy, 'MIGRATED_TO'))) continue
     try {
@@ -231,8 +310,9 @@ async function spawnDaemon() {
   const output = await open(join(directory, 'daemon', 'daemon.log'), 'a', 0o600)
   // The log can hold the filtered error output of a failed child run. The mode of the open applies only to a new file.
   if (process.platform !== 'win32') await output.chmod(0o600)
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', ...(explicit ? [directory] : [])], {
-    detached: true, stdio: ['ignore', output.fd, output.fd], env: { ...process.env, ...(explicit ? {} : { MEGACHAT_HOME: directory }) },
+  // A daemon of a project scope gets its state directory as the argument, and it keeps `MEGACHAT_PROJECT`.
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'daemon', ...(pinned ? [directory] : [])], {
+    detached: true, stdio: ['ignore', output.fd, output.fd], env: { ...process.env, ...(pinned ? {} : { MEGACHAT_HOME: directory }) },
   })
   await output.close()
   child.once('error', () => { child.ended ??= 1 })
@@ -263,6 +343,7 @@ async function waitForDaemon(child, done) {
 }
 
 try {
+  if (SCOPED_COMMANDS.includes(command)) await selectScope()
   switch (command) {
     case 'daemon': await daemon(); break
     case 'start': await start(); process.stdout.write(`${message('daemon.started')}\n`); break
@@ -290,7 +371,7 @@ try {
     // The command never calls `start`, so it starts no daemon.
     case 'uninstall': process.exitCode = await uninstall({ directory }); break
     case 'acp': {
-      const bridge = new AcpBridge(await start(), { transcripts: join(directory, 'transcripts') })
+      const bridge = new AcpBridge(await start(), { transcripts: join(directory, 'transcripts'), project })
       const connection = bridge.app().connect(ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)))
       try { await connection.closed }
       finally { bridge.close() }

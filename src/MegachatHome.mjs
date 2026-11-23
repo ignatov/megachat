@@ -1,12 +1,23 @@
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { homedir as osHomedir } from 'node:os'
-import { delimiter, join, posix, resolve, win32 } from 'node:path'
+import { delimiter, isAbsolute, join, posix, resolve, win32 } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { CURRENT_SQLITE_SCHEMA_VERSION } from '@earendil-works/pi-durable/storage/sqlite'
-import { MegachatError, message } from './messages.mjs'
+import { MegachatError, message, requireCondition } from './messages.mjs'
+import { resolveRepository } from './ProjectDirectories.mjs'
 
 export const HOME_VARIABLE = 'MEGACHAT_HOME'
+/**
+ * The variable that selects a project scope: the absolute path of the project directory. The IDE sets it when it starts
+ * the Megachat of one project. Without it, Megachat has the machine scope (see the capability `project-scope`).
+ */
+export const PROJECT_VARIABLE = 'MEGACHAT_PROJECT'
+/** The directory of the state directories of the project scopes, in the state directory of the machine scope. */
+export const PROJECTS_DIRECTORY = 'projects'
+/** The file of a state directory of a project scope that names its project directory. */
+export const PROJECT_RECORD = 'project.json'
 export const LEGACY_VARIABLE = 'MEGACHAT_LEGACY_DIRS'
 export const MIGRATION_MARKER = 'MIGRATED_TO'
 const USER_INSTRUCTIONS_LIMIT = 64 * 1024
@@ -16,6 +27,70 @@ export function defaultStateDirectory({ platform = process.platform, env = proce
   if (env[HOME_VARIABLE]) return platform === 'win32' ? win32.resolve(env[HOME_VARIABLE]) : posix.resolve(env[HOME_VARIABLE])
   if (platform === 'win32') return win32.join(env.USERPROFILE || homedir(), '.jetbrains', 'air', 'megachat')
   return posix.join(homedir(), '.jetbrains', 'air', 'megachat')
+}
+
+/**
+ * Gives the project directory that [value], the value of `MEGACHAT_PROJECT`, names: the real path of an existing
+ * directory. The value must be an absolute path, and the directory must be one that can be a known repository (see
+ * `resolveRepository`). So the root, the home directory, a hidden directory directly in it and the state directory of
+ * Megachat are no project. A refused value gives the error `project`, which names the value.
+ */
+export async function resolveProject(value, options = {}) {
+  try {
+    requireCondition(typeof value === 'string' && isAbsolute(value), 'directory')
+    return await resolveRepository(value, options)
+  }
+  catch (error) {
+    if (!(error instanceof MegachatError)) throw error
+    throw new MegachatError('project', String(value).slice(0, 4096))
+  }
+}
+
+/**
+ * The state directory of the project scope of [projectDirectory], a real path, in [machineDirectory], the state
+ * directory of the machine scope. The name holds the last segment of the path for a reader, and a digest of the path, so
+ * two projects with one name get two directories.
+ */
+export function projectStateDirectory(machineDirectory, projectDirectory, platform = process.platform) {
+  const path = platform === 'win32' ? win32 : posix
+  const name = path.basename(projectDirectory).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 40) || 'project'
+  const digest = createHash('sha256').update(projectDirectory).digest('hex').slice(0, 12)
+  return path.join(machineDirectory, PROJECTS_DIRECTORY, `${name}-${digest}`)
+}
+
+/** Reads the project directory that `project.json` of the state directory [directory] names, or `undefined` without the file. */
+export async function readProjectRecord(directory) {
+  let text
+  try { text = await readFile(join(directory, PROJECT_RECORD), 'utf8') }
+  catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined; throw error }
+  let record
+  try { record = JSON.parse(text) }
+  catch { /* A file that is no JSON names no project. */ }
+  requireCondition(record?.schema === 1 && typeof record.directory === 'string' && isAbsolute(record.directory), 'projectRecord', directory)
+  return record.directory
+}
+
+/**
+ * Writes `project.json` of the state directory [directory] of the project scope of [project], when the file does not
+ * exist yet. The file makes the state directory describe itself: a command with only the directory finds the scope.
+ */
+export async function writeProjectRecord(directory, project) {
+  const path = join(directory, PROJECT_RECORD)
+  if (existsSync(path)) return
+  const temporary = `${path}.${process.pid}.tmp`
+  await writeFile(temporary, `${JSON.stringify({ schema: 1, directory: project })}\n`, { mode: 0o600 })
+  if (process.platform !== 'win32') await chmod(temporary, 0o600)
+  await rename(temporary, path)
+}
+
+/**
+ * The state tree of [machineDirectory]: the state directory of the machine scope, and each state directory of a project
+ * scope in its directory `projects`. `uninstall` and the update act on each daemon of the tree.
+ */
+export async function stateDirectories(machineDirectory) {
+  const root = join(machineDirectory, PROJECTS_DIRECTORY)
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
+  return [machineDirectory, ...entries.filter(entry => entry.isDirectory()).map(entry => join(root, entry.name)).sort()]
 }
 
 /** Earlier state locations, newest first. The variable replaces the list in tests. */

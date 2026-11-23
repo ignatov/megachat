@@ -429,3 +429,36 @@ test('the rules of the main agent give the line of uninstall and tell about the 
   assert.match(rule, /no child task/)
   assert.ok((await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render().includes(rule))
 })
+
+test('uninstall stops the daemon of each project scope too, and it changes nothing when one of them has work', { timeout: 60000 }, async t => {
+  const directory = await temporary(t)
+  const path = join(directory, 'acp.json')
+  const state = join(directory, 'state')
+  const projectState = join(state, 'projects', 'app-70467eff2e0a')
+  await mkdir(projectState, { recursive: true })
+  await writeFile(join(projectState, 'project.json'), `${JSON.stringify({ schema: 1, directory: '/work/app' })}\n`, { mode: 0o600 })
+  const text = file({ Megachat: RELEASE_ENTRY })
+  await writeFile(path, text)
+  const machine = await fakeDaemon(t, state)
+  const project = await fakeDaemon(t, projectState)
+  // A child run of the project scope keeps the entry and both daemons. The variable of the scope has no effect.
+  await project.work({ current: null, runs: { 'run-1': { id: 'run-1', agent: 'claude', status: 'running', title: 'Fix the build' } } })
+  const busy = await run(['uninstall', state], { [ACP_CONFIG_VARIABLE]: path, MEGACHAT_PROJECT: '/work/app' })
+  assert.equal(busy.code, 1, busy.stdout + busy.stderr)
+  assert.ok(busy.stdout.includes(`Megachat did not change ${path}, because work runs.`), busy.stdout)
+  assert.ok(busy.lines.includes('- The child run run-1 of claude is running: Fix the build This is work of the Megachat of the project /work/app.'), busy.stdout)
+  assert.equal(await readFile(path, 'utf8'), text)
+  assert.equal((await machine.health()).pid, machine.pid)
+  assert.equal((await project.health()).pid, project.pid)
+  // Without work, the entry goes, and both daemons end. Both state directories stay.
+  await project.work({ current: null, runs: { 'run-1': { id: 'run-1', agent: 'claude', status: 'completed', title: 'Fix the build' } } })
+  const removed = await run(['uninstall', state], { [ACP_CONFIG_VARIABLE]: path })
+  assert.equal(removed.code, 0, removed.stdout + removed.stderr)
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).agent_servers, {})
+  await machine.exited
+  await project.exited
+  assert.ok(removed.lines.includes(`Megachat stopped its daemon (process ${machine.pid}).`), removed.stdout)
+  assert.ok(removed.lines.includes(`Megachat stopped its daemon (process ${project.pid}).`), removed.stdout)
+  assert.equal(existsSync(join(projectState, 'project.json')), true)
+  assert.equal(existsSync(state), true)
+})
