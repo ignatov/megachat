@@ -163,7 +163,7 @@ Tests: `test/archive.test.mjs`
 - **THEN** the archive refuses the session, and no file changes
 
 ### Requirement: Hide and restore of a Junie session
-When no process of the session lives, Megachat MUST hide a session of Junie with one new line in `agent-workbench-archive-state.jsonl` of `~/.junie/sessions`, the file of Air: `sessionId`, `updatedAt`, `projectDir` and `archived` true. A restore MUST add such a line with `archived` false. The last line of a session MUST tell its state. Megachat MUST change no other line and no other file of Junie, and MUST write nothing when the state already matches.
+When no process of the session lives, Megachat MUST hide a session of Junie with one new line in `agent-workbench-archive-state.jsonl` of `~/.junie/sessions`, the file of Air: `sessionId`, `updatedAt`, `projectDir` and `archived` true. A restore MUST add such a line with `archived` false. The last line of a session MUST tell its state. Megachat MUST change no other line, and MUST add no line when the state already matches.
 
 Tests: `test/archive.test.mjs`
 
@@ -172,9 +172,30 @@ Tests: `test/archive.test.mjs`
 - **THEN** the file ends with the line `{"sessionId":"session-260101-120000-abcd","updatedAt":1795000000000,"projectDir":"/work/demo-app","archived":true}`, and the line of the other session stays
 
 #### Scenario: Archive twice
-- **WHEN** Megachat archives a Junie session whose last line in the file has `archived` true
-- **THEN** the file keeps its size, and the answer is `already archived`
+- **WHEN** Megachat archives a Junie session whose last line in the file has `archived` true, and whose `session_metadata.json` has `archived` true
+- **THEN** no file changes, and the answer is `already archived`
 
 #### Scenario: Restore of a Junie session
 - **WHEN** the user restores the archived Junie session `session-260101-120000-abcd`
-- **THEN** the file ends with a line of that session with `archived` false, the card gets `restoredAt`, and no process starts
+- **THEN** the file ends with a line of that session with `archived` false, `session_metadata.json` has `archived` false, the card gets `restoredAt`, and no process starts
+
+### Requirement: Metadata of Junie for an archive
+A hide MUST also set `archived` true, and a restore false, in `session_metadata.json` of the session folder, which `session/list` of Junie reads. Megachat MUST keep the other fields, MUST write the whole file with a rename, MUST leave a file that is not a JSON object as it is, and MUST change no other file of Junie. A session MUST count as archived only when both stores tell it. A store that tells the state already MUST get no write.
+
+Tests: `test/archive.test.mjs`
+
+#### Scenario: The metadata of a hide
+- **WHEN** Megachat archives a Junie session whose folder has no `session_metadata.json`
+- **THEN** the folder has `session_metadata.json` with the text `{"archived":true}`, and the other files of the folder do not change
+
+#### Scenario: A session that Air archived through Junie
+- **WHEN** `session_metadata.json` of a Junie session holds `{"archived":true,"explicitTitle":"The parser","forkedFrom":"session-251231-100000-root"}`, the archive state file has no line of the session, and Megachat archives the session
+- **THEN** the archive state file gets the line of the hide, and `session_metadata.json` does not change. A later restore sets `archived` false and keeps `explicitTitle` and `forkedFrom`
+
+#### Scenario: A session that Air archived from the index
+- **WHEN** the last line of a Junie session in the archive state file has `archived` true, its folder has no `session_metadata.json`, and Megachat archives the session
+- **THEN** the folder gets `session_metadata.json` with `{"archived":true}`, and the archive state file keeps its size
+
+#### Scenario: A metadata file that Megachat cannot read
+- **WHEN** `session_metadata.json` of a Junie session holds `[true]`, and Megachat archives the session
+- **THEN** the file keeps the text `[true]`, and the result names the error `junieMetadata`

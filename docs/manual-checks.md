@@ -376,6 +376,52 @@ directory: a new temporary git repository.
 - Not checked: the note in the chat for the wait (the tests cover the plan and the text), a Junie session of the
   terminal UI in `agents_running`, and what Air shows after the line of the archive.
 
+One check of the archive of Junie sessions ran on 2026-11-24 in the test build of Air of the author (`IU-271.SNAPSHOT`,
+the prototype branch of `spawn-megachat`, with the Megachat of the checkout and a test state directory), for the task
+1.2 of the change `junie-sessions`.
+
+- **The archive of Megachat did not hide the sessions.** The author asked the Megachat of the build to mark each
+  session of a test project as Done, and answered `Archive` in its dialog at 10:57:37. Megachat
+  archived 1 Claude Code session and 18 Junie sessions, and added 18 lines to
+  `~/.junie/sessions/agent-workbench-archive-state.jsonl`. Air still showed the 18 Junie sessions.
+- **The reason.** The log of the IDE named the provider of the Junie rows. Until 10:55:42 it was `native:junie`, which
+  reads `index.jsonl` and the archive state file. At 10:55:30 the author opened a Junie session, Air started the
+  Junie of its ACP registry (4171.4), and from 10:55:44 the rows came from the ACP list of that agent
+  (`INDEXED_ACP`). That Junie keeps the Done state in `session_metadata.json` of each session folder. It read the
+  archive state file of Air one time, for an import, and the marker `air-archive-import-v1.done` of the author is from
+  2026-10-28.
+- **Done of Air.** At 10:58:12 the author pressed Done on one Junie session in Air. Air sent `_session/archive`
+  through the ACP list, and Junie wrote `{"archived":true}` to `session_metadata.json` of that session. Air added no
+  line to the archive state file. Then 13 session folders of the author had that file, each with only `archived`
+  true: 10 from 2026-10-28, the time of the import, and 3 from later Done actions. The folders held 13 files
+  `session_metadata.json.lock`.
+- **The probe (task 5.5).** A script started that Junie with `--acp=true` in a temporary directory, sent
+  `initialize` with `_meta.jetbrains.air` `{"version":1,"capabilities":["sessionIndex","sessionArchive"]}`, and sent
+  `session/list` for the project with the filters `unarchived` and `archived`. It printed only the IDs and the flags.
+  The answer had 17 sessions that are not archived and 1 archived one: the session of the Done of 10:58. Then, in the
+  same process, the script wrote `{"archived":true}` to `session_metadata.json` of one more of the 18 sessions, with
+  a temporary file and a rename. The next `session/list` gave 16 and 2. Without the capability, `session/list` gave
+  the first 10 sessions for each filter.
+- **The Junie CLI of the author.** 26.10.5 (3579.7) has no `_session/archive` and does not read
+  `session_metadata.json`.
+- **The fix.** Megachat now writes both stores (decision 6 of `junie-sessions`). A second probe wrote the field with
+  `writeMetadataArchived` of the checkout for one more of the 18 sessions, between two lists in one Junie process. The
+  lists gave 16 and 2 before, and 15 and 3 after. The folder had no temporary file after the write.
+- The checks changed the files of the author: 3 session folders of the project got `session_metadata.json`, one from
+  the Done of Air and two from the probes. Each one is a session that the author asked to archive. The probes made no
+  session folder. `~/.junie/settings.json` was equal to the copy from before, and the list of `~/.junie/sessions` had
+  224 entries before and after the probes.
+- **The fix in the build of Air.** The IDE started again with the fixed checkout, and the rows of Junie came from the
+  ACP list. The author asked the Megachat of the build to repeat the archive, and answered `Archive` at 11:19:04.
+  Megachat archived 15 Junie sessions, and skipped 4 that were archived already: the Claude Code session and the 3
+  sessions with `session_metadata.json`. A screenshot after that turn showed no row of the 15 sessions and no row of
+  the Claude Code session in the project.
+- **A session with a thread of Air stays.** One Junie session still showed: the session that the author opened at
+  10:55. Air has a thread of its own for it, its tab came back after the restart, and the provider `air-run:junie`
+  gives its row. For such a row the archive state of Air decides, not the listing of Junie. Megachat does not write
+  that state, and it told the author "no Air thread": it reads the threads of Air in `<caches>/<IDE>/acp/projects`,
+  and a build of the monorepo keeps them in `MonorepoDevData/<hash>/<IDE>/system/acp/projects`.
+
 ## Open checks
 
 These checks need the author by hand. Each one names its OpenSpec change.
@@ -463,11 +509,13 @@ These checks need the author by hand. Each one names its OpenSpec change.
   of `~/.jetbrains/acp.json`, such as a test VM, install Megachat and open a Megachat session in Air. Run `uninstall`
   in a terminal, then send a message in that session. Record whether Air reads `acp.json` again, whether it starts
   `acp` again and so a new daemon, and what the chat shows.
-- `junie-sessions` (task 1.2, open): in an Air build, press "Done" on a Junie session of a test repository, and then
-  restore it. Record the line that each action adds to `~/.junie/sessions/agent-workbench-archive-state.jsonl`. Then
-  archive and restore a Junie session with `agents_archive` in a temporary `MEGACHAT_HOME`, also a session of a
-  linked git worktree, and record whether Air hides and shows the session after each line without a restart. The
-  format of the line comes from the sources of Air and from 11 lines that Air wrote on the machine of the author.
+- `junie-sessions` (task 1.2, open): in an Air build, archive and restore a Junie session with `agents_archive` in a
+  temporary `MEGACHAT_HOME`, also a session of a linked git worktree. Do it two times: after a start of the IDE, while
+  the rows of Junie come from `index.jsonl`, and after Air started the Junie of its ACP registry, for example after a
+  click on a Junie session. Record the provider of the rows from the log of the IDE ("Session row provider selection
+  changed"), and whether Air hides and shows the session after each write without a restart, at most 60 seconds
+  later. The check of 2026-11-24 found that Done of Air through the ACP list writes `session_metadata.json`. A Done of
+  Air from `index.jsonl` still needs a record.
 - `junie-child` (task 8.2, open): in an Air build with a temporary `MEGACHAT_HOME`, start a Junie child. Verify that
   its row says `Junie · <project>`, that a click on its title opens the session of Junie, and that Air hides that
   session with `children.showInProject` `false`. Megachat sends the agent ID `junie`, which is the ID of Junie in

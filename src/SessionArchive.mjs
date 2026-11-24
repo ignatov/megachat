@@ -201,8 +201,8 @@ const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
  * The tool `agents_archive`: it archives agent sessions, as the action Done of Air does, and it keeps a card of each
  * one. The order for a row (see the design of the change `session-archive`): the checks, the card, the stop of the
  * process (only for the owner `terminal` or `multiplexer`, and an orphan), a wait for its end, the hide. The hide is the
- * title record that Air writes for Claude Code and pi, `codex archive` for Codex, and a line of the archive state file
- * of Air for Junie. The dialog is the one of
+ * title record that Air writes for Claude Code and pi, `codex archive` for Codex, and for Junie a line of the archive
+ * state file of Air and the field `archived` of `session_metadata.json`. The dialog is the one of
  * `agents_stop`: only the answer `archive` of the user starts the steps. The checks run again after the answer.
  */
 export class SessionArchive {
@@ -342,8 +342,25 @@ export class SessionArchive {
 
   async archivedState(agent, record) {
     if (agent === 'codex') return this.codexArchived(record.sessionId ?? record.nameId)
-    if (agent === 'junie') return await this.catalog()?.source('junie')?.archived(record.sessionId ?? record.nameId, record.cwd, this.fs) === true
+    if (agent === 'junie') {
+      const { air, junie } = await this.junieStates(record.sessionId ?? record.nameId, record)
+      return air === true && junie === true
+    }
     return (await titleState(agent, record.path, this.fs).catch(() => undefined))?.archived === true
+  }
+
+  /**
+   * The two archive states of a session of Junie: `air` from the archive state file of Air, and `junie` from
+   * `session_metadata.json` of the session folder. Air reads the first one for the rows that come from `index.jsonl`,
+   * and Junie reads the second one for the rows that come from its `session/list`. Each one is true, false or undefined.
+   */
+  async junieStates(sessionId, record) {
+    const source = this.catalog()?.source('junie')
+    if (!source) return {}
+    const described = record.path ? await source.describe(record.path, this.fs) : undefined
+    const cwd = described?.cwd ?? record.cwd
+    return { source, described, cwd, air: await source.archived(sessionId, cwd, this.fs),
+      junie: record.path ? await source.metadataArchived(record.path, this.fs).catch(() => undefined) : undefined }
   }
 
   async warnings(item, record, now, view) {
@@ -424,8 +441,8 @@ export class SessionArchive {
   }
 
   /**
-   * Hides a session that no process runs: the title records of Air, `codex archive`, or a line of the archive state
-   * file of Air for a session of Junie. Gives the kind of the hide.
+   * Hides a session that no process runs: the title records of Air, `codex archive`, or for a session of Junie a line
+   * of the archive state file of Air and the field `archived` of `session_metadata.json`. Gives the kind of the hide.
    */
   async hide({ agent, sessionId }, record) {
     if (agent === 'codex') {
@@ -440,21 +457,22 @@ export class SessionArchive {
   }
 
   /**
-   * Adds one line with the archive state [archived] of a session of Junie to the archive state file of Air, when the
-   * last line of the session does not tell that state already. The line is one whole write with the append flag, and
-   * no other line and no other file of Junie changes. The line needs the project directory of the session: without
-   * it, Megachat writes nothing. Gives true when the file tells the state after the call.
+   * Writes the archive state [archived] of a session of Junie to the two stores that Air shows (see [junieStates]),
+   * each one only when it does not tell that state already. A store that does not name the session tells "not
+   * archived", so a restore writes nothing to it. The archive state file of Air gets one whole line with the append
+   * flag. `session_metadata.json` of the session folder gets the field `archived`, and its other fields stay. No other
+   * line and no other file of Junie changes. The project directory of the session is necessary: without it, Megachat
+   * writes nothing. Gives true when both stores tell the state after the call.
    */
   async junieState(sessionId, record, archived) {
-    const source = this.catalog()?.source('junie')
-    const described = source && record.path ? await source.describe(record.path, this.fs) : undefined
-    const cwd = described?.cwd ?? record.cwd
+    const { source, described, cwd, air, junie } = await this.junieStates(sessionId, record)
     if (!source || !cwd) throw new MegachatError('archiveNoDirectory')
-    const state = await source.archived(sessionId, cwd, this.fs)
-    // A session that the file does not name is not archived, so a restore of it needs no line.
-    if (state === archived || !archived && state === undefined) return true
-    await appendFile(source.archiveFile, source.archiveLine({ sessionId, cwd, archived, updatedAt: described?.updatedAt, now: this.clock.now() }), { flag: 'a', mode: 0o600 })
-    return await source.archived(sessionId, cwd, this.fs) === archived
+    const matches = state => state === archived || !archived && state === undefined
+    if (!matches(air)) await appendFile(source.archiveFile, source.archiveLine({ sessionId, cwd, archived, updatedAt: described?.updatedAt, now: this.clock.now() }), { flag: 'a', mode: 0o600 })
+    // A file that is not a JSON object throws here, so Megachat does not replace it.
+    if (!matches(junie)) await source.writeMetadataArchived(record.path, archived, this.fs)
+    const after = await this.junieStates(sessionId, record)
+    return matches(after.air) && matches(after.junie)
   }
 
   async restore(sessions, catalog) {
@@ -475,7 +493,9 @@ export class SessionArchive {
           await this.codex(['unarchive', item.sessionId])
         }
         else if (item.agent === 'junie') {
-          if (!await this.archivedState('junie', { ...record, sessionId: item.sessionId })) { refuse(item, message('archive.skipped.notArchived')); continue }
+          // A session that one of the two stores tells as archived is archived for one kind of the rows of Air.
+          const { air, junie } = await this.junieStates(item.sessionId, record)
+          if (air !== true && junie !== true) { refuse(item, message('archive.skipped.notArchived')); continue }
           await this.junieState(item.sessionId, record, false)
         }
         else {

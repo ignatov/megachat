@@ -515,13 +515,27 @@ tool belong to it. Megachat sends the fence as plain text in `agent_message_chun
   `{"sessionId","updatedAt","projectDir","archived":true}`, and a restore adds the same line with `archived` false.
   The state of a session is its last line for its session ID and its project directory. Air reads the new lines of
   the file when its size or its modification time changes.
-- `agents_archive` of Megachat adds such a line for a Junie session that no process runs: one whole line in one write
-  with the append flag. `updatedAt` is the time of the write, or the `updatedAt` of the session when that is later.
-  `projectDir` is the project directory of `summary.json` of the session folder, else of its line in `index.jsonl`,
-  without a separator at its end. Megachat adds no line to `index.jsonl`, and it changes no other line and no other
-  file of Junie. A session whose last line has `archived` true counts as archived in Megachat, also when Air wrote it.
-- Not checked in Air: whether Air hides and shows a session after a line of Megachat without a restart, and what Air
+- That file is the store of the native provider of the Junie rows, which reads `index.jsonl`. Air also has a provider
+  of the ACP list, which reads `session/list` of the Junie of its ACP registry, and it prefers that provider when it
+  knows the capabilities of that agent (`AgentSessionProviderRank.INDEXED_ACP`). For those rows, "Done" sends
+  `_session/archive` (`AcpSessionIndexMutations.kt`), and Junie 4171 writes `{"archived":true}` to
+  `session_metadata.json` of the session folder. Reopen sends `_session/unarchive`, and Junie writes `archived` false.
+  Junie read the archive state file of Air only one time, for an import, and then wrote `air-archive-import-v1.done`.
+  So the two providers can show one session in two states.
+- `agents_archive` of Megachat writes both stores for a Junie session that no process runs, each one only when it does
+  not tell the state already. The archive state file gets one whole line in one write with the append flag.
+  `updatedAt` is the time of the write, or the `updatedAt` of the session when that is later. `projectDir` is the
+  project directory of `summary.json` of the session folder, else of its line in `index.jsonl`, without a separator at
+  its end. `session_metadata.json` gets the field `archived`, and its other fields stay: Megachat writes a temporary
+  file and renames it, as Junie does. Megachat cannot take the lock of Junie on `session_metadata.json.lock`. Megachat
+  adds no line to `index.jsonl`, and it changes no other line and no other file of Junie. A session counts as archived
+  in Megachat when both stores tell `archived` true, also when Air wrote them.
+- A Junie process of the ACP list reads `session_metadata.json` again at each `session/list`, and Air reads each list
+  of a shown project again every 60 seconds (checked on 2026-11-24, see `docs/manual-checks.md`).
+- Not checked in Air: whether Air hides and shows a session after a write of Megachat with each provider, and what Air
   does for a session of a linked git worktree (see the open checks of `junie-sessions` in `docs/manual-checks.md`).
+- For Air: the native provider does not read `session_metadata.json`, and the Junie of the ACP list does not read the
+  archive state file after its import. So "Done" in one provider does not hide the session in the other one.
 
 ## The archive of a session that has a thread of Air
 Checked against the Air sources at `b819bcfd4b452` (`plugins/air`) on 2026-11-15.

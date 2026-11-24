@@ -87,7 +87,8 @@ checks changed:
 - `taskName` of `summary.json` and of `index.jsonl` is the first name of the task: in each of the 30 logs with two
   name events or more, it was the first one. A later `AgentTaskNameUpdatedEvent` names a later task of the session.
   It stays the newer title of the agent (decision 2), so Megachat can show a later title than Air shows.
-- Not checked: "Done" of Air and a line of Megachat in Air (task 1.2). It needs an Air build and the author.
+- Not checked on that day: "Done" of Air and a line of Megachat in Air (task 1.2). See "The check in an Air build on
+  2026-11-24".
 
 ### The archive of a session of Junie in Air
 
@@ -110,13 +111,38 @@ From the sources of Air on 2026-11-23 (`plugins/air/frontback/providers/junie/th
   lines that Air adds there.
 - The file `air-archive-import-v1.done` in the same folder is empty. No source of that checkout names it.
 
+### The check in an Air build on 2026-11-24
+
+The author asked the Megachat of the test build to archive the sessions of a test project. Megachat
+added 18 lines to the archive state file, and Air still showed the 18 sessions of Junie. The log of the IDE, the
+sources of Air and the Junie of the ACP registry of Air (4171.4) gave the reason.
+
+- Air has two providers of the rows of Junie. The native provider reads `index.jsonl` and the archive state file. The
+  provider of the ACP list reads `session/list` of the Junie of the ACP registry of Air. Air prefers the second one
+  when it knows the capabilities of that agent. At 10:55 the author opened a Junie session, Air started that agent,
+  and the rows of Junie came from `session/list` from then on. The archive of Megachat came at 10:57.
+- For the rows of the ACP list, "Done" of Air sends `_session/archive` to Junie, and Junie writes
+  `{"archived":true}` to `session_metadata.json` of the session folder. A restore sends `_session/unarchive`. The file
+  holds `archived`, `explicitTitle` and `forkedFrom`, each one optional. Junie writes it to a temporary file and
+  renames it, under a lock of the file `session_metadata.json.lock` that stays in the folder.
+- Junie read the archive state file of Air only one time, for an import, and then it wrote
+  `air-archive-import-v1.done`. On the machine of the author, that file is from 2026-10-28. So a later line of Air or of
+  Megachat in the archive state file does not change the list of Junie. The native provider of Air does not read
+  `session_metadata.json`.
+- A probe started that Junie in ACP mode with the capability `sessionIndex` of the Air client, and asked
+  `session/list` for the project. It gave 17 sessions that are not archived and 1 archived one: the session where the
+  author pressed "Done" in Air at 10:58. In the same process, a write of `{"archived":true}` to
+  `session_metadata.json` of one more session, with a temporary file and a rename, moved that session to the archived
+  list at the next `session/list`. Air reads each list of a shown project again every 60 seconds.
+- The Junie CLI of the author, 26.10.5 (3579.7), has no `_session/archive` and does not read `session_metadata.json`.
+
 ## Goals / Non-Goals
 
 **Goals:**
 
 - One source of Junie on the interface of the other sources. No second index, live table or archive.
 - The statuses of a wait from the log, because Junie writes them.
-- No write to a file of Junie but the archive state, in the format that Air reads.
+- No write to a file of Junie but the archive state, in the two formats that Air shows.
 
 **Non-Goals:**
 
@@ -188,22 +214,39 @@ this rule, so its row has no title and no status.
 
 ### 6. The archive state of Air for Junie
 
-For the agent `junie`, `hide` adds one line to `~/.junie/sessions/agent-workbench-archive-state.jsonl`, in the format
-of Air (see "The archive of a session of Junie in Air"): `sessionId`, `updatedAt`, `projectDir` and `archived` true,
-in this order. `projectDir` is the project directory of the session without a separator at its end, as the index line
-of Junie gives it. `updatedAt` is the time now, or the `updatedAt` of the session when that is later. `restore` adds
-the same line with `archived` false, and `archivedState` reads the last line of the session and its project
-directory. Megachat adds one whole line in one write with the append flag, and it changes no other line. It adds no
-line to `index.jsonl`, because that file is of Junie. The card names the kind of the hide `junie`. The command that
-continues the session is `junie --resume --session-id=<session ID>`. A session without a known project directory
-gets no line: the card is saved, and the result names the error `archiveNoDirectory`. `describe` of the source also
-gives the `updatedAt` of the session for the line.
+Air shows the rows of Junie from one of two providers, and each one reads its own store (see "The check in an Air
+build on 2026-11-24"). So the hide and the restore write both stores, each one only when it does not tell the state
+already. A store that does not name the session tells "not archived".
 
-Task 1.2 checks the hide and the restore with a real Air build. It is open: it needs the author.
+- **The archive state file of Air**, for the rows from `index.jsonl`. `hide` adds one line to
+  `~/.junie/sessions/agent-workbench-archive-state.jsonl`, in the format of Air (see "The archive of a session of
+  Junie in Air"): `sessionId`, `updatedAt`, `projectDir` and `archived` true, in this order. `projectDir` is the
+  project directory of the session without a separator at its end, as the index line of Junie gives it. `updatedAt`
+  is the time now, or the `updatedAt` of the session when that is later. `restore` adds the same line with `archived`
+  false. The state is the last line of the session and its project directory. Megachat adds one whole line in one
+  write with the append flag, and it changes no other line.
+- **The metadata of Junie**, for the rows from `session/list` of Junie. `hide` sets `archived` true in
+  `session_metadata.json` of the session folder, and `restore` sets it false. The other fields stay. Megachat writes
+  a temporary file in the folder and renames it, as Junie does. A file that is not a JSON object stays as it is, and
+  the result names the error `junieMetadata`.
+
+A session is archived for `archivedState` when both stores tell `archived` true. A restore takes a session that one
+of the two stores tells as archived. Megachat adds no line to `index.jsonl`, because that file is of Junie. The card
+names the kind of the hide `junie`. The command that continues the session is
+`junie --resume --session-id=<session ID>`. A session without a known project directory gets no write: the card is
+saved, and the result names the error `archiveNoDirectory`. `describe` of the source also gives the `updatedAt` of the
+session for the line.
+
+Task 1.2 checks the hide and the restore with a real Air build.
 
 - Alternative: `session/delete` of the ACP of Junie. It deletes the session, and the archive deletes nothing.
 - Alternative: a title with the prefix `[archived] `, as for Claude Code. Air does not read such a title for Junie.
 - Alternative: a line in `index.jsonl` too, as Air adds. Junie writes that file again without the field.
+- Alternative: `_session/archive` to a Junie process, as Air does for the rows of the ACP list. The command `junie` of
+  the user can be a Junie without that request (26.10.5 has none), and the Junie of the ACP registry of Air is in a
+  directory of the IDE, which is no contract of Megachat. Also, the native provider of Air does not read the result.
+- Alternative: only the metadata of Junie. Air uses the native provider until it starts the Junie of its ACP
+  registry, for example after a restart of the IDE.
 
 ### 7. The session tools
 
@@ -234,9 +277,17 @@ release note of the build says that the index now reads the sessions of Junie.
 
 ## Risks / Trade-offs
 
-- [The line of Megachat in the archive state file does not hide the session in Air] → The format comes from the
-  sources of Air and from the lines that Air wrote. Nobody saw Air read a line of Megachat. The card stays in each
-  case, and the result of the archive tells what Air shows for a session with a thread of Air.
+- [The archive of Megachat does not hide the session in Air] → The check of 2026-11-24 found the second store, and
+  Megachat now writes both. The card stays in each case, and the result of the archive tells what Air shows for a
+  session with a thread of Air. A later Junie or Air can move the state again: task 1.2 names the versions.
+- [Junie writes `session_metadata.json` at the same time as Megachat] → Node.js cannot take the file lock of Junie, so
+  one of the two writes can replace the other. Each program writes the whole file with a rename, so no reader sees a
+  part of a file. The fields of the file are for an archive, a title and a fork, so Junie writes it only for such an
+  action on that session. Megachat
+  reads both stores again after its write, and the result names a hide that did not stay as `pending`.
+- [Air shows the two stores in different states] → "Done" of Air writes only the store of the provider that it shows.
+  So a session that the user archived in Air can show again with the other provider. Megachat writes both stores, and
+  an archive of such a session writes only the missing one.
 - [The format of `events.jsonl` is not a public contract, and a new Junie can change it] → The parser gives nothing
   for a line that it does not know, as the other parsers do. The fixtures of `test/junie-sessions.test.mjs` hold the
   shapes of the read. `docs/manual-checks.md` names the version of Junie.
@@ -253,7 +304,7 @@ release note of the build says that the index now reads the sessions of Junie.
 - [A session without `summary.json` and without a line in `index.jsonl` is in no project] → It stays out of the index.
   The live table still has it, so `agents_running` shows its status.
 - [A write to the archive state file while Air writes it] → Each program adds one whole line in one write with the
-  append flag. Task 1.2 checks that Air shows a line that Megachat added.
+  append flag.
 - [Air makes the project directory of its key in another way than Megachat, for example for a linked worktree] → Then
   Air still shows the session. The archive already tells the user what Air shows after a hide, and to press Done in
   Air (see the capability `session-archive`). Task 1.2 has a session of a linked worktree.
@@ -272,3 +323,10 @@ back, start an earlier build: it does not read the rows of the agent `junie`.
 
 - Whether `JUNIE_DATA` or another variable moves `~/.junie`. The read found no such variable for the session folder.
   Until one is known, the root is `~/.junie/sessions`.
+- The archive of Megachat for each agent, not only Junie. Air decides the archive state of each row
+  (`AgentSessionRowBuilder.classified` of Air): the listing of the agent decides only when the source of the row is on
+  the route of the session, and else the archive state of Air decides. Megachat writes only the stores of the agents.
+  So a session that Air opened or ran stays in the list after an archive of Megachat, and a change of the provider in
+  Air moves the store again. Only Air can make an archive of Megachat hide each row. A later change can add a request
+  from Megachat to Air, for example `_session/service/archive`, that does what "Done" of Air does, with the writes of
+  this change as the fallback for a client without it. The author postponed that change on 2026-11-24.

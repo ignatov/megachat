@@ -1046,10 +1046,12 @@ The tool needs the setting `sessions.index` on. Megachat archives as Air does, s
   a last activity less than 1 hour ago give a warning in the dialog.
 - **The hide.** When no process of the session runs, Megachat writes the records that Air writes for Done: for Claude
   Code a `custom-title` and an `agent-name` line with the title `[archived] <title>`, for pi a `session_info` line, and for
-  Codex it runs `codex archive`. For Junie it adds one line to `~/.junie/sessions/agent-workbench-archive-state.jsonl`,
-  the file where Air keeps the Done state of the Junie sessions: the session ID, the time, the project directory and
-  `archived` true. A restore adds such a line with `archived` false. This is the only file of Junie that Megachat
-  writes, and it changes no other line of it. Air then shows the session as Done. A session that you archived in Air counts as
+  Codex it runs `codex archive`. Air shows the Junie sessions from `index.jsonl`, or from `session/list` of the Junie
+  that Air installs from the ACP registry, and each way has its own Done state. So for Junie, Megachat writes both: one
+  line in `~/.junie/sessions/agent-workbench-archive-state.jsonl` (the session ID, the time, the project directory and
+  `archived` true), and `"archived": true` in `session_metadata.json` of the session folder. A restore writes
+  `archived` false to both. These are the only files of Junie that Megachat writes, and it keeps each other line and
+  field of them. Air then shows the session as Done. A session that you archived in Air counts as
   archived in Megachat, and `restore` brings it back with the title records that Air writes for Reopen, or with
   `codex unarchive`. The tool never writes while a process of the session runs.
 
@@ -1164,7 +1166,7 @@ The session text is data for the agent, not instructions.
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, the detection of the linked worktrees, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/SessionArchive.mjs` | The tool `agents_archive`: the checks and the warnings, the card, the stop of the process, the hide and the restore in the format of Air. |
-| `src/JunieSessionSource.mjs` | The sessions of Junie: the event log of each session folder, the project directory and the title from the files next to it, the entries and the steps of a log, and the archive state file of Air. |
+| `src/JunieSessionSource.mjs` | The sessions of Junie: the event log of each session folder, the project directory and the title from the files next to it, the entries and the steps of a log, the archive state file of Air, and the archive state in `session_metadata.json`. |
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |

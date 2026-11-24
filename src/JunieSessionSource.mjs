@@ -1,4 +1,7 @@
+import { randomBytes } from 'node:crypto'
+import { rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, sep } from 'node:path'
+import { MegachatError } from './messages.mjs'
 import { entryOf, lineKey, readSmall, timeOf, TITLE_RANK } from './SessionLog.mjs'
 
 /** The name of the event log in the folder of a session. */
@@ -16,6 +19,13 @@ const INDEX_LIMIT = 4 * 1024 * 1024
  */
 const ARCHIVE_STATE = 'agent-workbench-archive-state.jsonl'
 const ARCHIVE_STATE_LIMIT = 16 * 1024 * 1024
+/**
+ * The file of a session folder where Junie 4171 and later keeps the archive state of the session, and its size limit.
+ * It holds `archived`, `explicitTitle` and `forkedFrom`, each one optional. `_session/archive` of the ACP of Junie
+ * writes it, and `session/list` of Junie reads it.
+ */
+const METADATA = 'session_metadata.json'
+const METADATA_LIMIT = 64 * 1024
 /** A project directory as the index of Junie gives it: without a separator at its end. */
 const directory = value => text(value).replace(/(.)[/\\]+$/, '$1')
 /** The blocks of a turn that give a tool entry at their end. Each one has a `stepId` and a `status`. */
@@ -91,7 +101,12 @@ export class JunieSessionSource {
       ...(title ? { title, titleRank: TITLE_RANK.agent } : {}), ...(timeOf(record?.updatedAt) !== undefined ? { updatedAt: timeOf(record.updatedAt) } : {}) }
   }
 
-  /** The path of the archive state file of Air. Megachat adds a line to it for a hide and for a restore. */
+  /**
+   * The path of the archive state file of Air. Megachat adds a line to it for a hide and for a restore. The rows of Air
+   * that come from `index.jsonl` read this file. The rows that come from `session/list` of Junie read
+   * `session_metadata.json` (see [metadataArchived]): Junie read this file only one time, for its import of the
+   * archive state of Air.
+   */
   get archiveFile() { return join(this.root, ARCHIVE_STATE) }
 
   /**
@@ -120,6 +135,52 @@ export class JunieSessionSource {
    */
   archiveLine({ sessionId, cwd, archived, updatedAt, now }) {
     return `${JSON.stringify({ sessionId, updatedAt: Math.max(now, updatedAt ?? 0), projectDir: directory(cwd), archived })}\n`
+  }
+
+  /**
+   * The archive state that Junie keeps for the session of the log at [path]: the value of `archived` in
+   * `session_metadata.json` of its folder, or undefined without the file or without the field. A file that is not a
+   * JSON object throws, so a write does not replace it.
+   */
+  async metadataArchived(path, fs) {
+    const value = await this.#metadata(path, fs)
+    return typeof value?.archived === 'boolean' ? value.archived : undefined
+  }
+
+  /**
+   * Sets `archived` in `session_metadata.json` of the folder of the log at [path], as `_session/archive` and
+   * `_session/unarchive` of Junie do, and keeps the other fields. The write goes to a temporary file in the folder, and
+   * a rename replaces the file, as Junie writes it. Junie also takes a lock on `session_metadata.json.lock`. Node.js
+   * cannot take that lock, so a write of Junie at the same time can replace the write of Megachat. The caller reads
+   * the state again after the write.
+   */
+  async writeMetadataArchived(path, archived, fs) {
+    const value = await this.#metadata(path, fs) ?? {}
+    const file = join(dirname(path), METADATA)
+    const temporary = `${file}.megachat-${randomBytes(6).toString('hex')}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify({ ...value, archived }), { mode: 0o600, flag: 'wx' })
+      await rename(temporary, file)
+    }
+    catch (error) {
+      await rm(temporary, { force: true })
+      throw error
+    }
+  }
+
+  /** The JSON object of `session_metadata.json` next to the log at [path], or undefined without the file. */
+  async #metadata(path, fs) {
+    let text
+    try { text = await readSmall(fs, join(dirname(path), METADATA), METADATA_LIMIT) }
+    catch (error) {
+      if (error?.code === 'ENOENT') return undefined
+      throw new MegachatError('junieMetadata')
+    }
+    let value
+    try { value = JSON.parse(text) }
+    catch { throw new MegachatError('junieMetadata') }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new MegachatError('junieMetadata')
+    return value
   }
 
   async #summary(path, fs) {

@@ -489,9 +489,10 @@ const junieLog = ({ prompt = 'Fix the parser for DEMO-7', waits = false } = {}) 
 const junieArchiveFile = context => join(context.home, '.junie', 'sessions', 'agent-workbench-archive-state.jsonl')
 const JUNIE_BINARY = '/Users/user/.local/share/junie/versions/3579.7/Applications/junie.app/Contents/MacOS/junie'
 
-test('the archive of a Junie session saves a card with the command of Junie and adds one line to the archive state file of Air', async () => {
+test('the archive of a Junie session saves a card with the command of Junie, adds one line to the archive state file of Air and sets archived in the metadata of Junie', async () => {
   const context = await rig({ airCaches: null })
   const file = await context.add('junie', JUNIE_ID, { text: junieLog(), cwd: '/work/demo-app', title: 'Fix the parser' })
+  const metadata = join(file, '..', 'session_metadata.json')
   // The file of Air holds one line of another session.
   const other = '{"sessionId":"session-251201-090000-wxyz","updatedAt":1790000000000,"projectDir":"/work/other","archived":true}'
   await writeFile(junieArchiveFile(context), `${other}\n`)
@@ -503,6 +504,9 @@ test('the archive of a Junie session saves a card with the command of Junie and 
   assert.deepEqual(await ends(junieArchiveFile(context)), [other,
     `{"sessionId":"session-260101-120000-abcd","updatedAt":${NOW},"projectDir":"/work/demo-app","archived":true}`])
   assert.deepEqual([result.outcome, result.archived[0].hidden, result.archived[0].resume], ['archived', 'junie', 'junie --resume --session-id=session-260101-120000-abcd'])
+  // The metadata of Junie: the folder had no `session_metadata.json`, so the new file holds only `archived`.
+  assert.equal(await readFile(metadata, 'utf8'), '{"archived":true}')
+  assert.equal((await stat(metadata)).mode & 0o777, 0o600)
   // The line of a hide at the time 1795000000000. A later `updatedAt` of the session wins over the time of the archive, as in Air.
   const source = new JunieSessionSource({ home: context.home })
   assert.equal(source.archiveLine({ sessionId: JUNIE_ID, cwd: '/work/demo-app/', archived: true, now: 1795000000000, updatedAt: 1794000000000 }),
@@ -518,25 +522,62 @@ test('the archive of a Junie session saves a card with the command of Junie and 
   const after = await Promise.all([file, join(file, '..', 'summary.json')].map(async path => { const { size, mtimeMs } = await stat(path); return [size, mtimeMs] }))
   assert.deepEqual(after, before)
   assert.deepEqual(await fs.readdir(join(context.home, '.junie', 'sessions')), ['agent-workbench-archive-state.jsonl', JUNIE_ID])
+  assert.deepEqual((await fs.readdir(join(file, '..'))).sort(), ['events.jsonl', 'session_metadata.json', 'summary.json'])
   assert.deepEqual(context.signals, [])
-  // Archive twice: the last line of the session has `archived` true, so the file keeps its size.
-  const size = (await stat(junieArchiveFile(context))).size
+  // Archive twice: both stores tell `archived` true, so no file changes.
+  const sizes = async () => Promise.all([junieArchiveFile(context), metadata].map(async path => { const { size, mtimeMs } = await stat(path); return [size, mtimeMs] }))
+  const size = await sizes()
   const again = await context.archive.call({ action: 'archive', sessions: [item('junie', JUNIE_ID)] })
   assert.deepEqual([again.outcome, again.skipped.map(row => row.reason)], ['none', [message('archive.skipped.already')]])
   assert.equal(message('archive.skipped.already'), 'The session is archived already, in Megachat or in Air. Nothing changed.')
-  assert.equal((await stat(junieArchiveFile(context))).size, size)
-  // Restore of a Junie session: one more line with `archived` false, the card gets its time, and no process starts.
+  assert.deepEqual(await sizes(), size)
+  // Restore of a Junie session: one more line with `archived` false, `archived` false in the metadata, the card gets its
+  // time, and no process starts.
   const processes = context.table.current.length
   const restored = await context.archive.call({ action: 'restore', sessions: [item('junie', JUNIE_ID)] })
   assert.deepEqual([restored.outcome, restored.restored.length, restored.restored[0].resume], ['restored', 1, 'junie --resume --session-id=session-260101-120000-abcd'])
   assert.equal((await ends(junieArchiveFile(context))).at(-1), `{"sessionId":"session-260101-120000-abcd","updatedAt":${NOW},"projectDir":"/work/demo-app","archived":false}`)
   assert.equal((await ends(junieArchiveFile(context))).length, 3)
+  assert.equal(await readFile(metadata, 'utf8'), '{"archived":false}')
   assert.equal((await context.archive.cards.all())[0].restoredAt, restored.restored[0].restoredAt)
   assert.equal(context.table.current.length, processes)
-  // A session that is not archived is refused by a restore, and the file keeps its size.
+  // A session that is not archived is refused by a restore, and no file changes.
+  const restoredSizes = await sizes()
   const second = await context.archive.call({ action: 'restore', sessions: [item('junie', JUNIE_ID)] })
   assert.deepEqual(second.refused.map(row => row.reason), [message('archive.skipped.notArchived')])
-  assert.equal((await ends(junieArchiveFile(context))).length, 3)
+  assert.deepEqual(await sizes(), restoredSizes)
+})
+
+test('the archive of a Junie session writes only the store that does not tell the state, keeps the other fields of the metadata, and keeps a metadata file that it cannot read', async () => {
+  const context = await rig({ airCaches: null })
+  // "Done" of Air through Junie: `session_metadata.json` has `archived` true and a title, and the file of Air has no line.
+  const file = await context.add('junie', JUNIE_ID, { text: junieLog(), cwd: '/work/demo-app', title: 'Fix the parser' })
+  const metadata = join(file, '..', 'session_metadata.json')
+  await writeFile(metadata, '{"archived":true,"explicitTitle":"The parser","forkedFrom":"session-251231-100000-root"}')
+  const first = await stat(metadata)
+  const { result } = await answered(context, { action: 'archive', sessions: [item('junie', JUNIE_ID)] })
+  assert.equal(result.archived[0].hidden, 'junie')
+  assert.deepEqual(await ends(junieArchiveFile(context)), [`{"sessionId":"session-260101-120000-abcd","updatedAt":${NOW},"projectDir":"/work/demo-app","archived":true}`])
+  assert.deepEqual([(await stat(metadata)).mtimeMs, (await stat(metadata)).size], [first.mtimeMs, first.size])
+  // A restore sets `archived` false and keeps the other fields.
+  await context.archive.call({ action: 'restore', sessions: [item('junie', JUNIE_ID)] })
+  assert.deepEqual(JSON.parse(await readFile(metadata, 'utf8')), { archived: false, explicitTitle: 'The parser', forkedFrom: 'session-251231-100000-root' })
+  // "Done" of Air from `index.jsonl`: the file of Air has `archived` true, and the folder has no metadata file. The
+  // archive writes only the metadata, and the file of Air keeps its size.
+  const done = await context.add('junie', 'session-260101-140000-done', { text: junieLog(), cwd: '/work/demo-app', title: 'Done in Air' })
+  await appendFile(junieArchiveFile(context), '{"sessionId":"session-260101-140000-done","updatedAt":2,"projectDir":"/work/demo-app","archived":true}\n')
+  const size = (await stat(junieArchiveFile(context))).size
+  const { result: second } = await answered(context, { action: 'archive', sessions: [item('junie', 'session-260101-140000-done')] })
+  assert.equal(second.archived[0].hidden, 'junie')
+  assert.equal((await stat(junieArchiveFile(context))).size, size)
+  assert.equal(await readFile(join(done, '..', 'session_metadata.json'), 'utf8'), '{"archived":true}')
+  // A metadata file that is not a JSON object stays as it is, and the result names the error.
+  const broken = await context.add('junie', 'session-260101-160000-bad0', { text: junieLog(), cwd: '/work/demo-app', title: 'A broken file' })
+  await writeFile(join(broken, '..', 'session_metadata.json'), '[true]')
+  const { result: third } = await answered(context, { action: 'archive', sessions: [item('junie', 'session-260101-160000-bad0')] })
+  assert.deepEqual([third.archived[0].step, third.archived[0].error], ['error', message('archive.error.step', 'junieMetadata')])
+  assert.equal(await readFile(join(broken, '..', 'session_metadata.json'), 'utf8'), '[true]')
+  assert.deepEqual((await fs.readdir(join(broken, '..'))).sort(), ['events.jsonl', 'session_metadata.json', 'summary.json'])
 })
 
 test('a Junie session that waits for a permission, or with a run of Megachat, is refused, and a session that Air archived counts as archived', async () => {
@@ -556,8 +597,10 @@ test('a Junie session that waits for a permission, or with a run of Megachat, is
   assert.deepEqual(await sizes(), before)
   await assert.rejects(stat(junieArchiveFile(context)), { code: 'ENOENT' })
   assert.deepEqual(context.views, [])
-  // "Done" of Air added a line for another session of the directory: it counts as archived. A line of another directory does not.
+  // "Done" of Air added a line for another session of the directory, and Junie has `archived` true in its metadata: it
+  // counts as archived. A line of another directory does not change the state.
   const done = await context.add('junie', 'session-260101-140000-done', { text: junieLog(), cwd: '/work/demo-app', title: 'Done in Air' })
+  await writeFile(join(done, '..', 'session_metadata.json'), '{"archived":true}')
   await writeFile(junieArchiveFile(context), ['{"sessionId":"session-260101-140000-done","updatedAt":1,"projectDir":"/work/demo-app","archived":false}',
     '{"sessionId":"session-260101-140000-done","updatedAt":2,"projectDir":"/work/demo-app/","archived":true}',
     '{"sessionId":"session-260101-140000-done","updatedAt":3,"projectDir":"/work/elsewhere","archived":false}', 'not a JSON line', ''].join('\n'))
