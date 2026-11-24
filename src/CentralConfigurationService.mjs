@@ -3,12 +3,13 @@ import { constants, existsSync } from 'node:fs'
 import { access, readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { createModels } from '@earendil-works/pi-ai/models'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import { logEvent, logFailure, MegachatError, requireCondition } from './messages.mjs'
+import { npmPathEntry } from './npmEnvironment.mjs'
 import { KnownSecrets } from './SessionText.mjs'
 import { DEFAULT_CLAUDE_MODEL, modelRef } from './Settings.mjs'
 
@@ -33,6 +34,18 @@ export async function executableFile(path) {
     return (await stat(path)).isFile()
   }
   catch { return false }
+}
+
+/**
+ * The first file [name] on [path] that the user can run, or `undefined`. A directory that npm adds does not count, such
+ * as `node_modules/.bin`: the daemon does not get it. A relative entry does not count either.
+ */
+export async function commandOnPath(name, path) {
+  for (const directory of path.split(delimiter).filter(item => isAbsolute(item))) {
+    if (npmPathEntry(directory)) continue
+    if (await executableFile(join(directory, name))) return join(directory, name)
+  }
+  return undefined
 }
 
 /**
@@ -179,8 +192,10 @@ const withoutFallbacks = model => {
 export class CentralConfigurationService {
   constructor({ central = join(homedir(), '.local/bin/central'), claude = join(homedir(), '.local/bin/claude'),
     settings = join(homedir(), '.claude/settings.json'), environment = process.env, keyHelperTimeout = KEY_HELPER_TIMEOUT_MS,
-    log = logFailure } = {}) {
+    log = logFailure, nodeDirectory = dirname(process.execPath) } = {}) {
     this.central = central
+    /** The directory of the node that runs Megachat, the first entry of the `PATH` of a child. A test replaces it. */
+    this.nodeDirectory = nodeDirectory
     this.claude = claude
     this.settings = settings
     this.environment = environment
@@ -345,7 +360,15 @@ export class CentralConfigurationService {
     const environment = this.environment
     const variables = Object.fromEntries(Object.entries(environment)
       .filter(([name, value]) => value !== undefined && !name.startsWith('MEGACHAT_') && !dropped(name)))
-    return { ...variables, PATH: [dirname(process.execPath), this.centralPath(environment.PATH)].join(delimiter) }
+    return { ...variables, PATH: [this.nodeDirectory, this.centralPath(environment.PATH)].join(delimiter) }
+  }
+
+  /**
+   * The first `junie` on the `PATH` of a child, or `undefined`. `central run junie` starts that file. Megachat installs
+   * no Junie, so a machine without the command has no Junie child.
+   */
+  junieOnPath() {
+    return commandOnPath('junie', this.baseEnvironment().PATH)
   }
 
   /**
@@ -364,6 +387,10 @@ export class CentralConfigurationService {
    * agent: in a checkout it is in `node_modules` of the checkout, and in an installed copy it is next to the copy.
    * The model of a Claude launch goes in the options of the session. The model of the settings of Claude Code wins over
    * it, and an explicit value of `children.claudeModel` wins over both.
+   * Junie runs through Central too, with the `junie` of the user in its ACP mode. Junie is its own ACP agent, so it needs
+   * no shim and no `bin` directory of Megachat on its `PATH`. It gets the environment of a Codex child: a variable of
+   * Claude Code can hold the key of Central, and Junie has a mode with a key of the user for Anthropic. Without the
+   * command `junie`, the launch fails with `junieMissing`, so the run starts no process and gets no continuation.
    */
   async childLaunch(agent) {
     if (agent === 'claude') {
@@ -371,6 +398,11 @@ export class CentralConfigurationService {
         args: [fileURLToPath(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js'))] }
       return { command: claude.command, args: claude.args, ...(claude.cwd ? { cwd: claude.cwd } : {}),
         model: modelRef(DEFAULT_CLAUDE_MODEL).modelId, env: { ...claude.env, ...await this.childEnvironment() } }
+    }
+    if (agent === 'junie') {
+      const env = this.codexEnvironment()
+      if (!await commandOnPath('junie', env.PATH)) throw new MegachatError('junieMissing')
+      return { command: this.central, args: ['run', 'junie', '--', '--acp=true'], env }
     }
     requireCondition(agent === 'codex')
     const env = this.codexEnvironment()

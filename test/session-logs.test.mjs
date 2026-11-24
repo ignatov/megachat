@@ -131,6 +131,25 @@ function piLog(home, cwd, id, records, options = {}) {
   return writeLog(join(home, '.pi', 'agent', 'sessions', `--${cwd.slice(1).replace(/\//g, '-')}--`, `2026-11-11T11-00-00-000Z_${id}.jsonl`), lines, options)
 }
 
+/** A session folder of Junie: the event log, with `timestampMs` in each line, and `summary.json` with the project directory. */
+async function junieLog(home, cwd, id, records, { mtime, start = NOW - HOUR, title = 'Fix the parser' } = {}) {
+  const path = join(home, '.junie', 'sessions', id, 'events.jsonl')
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, records.map((value, index) => `${JSON.stringify({ ...value, timestampMs: start + index * 1000 })}\n`).join(''))
+  await writeFile(join(dirname(path), 'summary.json'), JSON.stringify({ sessionId: id, createdAt: start, updatedAt: start, projectDir: cwd, taskName: title }))
+  if (mtime !== undefined) await utimes(path, new Date(mtime), new Date(mtime))
+  return path
+}
+const junieEvent = (state, kind, fields = {}) => ({ kind: 'SessionA2uxEvent', event: { state, agentEvent: { kind, ...fields } } })
+const junie = {
+  prompt: () => ({ kind: 'UserPromptEvent', requestId: 'r1', prompt: `Fix the parser ${MARKER}`, presentablePrompt: `Fix the parser ${MARKER}` }),
+  command: (state = 'IN_PROGRESS', approval = false) => junieEvent(state, 'TerminalBlockUpdatedEvent',
+    { stepId: 's1', status: 'IN_PROGRESS', command: `npm test ${MARKER}`, ...(approval ? { approvalRequest: { id: 'a1' } } : {}) }),
+  result: () => junieEvent('COMPLETED', 'ResultBlockUpdatedEvent', { stepId: 's2', result: `The parser works ${MARKER}` }),
+  end: () => ({ kind: 'TaskState', state: 'COMPLETED' }),
+}
+const JUNIE = '/Users/user/.local/share/junie/versions/3579.7/Applications/junie.app/Contents/MacOS/junie'
+
 /** A live table of the session files of [home] on its own `sessions.sqlite`. */
 async function catalogOf(t, home, { fs = fsp, clock = fakeClock(), timers = fakeTimers(), start = true, sources = sessionSources({ home, environment: {} }) } = {}) {
   const index = await SessionIndex.open(join(home, 'state', 'sessions.sqlite'))
@@ -851,4 +870,37 @@ test('after the consent goes off, the live table reads no file, and a call in pr
   assert.deepEqual([await catalog.ensure(added), await catalog.read(added), await catalog.processSession('claude', 10, NOW - 2 * HOUR + 10000)],
     [undefined, undefined, undefined])
   assert.deepEqual(fs.calls, [])
+})
+
+test('a Junie session in a terminal gets its log by the directory and the start time of its process, and a Junie child of Megachat gets the session of its run', async t => {
+  const home = await temporary(t)
+  const DAEMON = 900
+  const started = NOW - 2 * HOUR
+  // 10: Junie in a terminal since `started`, with one session of its directory that began with it and wrote 1 minute ago.
+  await junieLog(home, '/work/demo-app', 'session-260101-100000-term', [junie.prompt(), junie.command()], { start: started + 2000, mtime: NOW - MINUTE })
+  // An older session of the same directory began before the process, so it is no log of the process.
+  await junieLog(home, '/work/demo-app', 'session-260101-080000-old0', [junie.prompt(), junie.result(), junie.end()], { start: started - 2 * HOUR, mtime: started - HOUR, title: 'An old task' })
+  // 20: a process that continues an old session of another directory. Its log did not begin with it, so the row has no log.
+  await junieLog(home, '/work/resumed', 'session-260101-070000-res0', [junie.prompt(), junie.command()], { start: started - 3 * HOUR, mtime: NOW - MINUTE })
+  // 42: a Junie child of Megachat. Its log waits for a permission, and the run has no pending request in the state.
+  await junieLog(home, '/work/task', 'session-260101-120000-abcd', [junie.prompt(), junie.command('INPUT_REQUIRED', true)], { start: started + 60000, mtime: NOW - MINUTE, title: 'A task of the log' })
+  const runs = { live: { id: 'live', pid: 40, agent: 'junie', status: 'running', generation: 1, providerSessionId: 'session-260101-120000-abcd', title: 'Task of Megachat', cwd: '/work/task' } }
+  const state = { snapshot: async () => ({ runs, permissions: {} }) }
+  const table = fakeTable([proc(10, 2, JUNIE, { name: 'junie', startedAt: started }), proc(20, 2, `${JUNIE} --resume`, { name: 'junie', startedAt: started }),
+    proc(DAEMON, 2, 'node /opt/megachat/src/main.mjs', { name: 'node' }), proc(40, DAEMON, 'node /opt/megachat/src/child-supervisor.mjs central run junie', { name: 'node' }),
+    proc(41, 40, '/Users/user/.local/bin/central run junie -- --acp=true', { name: 'central' }), proc(42, 41, `${JUNIE} --acp=true`, { name: 'junie', startedAt: started + 55000 })],
+  { 10: { cwd: '/work/demo-app' }, 20: { cwd: '/work/resumed' } })
+  const { catalog } = await catalogOf(t, home)
+  const answer = await new RunningAgents(state, { table, clock: fakeClock(), daemonPid: DAEMON, logs: () => catalog }).query()
+  const rows = Object.fromEntries(answer.sessions.map(row => [row.pid, row]))
+  assert.deepEqual(Object.keys(rows).map(Number).sort((left, right) => left - right), [10, 20, 42])
+  assert.deepEqual([rows[10].agent, rows[10].sessionId, rows[10].title, rows[10].status, rows[10].lastActivityAt, rows[10].parent.kind],
+    ['junie', 'session-260101-100000-term', 'Fix the parser', 'working', iso(NOW - MINUTE), 'terminal'])
+  // A row without a certain log has no session ID, no title and no status of a log.
+  assert.deepEqual([rows[20].sessionId, rows[20].title, rows[20].status, rows[20].lastActivityAt], ['', '', null, null])
+  // The child has the session and the title of its run and Megachat as its owner. Without a pending request, its log gives the status.
+  assert.deepEqual([rows[42].sessionId, rows[42].title, rows[42].parent.kind, rows[42].parent.name, rows[42].status],
+    ['session-260101-120000-abcd', 'Task of Megachat', 'megachat', 'Megachat', 'waiting_for_permission'])
+  assert.ok(answer.incomplete.includes(message('running.incomplete.unlinked', 1)))
+  assert.doesNotMatch(JSON.stringify(answer), new RegExp(MARKER))
 })

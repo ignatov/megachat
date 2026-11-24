@@ -259,7 +259,7 @@ test('the list is bounded: limit, nextCursor and truncated page through 500 sess
   }
   await assert.rejects(running.query({ limit: 201 }), { code: 'invalid' })
   await assert.rejects(running.query({ cursor: 'not a cursor' }), { code: 'invalid' })
-  await assert.rejects(running.query({ agent: 'junie' }), { code: 'invalid' })
+  await assert.rejects(running.query({ agent: 'gemini' }), { code: 'invalid' })
   await assert.rejects(running.query({ state: 'stuck' }), { code: 'invalid' })
 })
 
@@ -442,4 +442,36 @@ test('the main agent has the tool agents_running, and the children do not get it
   const answer = JSON.parse((await tool.execute({ agent: 'pi' })).output[0].text)
   assert.deepEqual(answer.sessions.map(row => [row.pid, row.cwd, row.parent.kind]), [[51, '/work/pi', 'multiplexer']])
   assert.ok(!(await readFile(new URL('../src/MegachatHistoryServer.mjs', import.meta.url), 'utf8')).includes('running'))
+})
+
+test('a process of Junie is a session of the agent junie, in a terminal, below an IDE and as a child of Megachat', async () => {
+  const JUNIE = '/Users/user/.local/share/junie/versions/3579.7/Applications/junie.app/Contents/MacOS/junie'
+  const table = fakeTable([
+    proc(1, 0, '/sbin/launchd'),
+    proc(2, 1, '/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal', { name: 'Terminal' }),
+    proc(4, 2, '-zsh'),
+    // Junie in Terminal: the executable `junie` of the app bundle `junie.app`. The bundle is no owner of the session.
+    proc(10, 4, JUNIE, { name: 'junie' }),
+    proc(11, 10, '/bin/zsh -c npm test', { cpu: 20 }),
+    // The ACP process of an IDE, through Central.
+    proc(5, 1, '/Applications/Air.app/Contents/MacOS/air', { name: 'air' }),
+    proc(6, 5, '/Users/user/.local/bin/central run junie -- --acp=true', { name: 'central' }),
+    proc(20, 6, `${JUNIE} --acp=true`, { name: 'junie' }),
+    // A Junie child of Megachat: the supervisor of its run, Central, and Junie.
+    proc(DAEMON, 5, '/opt/homebrew/bin/node /Users/user/src/megachat/src/main.mjs daemon', { name: 'node' }),
+    proc(40, DAEMON, '/opt/homebrew/bin/node /Users/user/src/megachat/src/child-supervisor.mjs /Users/user/.local/bin/central run junie -- --acp=true', { name: 'node' }),
+    proc(41, 40, '/Users/user/.local/bin/central run junie -- --acp=true', { name: 'central' }),
+    proc(42, 41, `${JUNIE} --acp=true`, { name: 'junie' }),
+  ], { 10: '/work/demo-app', 20: '/work/ide' })
+  const child = { id: 'live', pid: 40, agent: 'junie', status: 'dispatched', providerSessionId: 'session-260101-120000-abcd', title: 'Fix the parser', cwd: '/work/task', prompt: SECRET }
+  const { running, answer } = await view(table, { runs: [child] })
+  const rows = Object.fromEntries(answer.sessions.map(row => [row.pid, row]))
+  assert.deepEqual(Object.keys(rows).map(Number).sort((left, right) => left - right), [10, 20, 42])
+  assert.deepEqual([rows[10].agent, rows[10].cwd, rows[10].parent.kind, rows[10].parent.name, rows[10].state], ['junie', '/work/demo-app', 'terminal', 'Terminal', 'active'])
+  assert.deepEqual([rows[20].agent, rows[20].cwd, rows[20].parent.kind, rows[20].parent.name], ['junie', '/work/ide', 'ide', 'Air'])
+  // The state gives the session of the run of a Junie child, and Megachat is its owner.
+  assert.deepEqual([rows[42].agent, rows[42].cwd, rows[42].parent.kind, rows[42].parent.name, rows[42].sessionId, rows[42].title],
+    ['junie', '/work/task', 'megachat', 'Megachat', 'session-260101-120000-abcd', 'Fix the parser'])
+  assert.deepEqual((await running.query({ agent: 'junie' })).sessions.map(row => row.pid).sort(), [10, 20, 42])
+  assert.doesNotMatch(JSON.stringify(answer), new RegExp(SECRET))
 })

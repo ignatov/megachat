@@ -36,7 +36,7 @@ const identity = stat => ({ size: stat.size, mtimeMs: stat.mtimeMs, ino: String(
 const nameOf = path => basename(path).replace(/\.jsonl(?:\.zst)?$/, '')
 
 /**
- * Imports the past sessions of Claude Code, Codex and pi of the listed directories into `sessions.sqlite`, with the
+ * Imports the past sessions of Claude Code, Codex, pi and Junie of the listed directories into `sessions.sqlite`, with the
  * consent of the user only. With the setting `sessions.index` off, it reads no session file, watches no directory of a
  * provider, and keeps no index file. The import runs in batches with a pause between them, so the chat stays usable.
  * The first pass takes the files of the projects of an IDE first, and the newest files first. After it, the import
@@ -106,7 +106,9 @@ export class SessionIndexService {
       this.directories = directoriesOf(this.subscription.value)
       this.directoryKey = JSON.stringify(this.directories.map(directory => directory.cwd).sort())
       this.subscription.start(call => { if (call.kind === 'value') this.#observe(call.value) })
-      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, secrets: this.secrets, ...this.catalogOptions })
+      // The Megachat of one project keeps only the session files of its listed directories in the live table.
+      this.catalog = new SessionCatalog({ index: this.index, sources: this.sources, fs: this.fs, clock: this.clock, secrets: this.secrets,
+        ...(this.state.project ? { scope: () => this.directories } : {}), ...this.catalogOptions })
       await this.catalog.start()
     }
     catch (error) {
@@ -151,6 +153,7 @@ export class SessionIndexService {
     this.directories = directories
     if (key === this.directoryKey) return
     this.directoryKey = key
+    this.catalog?.rescope()
     this.#request({ full: true })
   }
 
@@ -414,6 +417,8 @@ export class SessionIndexService {
 
   /** Reads the first lines of a file until the session tells its `cwd`. */
   async #peek(source, path) {
+    // The files next to the log tell the directory of a source with `describe`: its log does not hold it.
+    if (source.describe) return (await source.describe(path, this.fs)).cwd
     for await (const batch of readLines(this.fs, path, { end: PEEK_BYTES, batchLines: 8, compressed: isCompressed(path) })) {
       for (const line of batch.lines) {
         const cwd = this.#parse(source, line, path)?.meta?.cwd
@@ -495,6 +500,13 @@ export class SessionIndexService {
       if (!cwd || !directoryOf(cwd, directories)) { await this.index.outside({ ...file, agent }, cwd ?? null); return true }
       meta = { cwd }
     }
+    // The session data that the files next to the log hold: the session ID, the start time and the title.
+    const described = await source.describe?.(path, this.fs)
+    if (described) {
+      meta.sessionId ??= described.sessionId
+      meta.startedAt ??= described.startedAt
+      if (described.title !== undefined && !(meta.titleRank > described.titleRank)) Object.assign(meta, { title: described.title, titleRank: described.titleRank })
+    }
     // The size of a file is stored only after the import reached its end, so a stopped import continues later.
     const partial = { ...file, agent, size: -1, tail: row?.tail ?? null }
     let offset = row?.offset ?? 0
@@ -530,7 +542,7 @@ export class SessionIndexService {
   /** The summary of the first pass for the main agent: the counts, and the last unfinished sessions. */
   async #summary(passId, directories) {
     const sessions = await this.index.sessions()
-    const agents = { claude: 0, codex: 0, pi: 0 }
+    const agents = { claude: 0, codex: 0, junie: 0, pi: 0 }
     const projects = new Set()
     let entries = 0
     for (const session of sessions) {

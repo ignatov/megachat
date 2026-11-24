@@ -1,14 +1,16 @@
 import { constants, existsSync } from 'node:fs'
-import { access, chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
-import { bundledBinaries, CentralConfigurationService } from './CentralConfigurationService.mjs'
-import { DaemonClient, processEnded, STOP_WAIT_MS } from './DaemonClient.mjs'
+import { bundledBinaries, CentralConfigurationService, commandOnPath, executableFile as executable } from './CentralConfigurationService.mjs'
+import { STOP_WAIT_MS } from './DaemonClient.mjs'
+import { runningDaemon, stopDaemon, workLines } from './DaemonWork.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
+import { readProjectRecord, stateDirectories } from './MegachatHome.mjs'
 import { message } from './messages.mjs'
-import { ENTRY_GIT_VARIABLES, npmPathEntry } from './npmEnvironment.mjs'
+import { ENTRY_GIT_VARIABLES } from './npmEnvironment.mjs'
 import { gitCheckout } from './sourceBuildId.mjs'
 
 /** A test sets this variable, so that no test can reach the `acp.json` of the user. */
@@ -164,29 +166,13 @@ export async function removeEntry(path, now = new Date(), ours = ownEntry) {
   return { status: 'removed', backup, existing }
 }
 
-async function executable(path) {
-  try { await access(path, constants.X_OK); return (await stat(path)).isFile() }
-  catch { return false }
-}
-
-/**
- * The first `codex` on [path]. A directory that npm adds does not count, such as `node_modules/.bin`: the daemon does
- * not get it.
- */
-async function codexOnPath(path) {
-  for (const directory of path.split(delimiter).filter(item => isAbsolute(item))) {
-    if (npmPathEntry(directory)) continue
-    if (await executable(join(directory, 'codex'))) return join(directory, 'codex')
-  }
-  return undefined
-}
-
 /**
  * Checks what Megachat needs at run time, at the places that `CentralConfigurationService` and the shims use. Each
  * result is one line. The checks never print the output of Central or of the key helper of Claude Code. [binaries]
  * holds the platform binaries that npm installed with the agents. The checks pass when the platform and Central pass
  * and a child agent is ready: Claude with a binary and a key, or Codex with a binary. A Claude child gets its key from
- * the Central entry of Claude Code, else from the route of pi in Central.
+ * the Central entry of Claude Code, else from the route of pi in Central. The line about Junie names the `junie` on the
+ * `PATH` of a child, which has the directory of node and the directory of the Central command before [path].
  */
 async function checks({ configuration, platform, path, binaries }) {
   const lines = []
@@ -213,8 +199,11 @@ async function checks({ configuration, platform, path, binaries }) {
     lines.push(message(key, configuration.settings, configuration.keyHelperTimeout / 1000))
   }
   catch { lines.push(message('install.claudeCentral')) }
-  const codex = await codexOnPath(path)
+  const codex = await commandOnPath('codex', path)
   lines.push(codex ? message('install.codex', codex) : binaries.codex ? message('install.codexBundled') : message('install.codexMissing'))
+  // Junie is optional, so its line does not change the result of the checks.
+  const junie = await configuration.junieOnPath()
+  lines.push(junie ? message('install.junie', junie) : message('install.junieMissing'))
   const claudeReady = (userClaude || binaries.claude !== undefined) && claudeKey
   const codexReady = codex !== undefined || binaries.codex !== undefined
   return { lines, passed: platformPassed && centralPassed && (claudeReady || codexReady) }
@@ -267,48 +256,28 @@ export async function install({ environment = process.env, platform = process.pl
   return passed && placed ? 0 : 1
 }
 
-/** The longest wait of `uninstall` for the answer of `/health`. A daemon that does not answer in this time counts as gone. */
-const HEALTH_TIMEOUT_MS = 2000
-
-/** The client of the daemon of the state directory [directory], or `undefined` when no daemon answers `/health`. */
-async function runningDaemon(directory) {
-  try {
-    const client = await DaemonClient.connect(directory)
-    client.health = await client.json('/health', undefined, AbortSignal.timeout(HEALTH_TIMEOUT_MS))
-    return client
-  }
-  catch { return undefined }
-}
-
-/** One line for the turn and one line for each child run that is not in a final state, from the `/state` [state]. */
-async function workLines(state) {
-  // The module of the state is large, and only this check needs it. So each other command does not load it.
-  const { terminalStates } = await import('./MegachatState.mjs')
-  return [...(state.current ? [message('uninstall.busyTurn')] : []),
-    ...Object.values(state.runs ?? {}).filter(run => !terminalStates.has(run.status))
-      .map(run => message('uninstall.busyRun', run.id, run.agent ?? 'claude', run.status, run.title ?? ''))]
-}
-
 /**
  * The command `uninstall`: removes the entry `Megachat` that an `install` wrote from `acp.json`, then stops the daemon
- * of the state directory [directory]. First it reads `acp.json`: another entry or an unreadable file ends the command,
- * and the daemon continues to run. Then it refuses while the daemon runs a turn or a child run. The entry goes before
- * the stop, so an IDE that reads the file again does not start a new daemon. The command starts no daemon and writes no
- * file of the state directory. It prints the result, the state line, the reason of a failure, the line about the
- * switch of Air, and the version and the directory of this copy. It returns 0 only when the file holds no entry
- * `Megachat` and no daemon runs. A test can pass a short [stopTimeoutMs].
+ * of each state directory of the state tree of [directory]: the state directory of the machine scope, and each state
+ * directory of a project scope in it (see `stateDirectories`). `MEGACHAT_PROJECT` has no effect on the command. First it
+ * reads `acp.json`: another entry or an unreadable file ends the command, and the daemons continue to run. Then it
+ * refuses while one of the daemons runs a turn or a child run, and a line of a project scope names its project
+ * directory. The entry goes before the stop, so an IDE that reads the file again does not start a new daemon. The
+ * command starts no daemon and writes no file of a state directory. It prints the result, the state line, the reason of
+ * a failure, the line about the switch of Air, and the version and the directory of this copy. It returns 0 only when
+ * the file holds no entry `Megachat` and no daemon runs. A test can pass a short [stopTimeoutMs].
  */
 export async function uninstall({ environment = process.env, directory, print = line => process.stdout.write(`${line}\n`),
   root = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, ''), now = () => new Date(), stopTimeoutMs = STOP_WAIT_MS } = {}) {
   const path = acpConfigPath(environment)
-  let client
+  const daemons = []
   let gone = false
   let failed = false
   // The result of the file. It gives true when the file holds no entry `Megachat`.
   const reported = result => {
     switch (result.status) {
       case 'removed': print(message('uninstall.removed', path, result.backup)); return true
-      case 'absent': print(message(client ? 'uninstall.absent' : 'uninstall.notInstalled', path)); return true
+      case 'absent': print(message(daemons.length > 0 ? 'uninstall.absent' : 'uninstall.notInstalled', path)); return true
       case 'different': print(message('uninstall.different', path)); print(`"${ENTRY}": ${JSON.stringify(result.existing)}`); return false
       default: print(message('uninstall.unreadable', path)); return false
     }
@@ -316,8 +285,16 @@ export async function uninstall({ environment = process.env, directory, print = 
   const found = await findEntry(path, ownEntry)
   if (found.status === 'different' || found.status === 'unreadable') failed = !reported(found)
   else {
-    client = await runningDaemon(directory)
-    const work = client ? await workLines(await client.json('/state')) : []
+    const work = []
+    for (const item of await stateDirectories(directory)) {
+      const client = await runningDaemon(item)
+      if (!client) continue
+      daemons.push(client)
+      const lines = await workLines(await client.json('/state'))
+      // A line of the Megachat of a project names its project directory.
+      const project = item === directory ? undefined : await readProjectRecord(item).catch(() => undefined)
+      work.push(...lines.map(line => item === directory ? line : message('uninstall.busyProject', line, project ?? item)))
+    }
     if (work.length > 0) {
       print(message('uninstall.busy', path))
       for (const line of work) print(line)
@@ -326,10 +303,8 @@ export async function uninstall({ environment = process.env, directory, print = 
     else {
       gone = reported(found.status === 'ours' ? await removeEntry(path, now(), ownEntry) : found)
       failed = !gone
-      if (gone && client) {
-        try { await client.json('/shutdown', {}) }
-        catch { /* The daemon may close the connection while it stops. */ }
-        if (await processEnded(client.health.pid, stopTimeoutMs)) print(message('uninstall.stopped', client.health.pid))
+      for (const client of gone ? daemons : []) {
+        if (await stopDaemon(client, client.health.pid, stopTimeoutMs)) print(message('uninstall.stopped', client.health.pid))
         else {
           print(message('uninstall.stopTimeout', client.health.pid, stopTimeoutMs / 1000))
           failed = true

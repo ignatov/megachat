@@ -18,7 +18,7 @@ const FAKE_AGENT = fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))
 async function directories(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'megachat-accounts-')))
   t.after(() => rm(root, { force: true, recursive: true, maxRetries: 5 }))
-  for (const name of ['claude', 'codex', 'workspace']) await mkdir(join(root, name))
+  for (const name of ['claude', 'codex', 'junie', 'workspace']) await mkdir(join(root, name))
   return root
 }
 
@@ -66,6 +66,35 @@ test('the check reports an agent that does not start, a failed Central configura
   assert.ok(Date.now() - started < 3000)
   assert.deepEqual(accounts.map(account => [account.agent, account.status, account.problem]),
     [['claude', 'failed', message('accounts.timeout', 'Claude Code')], ['codex', 'failed', message('accounts.timeout', 'Codex')]])
+})
+
+test('the check includes Junie only when the command junie is on the PATH of a child', { timeout: 20000 }, async t => {
+  const root = await directories(t)
+  const launch = env => async agent => fake(root, agent, agent === 'junie' ? env : {})
+  // A machine without Junie: a row for Claude Code and a row for Codex, and no row and no process for Junie.
+  const without = { childLaunch: launch({}), junieOnPath: async () => undefined }
+  assert.deepEqual((await checkAccounts(without, { cwd: join(root, 'workspace') })).accounts.map(account => [account.agent, account.status]),
+    [['claude', 'started'], ['codex', 'started']])
+  assert.deepEqual(await readdir(join(root, 'junie')), [])
+  // Junie opens the session: the status started with the login unknown, no prompt, and the process stops after the check.
+  const present = { childLaunch: launch({}), junieOnPath: async () => '/opt/tools/junie' }
+  const { accounts } = await checkAccounts(present, { cwd: join(root, 'workspace') })
+  assert.deepEqual(accounts.map(account => account.agent), ['claude', 'codex', 'junie'])
+  assert.deepEqual(accounts[2], { agent: 'junie', status: 'started', login: 'unknown', note: message('accounts.started', 'Junie') })
+  // Junie gets the session request of a child: no options of Claude Code.
+  assert.deepEqual(JSON.parse(await readFile(join(root, 'junie', 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: false })
+  assert.ok(!(await readdir(join(root, 'junie'))).includes('dispatches'))
+  assert.ok(await stopped(Number(await readFile(join(root, 'junie', 'agent.pid'), 'utf8'))))
+  // Junie without a login refuses the session with authRequired.
+  const refused = { childLaunch: launch({ FAKE_ACP_LOGIN: 'missing' }), junieOnPath: async () => '/opt/tools/junie' }
+  assert.deepEqual((await checkAccounts(refused, { cwd: join(root, 'workspace') })).accounts[2], { agent: 'junie', status: 'failed', login: 'missing',
+    problem: 'Junie needs a login.', fix: 'Run "~/.local/bin/central login" in a terminal. Then run the check again.' })
+  // Each other failure of Junie has its text too.
+  const silent = { childLaunch: async agent => ({ ...fake(root, agent), args: ['-e', 'process.stdin.resume()'] }), junieOnPath: async () => '/opt/tools/junie' }
+  assert.deepEqual((await checkAccounts(silent, { cwd: join(root, 'workspace'), timeoutMs: 300 })).accounts[2], { agent: 'junie', status: 'failed',
+    login: 'unknown', problem: message('accounts.timeout', 'Junie'), fix: message('accounts.fix.timeout.junie') })
+  for (const step of ['start', 'central', 'session']) assert.ok(message(`accounts.fix.${step}.junie`).length > 0, step)
+  assert.match(message('tool.accounts'), /and Junie too when the command junie is on the PATH/)
 })
 
 test('the tool agents_accounts gives the result of the daemon check, and two calls share one check', { timeout: 20000 }, async t => {

@@ -51,7 +51,18 @@ async function refuseSettingsBaseUrl(cwd, baseUrl, resolveSettings) {
 const withoutBypass = request => Array.isArray(request?.options)
   ? { ...request, options: request.options.filter(option => !/bypass/i.test(String(option?.optionId))) } : request
 
-/** The extension request of the Claude and Codex adapters that adds a message to the turn that runs. */
+/**
+ * The value of the option of the config option `model` of a Junie session for the model ID [modelId], or `undefined`.
+ * [option] is that config option, with its options in a list or in groups. A value of Junie holds the route of the
+ * machine before the model ID, such as `v1:13:proxy:central:claude-opus-5-5`, so the setting cannot hold it. The option
+ * is the first one whose value is the model ID or ends with `:` and the model ID.
+ */
+export function junieModelValue(option, modelId) {
+  const options = (Array.isArray(option?.options) ? option.options : []).flatMap(item => Array.isArray(item?.options) ? item.options : [item])
+  return options.find(item => typeof item?.value === 'string' && (item.value === modelId || item.value.endsWith(`:${modelId}`)))?.value
+}
+
+/** The extension request of the Claude and Codex adapters and of Junie that adds a message to the turn that runs. */
 const STEER_METHOD = '_session/steering'
 /** The limit of the error output of a child agent, in MB. Above it, Megachat stops the run. */
 const MAX_STDERR_MB = 10
@@ -226,6 +237,13 @@ export class AcpRunService {
     let connection
     let updates = Promise.resolve()
     let dispatched = false
+    // The config option `model` that the session gave last: in the answer of `session/new` or `session/load`, or in a
+    // `config_option_update`. A Junie child with a model of the setting gets a value of its options.
+    let modelOption
+    const keepModelOption = options => {
+      const option = Array.isArray(options) ? options.find(item => item?.id === 'model') : undefined
+      if (option) modelOption = option
+    }
     // The request that the run waits for, so the log and the error of a failed run name it.
     let request = methods.agent.initialize
     // The end of the error output of the agent, for the log and the error of a failed run (see `keepErrorOutput`).
@@ -260,7 +278,7 @@ export class AcpRunService {
       const choice = values['children.permissionMode'] ?? 'inherit'
       const mode = agent === 'claude' ? CLAUDE_PERMISSION_MODES[choice] : undefined
       // The model setting of the agent. `inherit` gives no model, so the configuration of the agent decides.
-      const modelKey = agent === 'claude' ? 'children.claudeModel' : agent === 'codex' ? 'children.codexModel' : undefined
+      const modelKey = { claude: 'children.claudeModel', codex: 'children.codexModel', junie: 'children.junieModel' }[agent]
       const model = modelKey && (values[modelKey] ?? 'inherit') !== 'inherit' ? values[modelKey] : undefined
       const configured = await this.configuration.childLaunch(agent)
       const launch = { ...configured, ...Object.fromEntries(Object.entries(this.launch).filter(([, value]) => value !== undefined)) }
@@ -306,6 +324,7 @@ export class AcpRunService {
       connection = client({ name: 'air-megachat' })
         .onNotification(methods.client.session.update, ({ params }) => {
           if (!dispatched && params.update.sessionUpdate !== 'config_option_update') return
+          if (!dispatched) keepModelOption(params.update.configOptions)
           if (dispatched) work.transcript?.update(params.update)
           updates = updates.then(() => this.state.appendUpdate(run.id, generation, params.update))
           updates.catch(stop)
@@ -356,12 +375,14 @@ export class AcpRunService {
       if (run.providerSessionId) {
         requireCondition(initialized.agentCapabilities?.loadSession, 'agentLoad')
         request = methods.agent.session.load
-        await ctx.request(methods.agent.session.load, { ...params, sessionId: run.providerSessionId })
+        const session = await ctx.request(methods.agent.session.load, { ...params, sessionId: run.providerSessionId })
+        keepModelOption(session?.configOptions)
         sessionId = run.providerSessionId
       }
       else {
         request = methods.agent.session.new
         const session = await ctx.request(methods.agent.session.new, params)
+        keepModelOption(session.configOptions)
         sessionId = session.sessionId
       }
       // A refusal of the adapter is an error answer with a JSON-RPC code. The run then fails and sends no prompt. A closed
@@ -375,10 +396,14 @@ export class AcpRunService {
         // after the start with the model of the options, and a load continues with the model of the transcript. With
         // `inherit`, that stays so. An explicit model of the setting goes in its own request. It comes before the mode,
         // because a change of the model can change the mode `auto`. The Codex adapter takes the same request. It refuses
-        // a model that is not in the model list of Codex, and the next turn uses the model that it took.
+        // a model that is not in the model list of Codex, and the next turn uses the model that it took. Junie takes
+        // only a value of the model list of the session, so a Junie child gets the value of its option for the model
+        // ID. Without such an option, the run fails as for a refusal, and Junie gets no request.
+        const value = agent === 'junie' ? junieModelValue(modelOption, modelRef(model).modelId) : modelRef(model).modelId
+        if (value === undefined) throw new MegachatError('childJunieModel', model)
         request = methods.agent.session.setConfigOption
-        await ctx.request(methods.agent.session.setConfigOption, { sessionId, configId: 'model', value: modelRef(model).modelId })
-          .catch(refused(agent === 'codex' ? 'childCodexModel' : 'childModel', model))
+        await ctx.request(methods.agent.session.setConfigOption, { sessionId, configId: 'model', value })
+          .catch(refused({ codex: 'childCodexModel', junie: 'childJunieModel' }[agent] ?? 'childModel', model))
       }
       // The adapter takes the start mode from `permissions.defaultMode` of each settings file of Claude Code, also of the
       // files of the user, whatever `settingSources` says, and a load continues in the mode of the transcript. It ignores
@@ -405,6 +430,7 @@ export class AcpRunService {
       const added = ((await this.state.snapshot()).runs[run.id].steers ?? []).filter(item => item.delivery === 'fallback')
       const rules = this.childRules?.(run.cwd)
       // Claude Code never reads `AGENTS.md`. Without a `CLAUDE.md`, the prompt holds it, as the instructions of a pi child do.
+      // Codex and Junie read `AGENTS.md` by themselves, so their prompt holds no such block.
       const repository = agent === 'claude' ? await claudeChildRules(run.cwd).catch(() => undefined) : undefined
       const task = run.task === undefined ? run.prompt : `${run.prompt}\n\n${message('child.task')}\n${run.task}`
       work.transcript?.prompt(task, added)

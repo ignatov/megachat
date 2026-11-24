@@ -1,8 +1,9 @@
 import * as fileSystem from 'node:fs/promises'
 import { relative } from 'node:path'
 import { logFailure } from './messages.mjs'
-import { parseLine, readLines, timeOf } from './SessionLog.mjs'
+import { directoryOf, parseLine, readLines, timeOf } from './SessionLog.mjs'
 import { indexedTitle } from './SessionText.mjs'
+import { WAIT_STEPS } from './SessionStatus.mjs'
 import { readBackward } from './SessionTail.mjs'
 
 const HOUR_MS = 3600000
@@ -32,7 +33,7 @@ const fromRow = row => ({ path: row.path, agent: row.agent, ino: row.ino, size: 
   mtimeMs: row.last_write_at, step: row.last_step ?? undefined, read: true, error: false })
 
 /**
- * The live table of the session files of Claude Code, Codex and pi on the machine, for the tool `agents_running`. It
+ * The live table of the session files of Claude Code, Codex, pi and Junie on the machine, for the tool `agents_running`. It
  * exists only with the consent of the user, the setting `sessions.index`. For each file it keeps the path, the inode,
  * the size, the byte offset of the read, the agent, the session ID, the `cwd`, the title, the start time, the time of
  * the last write and the last step, and no message text. `sessions.sqlite` keeps the table, so a restart answers at
@@ -43,19 +44,50 @@ const fromRow = row => ({ path: row.path, agent: row.agent, ino: row.ino, size: 
  * newest first, and then the other files. After it, the table reads a file on a change event of the watch of the
  * provider roots, and a size poll every 2 seconds finds a write to a file that stays open. A read takes only the
  * appended lines. A smaller file or another inode means that the file is read again. Each file opens read-only.
+ *
+ * [scope] limits the table for the Megachat of one project (see the capability `project-scope`): a function that gives
+ * the listed directories. The table then keeps only a file whose `cwd` is a listed directory or a directory in one. It
+ * does not open a file whose path names another directory, and of each other file it first reads only the lines that
+ * give the `cwd`. Without [scope], the table has each session file of the machine.
  */
 export class SessionCatalog {
-  constructor({ index, sources, fs = fileSystem, clock = Date, timers = globalThis, pollMs = POLL_MS, secrets }) {
+  constructor({ index, sources, fs = fileSystem, clock = Date, timers = globalThis, pollMs = POLL_MS, secrets, scope }) {
     // No session runs in an archived file, so the table reads no source of archived sessions.
-    Object.assign(this, { index, sources: sources.filter(source => !source.archive), fs, clock, timers, pollMs, secrets })
+    Object.assign(this, { index, sources: sources.filter(source => !source.archive), fs, clock, timers, pollMs, secrets, scope })
     this.records = new Map()
+    // The files of another directory by their path, with the inode: the `cwd` of a file does not change, so a scoped
+    // table does not read such a file again.
+    this.outside = new Map()
     this.locks = new Map()
     this.queue = new Set()
     this.progress = { done: 0, total: 0, recent: false, complete: false }
   }
 
+  /** True when the table can keep a file with [cwd]: each file without a scope, else only a file of a listed directory. */
+  #inScope(cwd) { return !this.scope || Boolean(cwd && directoryOf(cwd, this.scope())) }
+
+  /** False when the path of a file names a directory out of the scope, as the path of a Claude Code or pi file does. */
+  #pathInScope(source, path) { return !this.scope || source.relevant(relative(source.root, path), this.scope()) }
+
+  /**
+   * Takes a change of the listed directories of the scope: the files of a directory that left the list leave the table,
+   * and a new pass reads the files of a directory that came into the list.
+   */
+  rescope() {
+    if (!this.scope || !this.lifetime || this.lifetime.signal.aborted) return
+    this.outside.clear()
+    this.passing = (this.passing ?? Promise.resolve()).then(async () => {
+      for (const record of [...this.records.values()]) if (!this.#inScope(record.cwd)) await this.#drop(record.path)
+      await this.#pass()
+    }).catch(error => { if (!this.lifetime.signal.aborted) logFailure('log.sessions', error) })
+  }
+
   async start() {
-    for (const row of await this.index.logs()) this.records.set(row.path, fromRow(row))
+    for (const row of await this.index.logs()) {
+      // A row of an earlier start can name a directory that the scope does not list.
+      if (this.#inScope(row.cwd)) this.records.set(row.path, fromRow(row))
+      else await this.index.dropLog(row.path)
+    }
     this.lifetime = new AbortController()
     this.timer = this.timers.setInterval(() => { this.#poll().catch(error => logFailure('log.sessions', error)) }, this.pollMs)
     this.timer?.unref?.()
@@ -123,7 +155,8 @@ export class SessionCatalog {
 
   /** Takes a change event of the watch of a provider root. The file is read soon, one read at a time. */
   changed(path) {
-    if (!this.lifetime || this.lifetime.signal.aborted || !this.#sourceOf(path)) return
+    const source = this.lifetime && !this.lifetime.signal.aborted ? this.#sourceOf(path) : undefined
+    if (!source || !this.#pathInScope(source, path)) return
     this.queue.add(path)
     this.draining ??= this.#drain().finally(() => { this.draining = undefined })
   }
@@ -161,13 +194,15 @@ export class SessionCatalog {
     for (const source of this.sources) {
       for (const { path } of await source.all(this.fs)) {
         if (signal.aborted) return
+        if (!this.#pathInScope(source, path)) continue
         const stat = await this.fs.stat(path).catch(() => undefined)
         if (stat?.isFile()) found.push({ source, path, stat })
       }
     }
     const present = new Set(found.map(file => file.path))
     for (const path of [...this.records.keys()]) if (!present.has(path)) await this.#drop(path)
-    for (const { source, path, stat } of found) {
+    // With a scope, a file gets its record only after a read gave a `cwd` of the scope.
+    for (const { source, path, stat } of this.scope ? [] : found) {
       if (!this.records.has(path)) this.records.set(path, { path, agent: source.agent, nameId: source.nameId(path), mtimeMs: stat.mtimeMs, read: false })
     }
     const recent = this.clock.now() - RECENT_MS
@@ -214,10 +249,25 @@ export class SessionCatalog {
     if (!stat.isFile()) { await this.#drop(path); return }
     const ino = String(stat.ino)
     const old = this.records.get(path)
-    if (old?.read && !old.error && old.ino === ino && old.size === stat.size && Math.floor(old.mtimeMs) === Math.floor(stat.mtimeMs)) return
+    // The table keeps the time of a recorded wait in the memory only. A record of an earlier start has the step
+    // without its time, so the tail is read one time more.
+    const timeless = WAIT_STEPS.has(old?.step) && old.stepAt === undefined
+    if (old?.read && !old.error && old.ino === ino && old.size === stat.size && Math.floor(old.mtimeMs) === Math.floor(stat.mtimeMs) && !timeless) return
+    if (this.scope && !(old?.read && old.ino === ino && this.#inScope(old.cwd))) {
+      if (this.outside.get(path) === ino) return
+      let cwd
+      try { cwd = this.#pathInScope(source, path) ? await this.#cwd(source, path, stat) : undefined }
+      catch { /* A file that Megachat cannot read is no file of the scope. */ }
+      if (!this.#inScope(cwd)) {
+        // A file without a `cwd` yet, such as a new file, gets its next read at its next change.
+        if (cwd) this.outside.set(path, ino)
+        await this.#drop(path)
+        return
+      }
+    }
     let record
     try {
-      record = old?.read && !old.error && old.ino === ino && stat.size >= old.size && stat.size - old.offset <= APPEND_LIMIT
+      record = old?.read && !old.error && old.ino === ino && stat.size >= old.size && stat.size - old.offset <= APPEND_LIMIT && !timeless
         ? await this.#append(source, old, stat)
         : await this.#full(source, path, stat, old?.read && old.ino === ino && stat.size >= old.size ? old : undefined)
     }
@@ -229,6 +279,18 @@ export class SessionCatalog {
     Object.assign(record, { path, agent: source.agent, nameId: source.nameId(path), ino, size: stat.size, mtimeMs: stat.mtimeMs, read: true, error: false })
     this.records.set(path, record)
     await this.index.saveLog(record)
+  }
+
+  /** Reads the first lines of a file until the session tells its `cwd`. A scoped table reads no more of a file of another directory. */
+  async #cwd(source, path, stat) {
+    if (source.describe) return (await source.describe(path, this.fs)).cwd
+    for await (const batch of readLines(this.fs, path, { end: Math.min(stat.size, HEAD_BYTES), chunkBytes: TAIL_BYTES, batchLines: 8 })) {
+      for (const line of batch.lines) {
+        const cwd = parseLine(source, line, path)?.parsed.meta?.cwd
+        if (cwd) return cwd
+      }
+    }
+    return undefined
   }
 
   /** Marks a file that Megachat cannot read, so the tool names it in `incomplete`. */
@@ -251,12 +313,14 @@ export class SessionCatalog {
   /** Reads the appended complete lines after the offset of [old]. */
   async #append(source, old, stat) {
     const record = { ...old }
+    // A file next to the log can come after the first lines of the log, so a record without a directory asks again.
+    if (source.describe && !record.cwd) this.#take(record, { value: {}, parsed: { meta: await source.describe(old.path, this.fs) } }, { newer: false })
     for await (const batch of readLines(this.fs, old.path, { start: old.offset, end: stat.size })) {
       for (const line of batch.lines) {
         const item = parseLine(source, line, old.path)
         if (!item) continue
         this.#take(record, item, { newer: true })
-        if (item.parsed.step) record.step = item.parsed.step
+        if (item.parsed.step) Object.assign(record, { step: item.parsed.step, stepAt: item.parsed.stepAt })
       }
       record.offset = batch.end
     }
@@ -269,17 +333,22 @@ export class SessionCatalog {
    */
   async #full(source, path, stat, old) {
     const record = old ? { sessionId: old.sessionId, cwd: old.cwd, startedAt: old.startedAt, title: old.title, titleRank: old.titleRank } : {}
+    // The files next to the log give the session data that the log does not hold, such as the project directory of Junie.
+    const described = source.describe ? await source.describe(path, this.fs) : undefined
+    if (described) this.#take(record, { value: {}, parsed: { meta: described } }, { newer: true })
     for await (const batch of readLines(this.fs, path, { end: Math.min(stat.size, HEAD_BYTES), chunkBytes: TAIL_BYTES, batchLines: 8 })) {
       for (const line of batch.lines) {
         const item = parseLine(source, line, path)
         if (item) this.#take(record, item, { newer: true })
       }
-      if (record.cwd && record.startedAt !== undefined && (record.sessionId || source.agent === 'claude')) break
+      // The log of a source with `describe` holds no more session data than its first lines give.
+      if (described || record.cwd && record.startedAt !== undefined && (record.sessionId || source.agent === 'claude')) break
     }
     // The tail comes newest first, so only a title of a higher rank replaces one that the tail gave already.
     const tail = {}
     let offset
     let step
+    let stepAt
     let whole = true
     for await (const { line, start, end, cut } of readBackward(this.fs, path, { end: stat.size, budget: TAIL_LIMIT })) {
       // Without a complete line in the read part, the next read starts at the end of the file.
@@ -287,7 +356,7 @@ export class SessionCatalog {
       if (cut) { whole = false; break }
       const item = line ? parseLine(source, line, path) : undefined
       if (item) {
-        step ??= item.parsed.step
+        if (step === undefined && item.parsed.step) ({ step, stepAt } = item.parsed)
         this.#take(tail, item, { newer: false })
       }
       const bytes = stat.size - start
@@ -298,6 +367,6 @@ export class SessionCatalog {
     if (tail.title !== undefined && !(record.titleRank > tail.titleRank)) Object.assign(record, { title: tail.title, titleRank: tail.titleRank })
     record.cwd ??= tail.cwd
     record.sessionId ??= tail.sessionId
-    return Object.assign(record, { offset: offset ?? 0, step })
+    return Object.assign(record, { offset: offset ?? 0, step, stepAt })
   }
 }

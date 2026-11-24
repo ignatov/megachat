@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import manifest from '../package.json' with { type: 'json' }
 import { megachatVersion } from '../src/MegachatBuild.mjs'
+import { message } from '../src/messages.mjs'
 import { CentralConfigurationService } from '../src/CentralConfigurationService.mjs'
 import { ACP_CONFIG_VARIABLE, acpConfigPath, earlierEntry, entryWithoutTimeLimits, install, RELEASE_ENTRY, stableNodePath, writeEntry } from '../src/MegachatInstall.mjs'
 
@@ -310,6 +311,37 @@ test('install says when no binary of an agent is available, and exits with 1 whe
   const claude = await installWith(t, await temporary(t), { binaries: { claude: '/npm/claude' }, claude: false })
   assert.ok(claude.text.includes('A Claude child uses the Claude Code that npm installed with Megachat.'), claude.text)
   assert.equal(claude.code, 0, claude.text)
+})
+
+test('install prints one line about Junie after the line about Codex, and the line does not change the exit code', { timeout: 60000 }, async t => {
+  const lineOf = async (junie, npm = false) => {
+    const directory = await temporary(t)
+    const { home, tools } = await fakeMachine(directory)
+    // The directory of node of this configuration is empty, so the test does not find a Junie of this machine.
+    const nodes = join(directory, 'empty')
+    const bin = join(directory, 'node_modules', '.bin')
+    for (const path of [nodes, bin]) await mkdir(path, { recursive: true })
+    if (junie) await writeFile(join(tools, 'junie'), '#!/bin/sh\n', { mode: 0o755 })
+    if (npm) await writeFile(join(bin, 'junie'), '#!/bin/sh\n', { mode: 0o755 })
+    const environment = { HOME: home, PATH: [bin, tools, '/usr/bin', '/bin'].join(delimiter), [ACP_CONFIG_VARIABLE]: join(directory, 'acp.json') }
+    const configuration = new CentralConfigurationService({ central: join(home, '.local', 'bin', 'central'), claude: join(home, '.local', 'bin', 'claude'),
+      settings: join(home, '.claude', 'settings.json'), environment, nodeDirectory: nodes })
+    const lines = []
+    const code = await install({ environment, platform: 'darwin', print: line => lines.push(line), configuration, binaries: {} })
+    return { code, lines, tools }
+  }
+  t.mock.method(process.stderr, 'write', () => true)
+  const present = await lineOf(true)
+  const line = `A Junie child uses Junie at ${join(present.tools, 'junie')}.`
+  assert.equal(message('install.junie', '/opt/tools/junie'), 'A Junie child uses Junie at /opt/tools/junie.')
+  assert.equal(present.lines.indexOf(line), present.lines.indexOf(`A Codex child uses Codex at ${join(present.tools, 'codex')}.`) + 1, present.lines.join('\n'))
+  assert.equal(present.code, 0, present.lines.join('\n'))
+  // Without the command, each other check passes, and the exit code stays 0. A directory that npm adds does not count.
+  for (const absent of [await lineOf(false), await lineOf(false, true)]) {
+    assert.ok(absent.lines.includes('The command junie is not on the PATH. A Junie child is not available until you install Junie CLI.'), absent.lines.join('\n'))
+    assert.ok(!absent.lines.some(text => text.startsWith('A Junie child uses')), absent.lines.join('\n'))
+    assert.equal(absent.code, 0, absent.lines.join('\n'))
+  }
 })
 
 test('install keeps a different entry and prints both entries', { timeout: 60000 }, async t => {

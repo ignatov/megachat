@@ -415,3 +415,110 @@ test('a Codex model that the agent refuses fails the run before the prompt, with
   assert.deepEqual(await configs(), ['model=gpt-unknown-9 before the prompt'])
   await assert.rejects(prompts(), { code: 'ENOENT' })
 })
+
+/** The model list of a Junie session on a machine with the route `proxy:central`, as the values of the fake agent. */
+const JUNIE_MODELS = 'v1:13:proxy:central:gemini-3.7-flash,v1:13:proxy:central:claude-opus-5-5'
+const junieEnv = (models = JUNIE_MODELS, more = {}) => ({ ...process.env, FAKE_ACP_MODEL_OPTIONS: models, ...more })
+
+test('children.agent junie sends a task without a named agent to Junie, and a settings.json without children.junieModel opens with inherit', { timeout: 20000 }, async t => {
+  const { service, cwd, launched, turn } = await fixture(t, { 'children.agent': 'junie' })
+  assert.deepEqual([service.settings.entry('children.junieModel').value, service.settings.entry('children.junieModel').source], ['inherit', 'default'])
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(Object.values(state.runs).map(run => [run.prompt, run.agent, run.status]), [['first task', 'junie', 'completed']])
+  assert.deepEqual(launched, ['junie'])
+})
+
+test('with children.junieModel inherit a Junie child gets no model request, and a model of the setting goes before the prompt as the value of the model list, also in a follow-up', { timeout: 30000 }, async t => {
+  const { service, cwd, turn, configs, modes } = await fixture(t, { 'children.agent': 'junie' }, { childLaunch: async () => ({ env: junieEnv() }) })
+  const section = async () => (await service.root.agent(BACKGROUND_CONTEXT)).sections.find(item => item.key === 'settings').render()
+  // The rules of the main agent give the value, and say what inherit, a refused model and the missing mode mean.
+  assert.ok((await section()).includes(message('instructions.junie', 'inherit')))
+  assert.match(message('instructions.junie', 'inherit'), /uses the model of children\.junieModel \(inherit\)\. inherit leaves it to the configuration of Junie\..*fails before it starts\. Megachat sends no mode to a Junie child, so the settings of Junie decide when the child asks for a permission\./)
+  let state = await turn('first', call('agents_spawn', { cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  assert.deepEqual([await configs(), await modes()], [[], []])
+  const [first] = Object.values(state.runs)
+  // A change applies to the next Junie child, also in the turn that made it. A follow-up loads its session and gets the model.
+  state = await turn('second', call('agents_settings', { action: 'set', key: 'children.junieModel', value: 'junie/claude-opus-5-5' }),
+    call('agents_send', { childSessionId: first.childSessionId, cwd, prompt: 'follow-up' }), fauxAssistantMessage('Sent.'))
+  assert.deepEqual(Object.values(state.runs).map(run => [run.agent, run.status]), [['junie', 'completed'], ['junie', 'completed']])
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'load', sessionId: 'fake-session', claudeOptions: false })
+  assert.deepEqual(await configs(), ['model=v1:13:proxy:central:claude-opus-5-5 before the prompt'])
+  assert.ok((await section()).includes(message('instructions.junie', 'junie/claude-opus-5-5')))
+  // A new task gets the model too. The setting does not change a Codex child or a Claude child.
+  await turn('third', call('agents_spawn', { cwd, prompt: 'third task' }), fauxAssistantMessage('Started.'))
+  await turn('codex', call('agents_spawn', { cwd, agent: 'codex', prompt: 'codex task' }), fauxAssistantMessage('Started.'))
+  await turn('claude', call('agents_spawn', { cwd, agent: 'claude', prompt: 'claude task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(await configs(), Array(2).fill('model=v1:13:proxy:central:claude-opus-5-5 before the prompt'))
+  assert.deepEqual(await modes(), [])
+})
+
+test('a Junie model ID that starts another model ID selects its own option, and a model list in a config_option_update counts', { timeout: 30000 }, async t => {
+  const models = 'v1:13:proxy:central:claude-opus-5-5,v1:13:proxy:central:claude-opus-5'
+  const first = await fixture(t, { 'children.agent': 'junie', 'children.junieModel': 'junie/claude-opus-5' }, { childLaunch: async () => ({ env: junieEnv(models) }) })
+  await first.turn('first', call('agents_spawn', { cwd: first.cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(await first.configs(), ['model=v1:13:proxy:central:claude-opus-5 before the prompt'])
+  // The answer of session/new holds no option here. The update before the answer gives the list.
+  const second = await fixture(t, { 'children.agent': 'junie', 'children.junieModel': 'junie/claude-opus-5-5' },
+    { childLaunch: async () => ({ env: junieEnv(JUNIE_MODELS, { FAKE_ACP_MODEL_OPTIONS_IN: 'update' }) }) })
+  const state = await second.turn('first', call('agents_spawn', { cwd: second.cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.equal(Object.values(state.runs)[0].status, 'completed')
+  assert.deepEqual(await second.configs(), ['model=v1:13:proxy:central:claude-opus-5-5 before the prompt'])
+})
+
+test('a model that the model list of Junie does not have, or that Junie refuses, fails the run before the prompt, with no continuation', { timeout: 30000 }, async t => {
+  const missing = await fixture(t, { 'children.agent': 'junie', 'children.junieModel': 'junie/gpt-unknown-9' },
+    { childLaunch: async () => ({ env: junieEnv('v1:13:proxy:central:claude-opus-5-5') }) })
+  t.mock.method(process.stderr, 'write', () => true)
+  let runs = Object.values((await missing.turn('first', call('agents_spawn', { cwd: missing.cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))).runs)
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].status, 'interrupted')
+  assert.equal(runs[0].error, message('error.childJunieModel', 'junie/gpt-unknown-9'))
+  assert.match(runs[0].error, /junie\/gpt-unknown-9/)
+  assert.equal(runs[0].autoResume, false)
+  // The list has no option for the model, so the child gets no model request and no prompt.
+  assert.deepEqual(await missing.configs(), [])
+  await assert.rejects(missing.prompts(), { code: 'ENOENT' })
+  // A session without a model list gives the same failure.
+  const none = await fixture(t, { 'children.agent': 'junie', 'children.junieModel': 'junie/claude-opus-5-5' })
+  runs = Object.values((await none.turn('first', call('agents_spawn', { cwd: none.cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))).runs)
+  assert.deepEqual(runs.map(run => [run.status, run.error, run.autoResume]), [['interrupted', message('error.childJunieModel', 'junie/claude-opus-5-5'), false]])
+  await assert.rejects(none.prompts(), { code: 'ENOENT' })
+  // Junie refuses the value of its own list: the run fails with the same text, and it sends no prompt.
+  const refused = await fixture(t, { 'children.agent': 'junie', 'children.junieModel': 'junie/claude-opus-5-5' },
+    { childLaunch: async () => ({ env: junieEnv(JUNIE_MODELS, { FAKE_ACP_MODELS: 'v1:13:proxy:central:gemini-3.7-flash' }) }) })
+  runs = Object.values((await refused.turn('first', call('agents_spawn', { cwd: refused.cwd, prompt: 'first task' }), fauxAssistantMessage('Started.'))).runs)
+  assert.deepEqual(runs.map(run => [run.status, run.error, run.autoResume]), [['interrupted', message('error.childJunieModel', 'junie/claude-opus-5-5'), false]])
+  assert.deepEqual(await refused.configs(), ['model=v1:13:proxy:central:claude-opus-5-5 before the prompt'])
+  await assert.rejects(refused.prompts(), { code: 'ENOENT' })
+})
+
+test('a project value of children.junieModel gives the model only to a Junie child of that project', { timeout: 30000 }, async t => {
+  const { service, cwd, turn, configs } = await fixture(t, { 'children.agent': 'junie' }, { childLaunch: async () => ({ env: junieEnv() }) })
+  const lib = join(cwd, '..', 'lib')
+  await mkdir(lib)
+  await service.state.addWorkspace(lib)
+  await service.settings.set('children.junieModel', 'junie/claude-opus-5-5', cwd)
+  assert.deepEqual([service.settings.values(cwd)['children.junieModel'], service.settings.values(lib)['children.junieModel'],
+    service.settings.values()['children.junieModel']], ['junie/claude-opus-5-5', 'inherit', 'inherit'])
+  const state = await turn('first', call('agents_spawn', { cwd, prompt: 'app task' }), call('agents_spawn', { cwd: lib, prompt: 'lib task' }),
+    fauxAssistantMessage('Started.'))
+  assert.deepEqual(Object.values(state.runs).map(run => [run.agent, run.status]), [['junie', 'completed'], ['junie', 'completed']])
+  assert.deepEqual(await configs(), ['model=v1:13:proxy:central:claude-opus-5-5 before the prompt'])
+  assert.equal(await readFile(join(lib, 'configs'), 'utf8').catch(() => ''), '')
+  assert.deepEqual((await readFile(join(lib, 'dispatches'), 'utf8')).trim(), 'lib task')
+})
+
+test('a Junie child gets no options of Claude Code, no mode and no model of the other agents, and no AGENTS.md block', { timeout: 20000 }, async t => {
+  const { cwd, turn, prompts, modes, configs } = await fixture(t, { 'children.permissionMode': 'ask', 'children.claudeModel': 'anthropic/claude-haiku-5-5',
+    'children.codexModel': 'openai/gpt-5.5' }, { childLaunch: async () => ({ env: junieEnv() }) })
+  // Junie reads AGENTS.md by itself, so the prompt holds no block of the rules of the repository.
+  await writeFile(join(cwd, 'AGENTS.md'), 'Run npm test after each change.\n')
+  const state = await turn('first', call('agents_spawn', { cwd, agent: 'junie', prompt: 'first task' }), fauxAssistantMessage('Started.'))
+  assert.deepEqual(Object.values(state.runs).map(run => [run.agent, run.status]), [['junie', 'completed']])
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: false })
+  await assert.rejects(readFile(join(cwd, 'claude-options.json'), 'utf8'), { code: 'ENOENT' })
+  assert.deepEqual([await modes(), await configs()], [[], []])
+  const rules = [message('child.rules'), message('child.rule.commit.allow'), message('child.rule.push.ask'), message('child.rule.daemonRestart.ask')].join('\n')
+  assert.deepEqual(await prompts(), [[rules, 'first task']])
+})

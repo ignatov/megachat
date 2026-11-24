@@ -5,11 +5,10 @@ import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@
 import { fileMaskEnvironment } from './fileMask.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { MegachatError, message } from './messages.mjs'
-import { CHILD_AGENTS } from './Settings.mjs'
 
 export const ACCOUNT_CHECK_TIMEOUT_MS = 30000
 const AUTH_REQUIRED = RequestError.authRequired().code
-const NAMES = { claude: 'Claude Code', codex: 'Codex' }
+const NAMES = { claude: 'Claude Code', codex: 'Codex', junie: 'Junie' }
 
 /** The result of an agent that failed at [step]. The texts come from the resources, never from the agent. */
 const failure = (agent, step, login = 'unknown') => ({ agent, status: 'failed', login, problem: message(`accounts.${step}`, NAMES[agent]),
@@ -71,8 +70,11 @@ async function checkAgent(configuration, agent, { cwd, timeoutMs, launch: overri
 
 /**
  * Checks each agent in parallel, each one with its own time limit. [configuration] gives the launch of an agent, as for
- * a child run. [cwd] is the directory of the session of the check: the workspace of Megachat, not a project.
+ * a child run. [cwd] is the directory of the session of the check: the workspace of Megachat, not a project. Junie is
+ * optional: the check includes it only when the command `junie` is on the `PATH` of a child, so a user without Junie
+ * gets no row and no problem of Junie.
  */
 export async function checkAccounts(configuration, { cwd, timeoutMs = ACCOUNT_CHECK_TIMEOUT_MS, launch } = {}) {
-  return { accounts: await Promise.all(CHILD_AGENTS.map(agent => checkAgent(configuration, agent, { cwd, timeoutMs, launch }))) }
+  const agents = ['claude', 'codex', ...(await configuration.junieOnPath?.() ? ['junie'] : [])]
+  return { accounts: await Promise.all(agents.map(agent => checkAgent(configuration, agent, { cwd, timeoutMs, launch }))) }
 }

@@ -395,14 +395,14 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   }
   await assert.rejects(stat(path), { code: 'ENOENT' }, 'Megachat deletes the index file without the consent')
   assert.match(await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8'),
-    /"Index past Claude, Codex and pi sessions in your projects, and read the logs of the agent sessions that run on this machine to show their status\? Megachat reads the content of a session only when you ask\. Everything stays local\."/)
+    /"Index past Claude, Codex, Junie and pi sessions in your projects, and read the logs of the agent sessions that run on this machine to show their status\? Megachat reads the content of a session only when you ask\. Everything stays local\."/)
   const setup = await readFile(new URL('../resources/instructions-onboarding.md', import.meta.url), 'utf8')
   assert.ok(setup.includes('The default is on.'))
   assert.ok(setup.includes('off deletes the index and the table of the running sessions'))
   assert.ok(setup.includes('Set sessions.index to on only when the user agrees.'))
   assert.ok((await readFile(new URL('../resources/instructions-onboarding-ghost.md', import.meta.url), 'utf8'))
     .includes('For the index of past sessions, the likely answer keeps the current value, for example "Keep the index on".'))
-  await assert.rejects(tool('sessions', { cwd: project, agent: 'pi', query: 'pine' }), { message: message('error.sessionsIndexOff') })
+  await assert.rejects(tool('sessions', { cwd: project, agent: 'pi', query: 'pine' }), { message: message('error.sessionsIndexOff', 'pi') })
   assert.deepEqual((await tool('sessions', { cwd: project, query: 'juniper' })).pages.map(page => page.agent), ['claude'])
   assert.deepEqual((await tool('settings', { action: 'get' })).sessionIndex, { state: 'off' })
   assert.deepEqual(fs.calls, [])
@@ -411,7 +411,7 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   await tool('settings', { action: 'set', key: 'sessions.index', value: 'on' })
   await main.sessionIndex.idle()
   assert.ok(fs.calls.length > 0)
-  assert.equal(watch.watchers.length, 4)
+  assert.equal(watch.watchers.length, 5)
   assert.equal((await stat(path)).mode & 0o777, 0o600)
   const found = await tool('sessions', { cwd: project, agent: 'pi', query: 'pine' })
   assert.equal(found.pages[0].source, 'index')
@@ -436,7 +436,7 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   assert.equal(event.data.type, 'sessions')
   assert.equal(event.data.sessions, 2)
   assert.equal(event.data.projects, 1)
-  assert.deepEqual(event.data.agents, { claude: 1, codex: 0, pi: 1 })
+  assert.deepEqual(event.data.agents, { claude: 1, codex: 0, junie: 0, pi: 1 })
   // The pi session ends with a tool result, so it is unfinished. The Claude session ends with a prompt.
   assert.deepEqual(event.data.unfinished.map(session => session.sessionId).sort(), ['one', 'pi-one'])
   assert.match(entryText(event).text, /^Past sessions indexed: 2 sessions in 1 projects\n/, 'The history search finds the summary')
@@ -444,7 +444,7 @@ test('with the consent off, Megachat reads no session file, watches nothing and 
   await tool('settings', { action: 'set', key: 'sessions.index', value: 'off' })
   await assert.rejects(stat(path), { code: 'ENOENT' })
   assert.ok(watch.watchers.every(item => item.closed))
-  await assert.rejects(tool('sessions', { cwd: project, agent: 'pi', query: 'pine' }), { message: message('error.sessionsIndexOff') })
+  await assert.rejects(tool('sessions', { cwd: project, agent: 'pi', query: 'pine' }), { message: message('error.sessionsIndexOff', 'pi') })
 })
 
 test('the first pass imports the projects of an IDE first and the newest files first, and shows its progress', async t => {
@@ -591,11 +591,11 @@ test('a root of a provider that does not exist at the start gets its watch when 
   const { index } = await service(t, directories, state, { watch: strict })
   await index.apply(ON)
   await index.idle()
-  assert.deepEqual(watch.watchers.map(item => [item.root, Boolean(item.options.recursive)]), [[home, false], [home, false], [home, false], [home, false]])
+  assert.deepEqual(watch.watchers.map(item => [item.root, Boolean(item.options.recursive)]), [[home, false], [home, false], [home, false], [home, false], [home, false]])
   await claudeSession(home, project, 'later', [claudeLine('u1', 'user', 'juniper later', project)])
   watch.change(home, 'unrelated.txt')
   await index.idle()
-  assert.equal(watch.watchers.filter(item => !item.closed).length, 4, 'A change of another name tries no watch')
+  assert.equal(watch.watchers.filter(item => !item.closed).length, 5, 'A change of another name tries no watch')
   watch.change(home, '.claude')
   await index.idle()
   const root = join(home, '.claude', 'projects')
@@ -1019,7 +1019,7 @@ test('the tools answer from the index, page through it, and fall back to the liv
   await index.idle()
 
   const found = await sessions.search({ cwd: project, query: 'juniper' })
-  assert.deepEqual(found.pages.map(page => [page.agent, page.source]), [['claude', 'index'], ['codex', undefined], ['pi', 'index']])
+  assert.deepEqual(found.pages.map(page => [page.agent, page.source]), [['claude', 'index'], ['codex', undefined], ['pi', 'index'], ['junie', 'index']])
   assert.equal(found.pages[0].matches.length, 1, 'One match for each session')
   assert.equal(found.pages[0].matches[0].sessionId, 'indexed')
   assert.match(found.pages[0].matches[0].text, /juniper/)
@@ -1068,7 +1068,7 @@ test('a failed catch-up gives an incomplete page and does not fail the session t
   await appendFile(path, claudeLine('u2', 'user', 'juniper two', project))
   fs.blocked.add(path)
   const found = await sessions.search({ cwd: project, query: 'juniper' })
-  assert.deepEqual(found.pages.map(page => [page.agent, page.source]), [['claude', 'index'], ['codex', undefined], ['pi', 'index']])
+  assert.deepEqual(found.pages.map(page => [page.agent, page.source]), [['claude', 'index'], ['codex', undefined], ['pi', 'index'], ['junie', 'index']])
   assert.equal(found.pages[0].complete, false)
   assert.equal(found.pages[0].error, message('sessions.incomplete'))
   assert.equal(found.pages[1].matches[0].sessionId, 'live', 'The live page stays')
@@ -1168,6 +1168,20 @@ test('the child MCP tools accept pi and say that the index is off', async t => {
   assert.match(off.content[0].text, /index of past sessions is off/)
   const read = await client.callTool({ name: 'session_history', arguments: { cwd: project, agent: 'pi', sessionId: 'x' } })
   assert.equal(read.isError, true)
+  // Junie without the index: the tools of a child take the agent junie, and the text names Junie.
+  const junie = await client.callTool({ name: 'sessions', arguments: { cwd: project, agent: 'junie' } })
+  assert.equal(junie.isError, true)
+  assert.ok(junie.content[0].text.includes('The index of past sessions is off, so Megachat cannot read Junie sessions. Only the user can turn it on, with the setting sessions.index.'),
+    junie.content[0].text)
+  const history = await client.callTool({ name: 'session_history', arguments: { cwd: project, agent: 'junie', sessionId: 'session-260101-120000-abcd' } })
+  assert.equal(history.isError, true)
+  assert.match(history.content[0].text, /cannot read Junie sessions/)
+  // With the index on, the same tools answer for the agent junie.
+  await index.apply(ON)
+  await index.idle()
+  const on = await client.callTool({ name: 'sessions', arguments: { cwd: project, agent: 'junie' } })
+  assert.notEqual(on.isError, true)
+  assert.deepEqual(JSON.parse(on.content[0].text).pages.map(page => [page.agent, page.source, page.matches.length]), [['junie', 'index', 0]])
 })
 
 test('each source parses a line into the session data and one entry with its key, role, time and tool kind', () => {
@@ -1175,7 +1189,7 @@ test('each source parses a line into the session data and one entry with its key
   assert.deepEqual([claude.root, codex.root, archive.root, pi.root], ['/home/user/.claude/projects', '/home/user/.codex/sessions',
     '/home/user/.codex/archived_sessions', '/home/user/.pi/agent/sessions'])
   assert.deepEqual(sessionSources({ home: '/h', environment: { PI_CODING_AGENT_SESSION_DIR: '/pi', CODEX_HOME: '/cx' } }).map(source => source.root).slice(1),
-    ['/cx/sessions', '/cx/archived_sessions', '/pi'])
+    ['/cx/sessions', '/cx/archived_sessions', '/pi', '/h/.junie/sessions'])
   const parse = (source, value, path = '/p/s1.jsonl') => source.parse(value, JSON.stringify(value), path)
   const time = '2026-11-10T10:00:00.000Z'
   assert.deepEqual(parse(claude, { type: 'assistant', uuid: 'u', cwd: '/w', timestamp: time,
@@ -1197,4 +1211,45 @@ test('each source parses a line into the session data and one entry with its key
   assert.equal(claude.relevant('-w/s1/subagents/a.jsonl', [{ cwd: '/w' }]), false)
   assert.equal(pi.relevant('--w-sub--/a.jsonl', [{ cwd: '/w' }]), true)
   assert.equal(codex.relevant('2026/11/10/rollout-x.jsonl'), true)
+})
+
+test('the import takes a Junie session of a listed directory with its directory from summary.json, and leaves out a session of another directory', async t => {
+  const directories = await fixture(t)
+  const { home, project, other } = directories
+  // The event log of Junie names no project: `summary.json` of the session folder does.
+  const junieSession = async (id, cwd, text) => {
+    const folder = join(home, '.junie', 'sessions', id)
+    await mkdir(folder, { recursive: true })
+    const lines = [{ kind: 'UserPromptEvent', requestId: `${id}-request`, prompt: text, presentablePrompt: text },
+      { kind: 'SessionA2uxEvent', event: { state: 'IN_PROGRESS', agentEvent: { kind: 'TerminalBlockUpdatedEvent', stepId: `${id}-step`, status: 'COMPLETED', command: 'ls juniper', output: 'juniper.txt' } } },
+      { kind: 'SessionA2uxEvent', event: { state: 'COMPLETED', agentEvent: { kind: 'ResultBlockUpdatedEvent', stepId: `${id}-result`, result: `The answer about ${text}` } } },
+      { kind: 'TaskState', state: 'COMPLETED' }]
+    await writeFile(join(folder, 'events.jsonl'), lines.map((value, index) => `${JSON.stringify({ ...value, timestampMs: NOW - DAY + index * 1000 })}\n`).join(''))
+    await writeFile(join(folder, 'summary.json'), JSON.stringify({ sessionId: id, createdAt: NOW - DAY, updatedAt: NOW - DAY, projectDir: cwd, taskName: `A task about ${text}` }))
+    return join(folder, 'events.jsonl')
+  }
+  const listed = await junieSession('session-261110-100000-abcd', project, 'the alpha cedar')
+  const outside = await junieSession('session-261110-110000-efgh', other, 'the beta cedar')
+  const fs = countingFs()
+  const state = fakeState({ workspaces: [project] })
+  const { index } = await service(t, directories, state, { fs })
+  await index.apply(ON)
+  await index.idle()
+  assert.deepEqual((await hits(index, 'junie', project, 'cedar')).map(hit => [hit.session.sessionId, hit.session.title, hit.entry.role]),
+    [['session-261110-100000-abcd', 'A task about the alpha cedar', 'user']])
+  assert.equal((await hits(index, 'junie', project, 'juniper')).length, 1)
+  assert.equal((await hits(index, 'junie', other, 'cedar')).length, 0)
+  // The prompt, the command and the reply of the listed session, and no entry of the other one.
+  assert.deepEqual([(await index.store.counts()).sessions, (await index.store.counts()).entries], [1, 3])
+  // The import read the summary of each folder, and the log of the listed session only.
+  const opened = fs.calls.filter(([name]) => name === 'open').map(([, path]) => path)
+  assert.ok(opened.includes(listed))
+  assert.ok(!opened.includes(outside))
+  assert.ok(opened.includes(join(home, '.junie', 'sessions', 'session-261110-110000-efgh', 'summary.json')))
+  // The summary of the first pass counts the agent junie.
+  assert.deepEqual(state.summaries.at(-1).agents, { claude: 0, codex: 0, junie: 1, pi: 0 })
+  // A directory that the user adds later brings its old session of Junie.
+  state.set({ workspaces: [project, other] })
+  await index.idle()
+  assert.deepEqual((await hits(index, 'junie', other, 'cedar')).map(hit => hit.session.sessionId), ['session-261110-110000-efgh'])
 })

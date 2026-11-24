@@ -30,7 +30,7 @@ export const NOTE_KIND = 'air.megachat.note'
 export const NOTE_PROVIDER = 'megachat'
 const TITLE_LIMIT = 80
 
-const agentName = agent => ({ claude: 'Claude Code', codex: 'Codex', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
+const agentName = agent => ({ claude: 'Claude Code', codex: 'Codex', junie: 'Junie', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
 
 /**
  * The key of the record of a session: a hash of the agent, the session ID and the process. So the state holds no
@@ -44,7 +44,8 @@ export function noteKey(row) {
 /**
  * True when the row [row] of the view of `agents_running` gives a note at the time [now]: a session that is `stuck`, or
  * a session outside Megachat that waits for a permission for [PERMISSION_NOTE_MS] or more. A child of Megachat that
- * waits for a permission shows a dialog in the chat, so it gets no note.
+ * waits for a permission shows a dialog in the chat, so it gets no note. The start of the wait is the start in the
+ * process file of Claude Code, or the time of the event of the wait in the log of Junie.
  */
 export function needsNote(row, now) {
   if (!NOTE_STATUSES.has(row.status) || !Number.isFinite(row.statusSince)) return false

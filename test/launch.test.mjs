@@ -43,6 +43,56 @@ test('Codex runs through Central with the passed command and the node of Megacha
   assert.equal(path.at(-1), '/usr/bin')
 })
 
+/** A directory with a fake Central command and, with [junie], a fake command `junie` next to it. */
+async function junieMachine(t, { junie = true } = {}) {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-junie-')))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const tools = join(directory, 'tools')
+  const nodes = join(directory, 'nodes')
+  for (const path of [tools, nodes]) await mkdir(path)
+  await writeFile(join(tools, 'central'), '#!/bin/sh\n', { mode: 0o755 })
+  if (junie) await writeFile(join(tools, 'junie'), '#!/bin/sh\n', { mode: 0o755 })
+  return { directory, tools, nodes, central: join(tools, 'central') }
+}
+
+test('a Junie child starts as central run junie -- --acp=true, with the environment of a Codex child and no shim on its PATH', async t => {
+  const { tools, nodes, central } = await junieMachine(t)
+  const daemon = { PATH: '/usr/bin', HTTPS_PROXY: 'http://proxy.test:3128', JUNIE_DATA: '/junie', MEGACHAT_HOME: '/state',
+    ANTHROPIC_API_KEY: 'user-key', CLAUDE_CONFIG_DIR: '/claude-config', CLAUDECODE: '1' }
+  const configuration = new CentralConfigurationService({ central, environment: daemon, nodeDirectory: nodes })
+  const launch = await configuration.childLaunch('junie')
+  assert.equal(launch.command, central)
+  assert.deepEqual(launch.args, ['run', 'junie', '--', '--acp=true'])
+  // Junie gets the variables of the user, and no variable of Megachat or of Claude Code.
+  for (const name of ['HTTPS_PROXY', 'JUNIE_DATA']) assert.equal(launch.env[name], daemon[name], name)
+  assert.deepEqual(Object.keys(launch.env).filter(name => /^(ANTHROPIC_|CLAUDE|MEGACHAT_)/.test(name)), [])
+  // The node of Megachat, then the directory of the Central command, then the PATH of the daemon. Junie needs no shim.
+  assert.deepEqual(launch.env.PATH.split(delimiter), [nodes, tools, '/usr/bin'])
+  assert.equal(await configuration.junieOnPath(), join(tools, 'junie'))
+})
+
+test('without the command junie on the PATH of a child, the launch of a Junie child fails with the text of the missing command', async t => {
+  const { tools, nodes, central, directory } = await junieMachine(t, { junie: false })
+  // A file that the user cannot run, a directory with the name, and a directory that npm adds do not count.
+  await writeFile(join(nodes, 'junie'), '#!/bin/sh\n', { mode: 0o644 })
+  await mkdir(join(tools, 'junie'))
+  const npm = join(directory, 'node_modules', '.bin')
+  await mkdir(npm, { recursive: true })
+  await writeFile(join(npm, 'junie'), '#!/bin/sh\n', { mode: 0o755 })
+  const configuration = new CentralConfigurationService({ central, environment: { PATH: [npm, '/usr/bin'].join(delimiter) }, nodeDirectory: nodes })
+  assert.equal(await configuration.junieOnPath(), undefined)
+  await assert.rejects(configuration.childLaunch('junie'), { code: 'junieMissing', message: message('error.junieMissing') })
+  assert.equal(message('error.junieMissing'),
+    'The command junie is not on the PATH, so Megachat did not start the Junie task. Install Junie CLI, or give the task to Claude or Codex.')
+  // A junie later on the PATH of the daemon counts.
+  const later = join(directory, 'later')
+  await mkdir(later)
+  await writeFile(join(later, 'junie'), '#!/bin/sh\n', { mode: 0o755 })
+  const found = new CentralConfigurationService({ central, environment: { PATH: [npm, later].join(delimiter) }, nodeDirectory: nodes })
+  assert.equal(await found.junieOnPath(), join(later, 'junie'))
+  assert.deepEqual((await found.childLaunch('junie')).args, ['run', 'junie', '--', '--acp=true'])
+})
+
 test('Claude runs the passed command and keeps its cwd and environment under the Central environment', async () => {
   const configuration = new CentralConfigurationService({ environment: {
     PATH: '/usr/bin', [CLAUDE_ACP_VARIABLE]: '{"command":"/air/claude-agent-acp","env":{"AGENT":"1","ANTHROPIC_API_KEY":"agent"}}',

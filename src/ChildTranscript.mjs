@@ -14,7 +14,7 @@ const TITLE_LIMIT = 300
 const TOOL_LIMIT = 1000
 const FILE_NAME = /^([0-9a-f-]{36})\.txt$/
 
-const agentName = agent => agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude'
+const agentName = agent => ({ codex: 'Codex', junie: 'Junie', pi: 'Pi' })[agent] ?? 'Claude'
 const clock = () => new Date().toTimeString().slice(0, 8)
 const clip = text => {
   const line = String(text ?? '').replace(/\s+/g, ' ').trim()

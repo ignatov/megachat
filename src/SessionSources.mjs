@@ -1,12 +1,13 @@
 import { homedir } from 'node:os'
 import { ClaudeSessionSource } from './ClaudeSessionSource.mjs'
 import { CodexArchiveSource, CodexSessionSource } from './CodexSessionSource.mjs'
+import { JunieSessionSource } from './JunieSessionSource.mjs'
 import { PiSessionSource } from './PiSessionSource.mjs'
 
 /**
  * The sources of past sessions: one for each agent. Each source has one interface, so the session index and a reader
  * of the tail of a log use the same code:
- * - `agent` is `claude`, `codex` or `pi`. `root` is the directory that holds the session files.
+ * - `agent` is `claude`, `codex`, `junie` or `pi`. `root` is the directory that holds the session files.
  * - `files(directories, fs)` gives `{ path, directory }` for each session file that can belong to one of the listed
  *   [directories]. `directory` is the listed directory when the path tells it, else undefined. The list can hold a
  *   file of another directory: only the `cwd` of the session tells it.
@@ -19,7 +20,13 @@ import { PiSessionSource } from './PiSessionSource.mjs'
  *   `timestamp` and `text`, or neither. `role` is `user`, `assistant` or `tool`. `tool` is `call`, `result` or
  *   undefined. `key` is the entry ID of the provider, so a copy of an entry in a fork gets the same key. `step` tells
  *   the step of the session that the line shows: `call`, `result`, `prompt` and `open` while the agent owes the next
- *   step, `reply` and `end` after a finished turn, or undefined for a line that changes no step.
+ *   step, `reply` and `end` after a finished turn, or undefined for a line that changes no step. A log that records a
+ *   wait for the user gives two more steps: `permission` for a permission request and `question` for a question to the
+ *   user. Only the source of Junie gives them. `stepAt` is the time of the line of a step, when the line has one: it
+ *   is the start of such a wait.
+ * - `describe(path, fs)`, when a source has it, gives the session data of [path] that other files hold, as `meta` of
+ *   `parse`. The event log of Junie holds no project directory: the files next to it do. Each reader calls it before
+ *   the lines of the log.
  * - `keepsOpen` is true for an agent that keeps the session file open while the session is loaded: Codex.
  * - `archive` is true for a source of archived sessions: the archived sessions of Codex. The index reads it, and the
  *   live table of the running sessions does not.
@@ -30,5 +37,5 @@ import { PiSessionSource } from './PiSessionSource.mjs'
  */
 export function sessionSources({ home = homedir(), environment = process.env } = {}) {
   return [new ClaudeSessionSource({ home, environment }), new CodexSessionSource({ home, environment }),
-    new CodexArchiveSource({ home, environment }), new PiSessionSource({ home, environment })]
+    new CodexArchiveSource({ home, environment }), new PiSessionSource({ home, environment }), new JunieSessionSource({ home, environment })]
 }

@@ -4,8 +4,10 @@ import { resolve, sep } from 'node:path'
 import { AGENTS, agentSessions } from './AgentProcesses.mjs'
 import { logFailure, message, requireCondition } from './messages.mjs'
 import { processTable } from './ProcessTable.mjs'
+import { directoriesOf } from './ProjectDirectories.mjs'
+import { directoryOf } from './SessionLog.mjs'
 import { linkLogs } from './SessionLinks.mjs'
-import { ACTIVE_MS, OPEN_STEPS, processWaitStatus, sessionStatus } from './SessionStatus.mjs'
+import { ACTIVE_MS, OPEN_STEPS, processWaitStatus, sessionStatus, WAIT_STEPS } from './SessionStatus.mjs'
 
 /** Some calls in one turn share one view, so they make one `ps` call. `scannedAt` gives the age of the view. */
 export const SNAPSHOT_TTL_MS = 5000
@@ -107,6 +109,12 @@ export class RunningAgents {
       files: catalog?.source(row.agent)?.keepsOpen ? this.directories.get(row.pid)?.files ?? [] : [] }))
     const unreadable = rows.filter(row => row.cwd === null).length
     if (unreadable) incomplete.push(message('running.incomplete.cwd', unreadable))
+    // The Megachat of one project has only the sessions of its listed directories: a session of another directory, and a
+    // session without a known directory, is absent for the tools, the notes and the stop (see `project-scope`).
+    if (this.state.project) {
+      const listed = directoriesOf(snapshot)
+      for (let index = rows.length - 1; index >= 0; index--) if (!(rows[index].cwd && directoryOf(rows[index].cwd, listed))) rows.splice(index, 1)
+    }
     const uncertain = rows.filter(row => row.ownership === 'unknown').length
     if (uncertain) incomplete.push(message('running.incomplete.owner', uncertain))
     const view = catalog ? await this.#withLogs(rows, catalog, scannedAt, incomplete)
@@ -200,9 +208,12 @@ export class RunningAgents {
       pid: row.pid, slot, agent: row.agent, startedAt: row.startedAt, parent: row.parent, cwd: row.cwd,
       sessionId: sessionId ?? '', title: row.run?.title || known?.title || '',
       status, lastActivityAt,
-      // The start of the status, for the notes of `SessionNotes`: the start of the wait in the process file, or the last
-      // log write of a stuck session. The output of the tool does not give it.
-      statusSince: wait ? row.process.wait.since : status === 'stuck' ? lastActivityAt : null,
+      // The start of the status, for the notes of `SessionNotes`: the start of the wait in the process file, the time of
+      // the event of a wait that the log records, or the last log write of a stuck session. Junie writes a tip to its
+      // log every half minute while it waits, so the last write is no start of its wait. The output of the tool does
+      // not give the start.
+      statusSince: wait ? row.process.wait.since : status === 'stuck' ? lastActivityAt
+        : !row.run?.permission && WAIT_STEPS.has(known?.step) ? known.stepAt ?? null : null,
       state: row.ownership === 'owned' ? cpu || written ? 'active' : 'idle' : row.ownership,
     }
   }

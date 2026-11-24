@@ -7,7 +7,7 @@ import { terminalStates } from './MegachatState.mjs'
  */
 
 /** The name of each agent for the user, also the name of the service of an agent that owns a session. */
-const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', pi: 'pi', opencode: 'OpenCode' }
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', junie: 'Junie', pi: 'pi', opencode: 'OpenCode' }
 export const AGENTS = Object.keys(AGENT_NAMES)
 const MEGACHAT = 'Megachat'
 
@@ -21,6 +21,9 @@ const PROGRAMS = [
   { agent: 'codex', role: 'adapter', names: ['codex-acp'], script: /\/codex-acp\// },
   { agent: 'claude', role: 'agent', names: ['claude'], script: /\/@anthropic-ai\/claude-code\// },
   { agent: 'codex', role: 'agent', names: ['codex'], script: /\/@openai\/codex\// },
+  // Junie is a native program in the app bundle `junie.app`, also in its ACP mode for an IDE or for Megachat. Its rule
+  // comes before the rule of an app bundle, so the bundle is no owner of the session.
+  { agent: 'junie', role: 'agent', names: ['junie'], script: /\/@jetbrains\/junie(-cli)?\// },
   { agent: 'pi', role: 'agent', names: ['pi'], script: /\/pi-coding-agent\// },
   { agent: 'opencode', role: 'agent', names: ['opencode'], script: /\/opencode-ai\// },
 ]

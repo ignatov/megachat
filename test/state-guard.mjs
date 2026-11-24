@@ -5,7 +5,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HOME_VARIABLE, LEGACY_VARIABLE } from '../src/MegachatHome.mjs'
+import { HOME_VARIABLE, LEGACY_VARIABLE, PROJECT_VARIABLE } from '../src/MegachatHome.mjs'
 import { ACP_CONFIG_VARIABLE } from '../src/MegachatInstall.mjs'
 
 // `defaultStateDirectory` ignores an empty home variable, so an empty value counts as unset.
@@ -15,6 +15,8 @@ if (!process.env[HOME_VARIABLE]) {
   process.once('exit', () => rmSync(home, { recursive: true, force: true }))
 }
 process.env[LEGACY_VARIABLE] ??= ''
+// The scope of the shell that started the tests must not reach a test. A test of a project scope sets the variable itself.
+delete process.env[PROJECT_VARIABLE]
 if (!process.env[ACP_CONFIG_VARIABLE]) {
   const directory = mkdtempSync(join(tmpdir(), 'megachat-acp-guard-'))
   process.env[ACP_CONFIG_VARIABLE] = join(directory, 'acp.json')

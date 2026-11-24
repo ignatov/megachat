@@ -2,7 +2,9 @@
 
 Megachat is one durable chat for a user on a machine. It is an ACP agent for JetBrains Air.
 Each project window and each JetBrains product of the user opens the same conversation.
-The main agent delegates file and command work to Claude Code and Codex, and lists that work as background tasks.
+You add it with "Spawn Megachat" in Agent Sessions: for the IDE, or for one project, and then it works only in that
+project (see [The scopes of Megachat](#the-scopes-of-megachat)).
+The main agent delegates file and command work to Claude Code, Codex and Junie, and lists that work as background tasks.
 A daemon keeps the conversation and the work when the IDE closes.
 All model traffic goes through JetBrains Central.
 
@@ -22,16 +24,21 @@ curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh
 ```
 
    Without the line: [Install without the setup line](#install-without-the-setup-line).
-2. In Air, select Megachat in the agent list. The IDE needs no restart. The first start takes 30 to 100 seconds.
+2. In Air, press "Spawn Megachat" in Agent Sessions. The button at the top adds the Megachat of the IDE, for all the
+   projects. The action "Spawn Megachat" in the menu of a project or a folder adds a Megachat for that project only
+   (see [The scopes of Megachat](#the-scopes-of-megachat)). The IDE needs no restart. The first start takes 30 to 100
+   seconds. Before you add a Megachat, the IDE starts nothing of Megachat.
 3. Megachat writes "Welcome to Megachat" and asks four setup questions: the agents, the index of past sessions, the
-   known repositories and the folder of new projects. Answer, or skip. See [Settings and the first run](#settings-and-the-first-run).
+   known repositories and the folder of new projects. The Megachat of a project asks the first two. Answer, or skip.
+   See [Settings and the first run](#settings-and-the-first-run).
 4. Check it: write a message in the chat. Or run `npx -y "github:ignatov/megachat#semver:x" status` in a terminal.
    It prints JSON with the `version` of the running daemon.
 5. If it does not work, look in `idea.log` (Help | Show Log in Finder) for the line "This ACP client has no Air
    support for Megachat": then the build is too old. See [Report a problem](#report-a-problem).
 
 For a Codex child, `codex` must be on the `PATH`, or Megachat uses the Codex of its npm install. The setup line runs no
-`central add codex`. See "The machine needs" below.
+`central add codex`. A Junie child needs the command `junie` of Junie CLI on the `PATH`: Megachat installs no Junie.
+See "The machine needs" below.
 
 ## Install for a colleague
 
@@ -43,8 +50,8 @@ curl -fsSL https://github.com/ignatov/megachat/releases/latest/download/setup.sh
 
 1. Run the line.
 2. Log in when Central asks. The line starts `central login` in the terminal.
-3. In the IDE, select Megachat in the agent list of Air. The IDE reads the change of `~/.jetbrains/acp.json` itself,
-   so it needs no restart.
+3. In the IDE, press "Spawn Megachat" in Agent Sessions of Air. The IDE reads the change of `~/.jetbrains/acp.json`
+   itself, so it needs no restart.
 
 Megachat needs Node.js 22.19 or later, and any newer Node.js works (22, 24 and 25 are tested). When the `PATH` has
 no such Node.js, the script downloads one. When the line fails, read `$TMPDIR/megachat-setup.log`, and try
@@ -79,7 +86,7 @@ machine changes nothing. The script runs no `central add codex` (see "The machin
 ### Install without the setup line
 
 When the setup line cannot run, install what "The machine needs" lists. Then run this line once in a terminal, and
-select Megachat in the agent list of Air:
+press "Spawn Megachat" in Agent Sessions of Air:
 
 ```sh
 npx -y "github:ignatov/megachat#semver:x" install
@@ -103,7 +110,8 @@ The IDE starts the command `npx` with its own Node.js and its own npm cache. So 
 starts the last release. The `env` is a time limit of git for a stalled network, as "The start in the IDE" tells. The
 exit code of the line is 0 only when the entry is in place, the checks of the platform and of Central passed, and a
 child agent is ready: Claude with a binary and a key, or Codex with a binary. The lines about Claude Code and Codex say
-which binary and which key a child uses. Before its last line, the line says that it cannot check the IDE build, and
+which binary and which key a child uses. One more line says which `junie` a Junie child uses, or that the command is
+not on the `PATH`. Junie is optional, so that line does not change the exit code. Before its last line, the line says that it cannot check the IDE build, and
 that each start in the IDE needs the network. The last line gives the version and the directory of the copy that ran the
 install. That copy is in the npm cache of the terminal, and the IDE does not use it.
 
@@ -141,6 +149,14 @@ The machine needs:
   Else they use the Codex that npm installed with Megachat. `central run codex` gives Codex the route of Central, so
   `central add codex` is not necessary. Without it, Central puts the route in the command line of Codex, where each
   local user can read the key of Central, and a Codex child runs without the plugin of Central.
+- Optional: the Junie command, `junie`, on the `PATH`. A Junie child uses it, and without it a task for Junie fails
+  before it starts, with a text that says so. Megachat looks in the directory of its Node.js, in the directory of
+  `~/.local/bin/central`, and then on the `PATH`. The documentation of Junie CLI gives the install line
+  `curl -fsSL https://junie.jetbrains.com/install.sh | bash`. Nobody ran that line for Megachat: the machine of the
+  check had Junie CLI 26.10.5 already, at `~/.local/bin/junie`. A Junie child starts as `central run junie --
+  --acp=true`, so Central gives the route. On the machine of the check, `central agents` gave "installed · configured"
+  for Junie, and Central put no route in the command line of Junie. Nobody checked a machine without
+  `central add junie`.
 - macOS. Nobody tested Megachat on another platform.
 
 ### The start, the update and the removal
@@ -240,6 +256,20 @@ Before the daemon stops for an update, it moves the directory `_npx/<hash>` of i
 `<hash>.megachat-old-<time>` in the same directory, so npx cannot reuse the old copy. The next daemon removes such
 directories of its own entry. It changes no other directory of the npm cache.
 
+Each Megachat has its own daemon (see [The scopes of Megachat](#the-scopes-of-megachat)), and the daemons of the IDE
+run from one copy. A daemon loads files of its copy also after its start. So the daemons of one copy stop for an update
+together: the daemon that starts the update asks each other daemon of its copy, and it stops only when each of them
+has no turn, no child task and no request that waits. Then it stops them, stops itself, and moves the copy. When one
+daemon has work, no daemon stops, and the next check of the conditions asks again. The copy is one, so the update is
+one: a daemon with `update.auto` off starts no update, but a daemon of the same copy with `update.auto` on stops it.
+A daemon of a git checkout or of another copy continues to run.
+
+**Remove one Megachat.** The action "Remove Megachat" of Air sends the request `_agent/stop` to that Megachat. The
+daemon of that Megachat stops when no turn and no child task runs, and the row leaves the session list. While work
+runs, nothing changes, and Air shows the reason: stop the work in the chat, or wait, then remove Megachat again. The
+state directory stays, so a new "Spawn Megachat" gives the same conversation, settings and memory. Each IDE keeps its
+own list of the added Megachats: a second IDE that still shows the row starts the daemon again when you open it there.
+
 **Removal.** Close the Megachat sessions in the IDE first. Then run the uninstall line in a terminal:
 
 ```bash
@@ -251,12 +281,14 @@ uninstall` with the terminal copy that `install` named in its last line, or `nod
 checkout. `uninstall` removes the entry `Megachat` from `~/.jetbrains/acp.json` (or from the file of
 `MEGACHAT_ACP_CONFIG`) and copies the earlier file to `acp.json.before-megachat-<UTC time>`. It removes only an entry
 that an `install` of Megachat wrote. It keeps another entry `Megachat` and tells you to remove it by hand. Then it stops
-the daemon and waits until its process ends, at most 30 seconds. It starts no daemon. While a turn or a child task
-runs, it changes nothing, lists the work and exits with 1: wait until the work ends, or stop it in the chat, then run
-it again. It exits with 0 only when the file has no entry `Megachat` and no daemon runs.
+the daemon of each Megachat, the one of the IDE and the one of each project, and waits until each process ends, at
+most 30 seconds. It starts no daemon. While a turn or a child task of one of them runs, it changes nothing, lists the
+work and exits with 1: wait until the work ends, or stop it in the chat, then run it again. A line about the Megachat
+of a project names the directory of that project. `MEGACHAT_PROJECT` has no effect on `uninstall`. It exits with 0 only
+when the file has no entry `Megachat` and no daemon runs.
 
-The state directory `~/.jetbrains/air/megachat` stays, with the conversation, the memory and the settings. The install
-line brings Megachat back as it was. To delete all of it, delete the directory yourself. `uninstall` also keeps the
+The state directory `~/.jetbrains/air/megachat` stays, with the conversation, the memory and the settings of each
+Megachat. The install line brings Megachat back as it was. To delete all of it, delete the directory yourself. `uninstall` also keeps the
 directory `_npx/<hash>` that holds `node_modules/megachat`, in the npm cache of the IDE and in `~/.npm`. Delete these
 directories yourself when you do not want them.
 
@@ -316,6 +348,11 @@ build` writes the version of the checkout into the bundle.
 Run each command as `node bin/megachat.mjs <command> [<directory>]`, or as `node src/main.mjs` in a checkout. The
 optional directory selects a state directory of its own, for a test or for development.
 
+`start`, `status`, `stop`, `compact`, `acp` and `daemon` act on the Megachat of the IDE. With the variable
+`MEGACHAT_PROJECT` set to a project directory, they act on the Megachat of that project, for example
+`MEGACHAT_PROJECT=~/src/app node bin/megachat.mjs status`. Use an absolute path in the variable. `install` and
+`uninstall` do not read the variable.
+
 | Command | What it does |
 |---|---|
 | `start` | Starts the daemon in the background when no daemon runs, and waits until it answers. It replaces a daemon of another build. It also replaces a daemon with other agent commands, when this command passes agent commands. |
@@ -325,7 +362,52 @@ optional directory selects a state directory of its own, for a test or for devel
 | `acp` | Starts the daemon when necessary and speaks ACP on the standard input and output. The IDE runs this command. |
 | `daemon` | Runs the daemon in the foreground. `start` runs this command. It ends with the exit code 3 when another daemon owns the directory. |
 | `install` | Checks the machine and adds the entry `Megachat` to `~/.jetbrains/acp.json`. The entry starts the last release with `npx`, or in a checkout the checkout directly. `MEGACHAT_ACP_CONFIG` replaces the path of the file. |
-| `uninstall` | Removes the entry `Megachat` that `install` wrote from `~/.jetbrains/acp.json`, then stops the daemon. It refuses while work runs, and it keeps the state directory. `MEGACHAT_ACP_CONFIG` replaces the path of the file. See "Removal". |
+| `uninstall` | Removes the entry `Megachat` that `install` wrote from `~/.jetbrains/acp.json`, then stops the daemon of each Megachat. It refuses while work runs, and it keeps the state directory. `MEGACHAT_ACP_CONFIG` replaces the path of the file. See "Removal". |
+
+## The scopes of Megachat
+
+A Megachat has one of two scopes. You select the scope when you press "Spawn Megachat" in Agent Sessions of Air.
+
+- **The machine scope** is the Megachat of the IDE: one conversation for the machine, which each window and each
+  JetBrains product opens. It lists each open project and each known repository. Its state is in
+  `~/.jetbrains/air/megachat`.
+- **A project scope** is a Megachat for one project directory. It starts tasks only in that directory, in a directory
+  in it that the IDE has open, and in a linked git worktree of the project that the IDE has open. `agents_list` gives
+  the project directory with the origin `project`.
+
+The two scopes can exist at the same time, and each project can have its own Megachat.
+
+What a Megachat of a project does not see or do:
+
+- It lists no other open project, no known repository and no workspace of Megachat. `agents_projects` gives only
+  `action=list`: it adds, removes, finds and makes no directory.
+- A session of Claude Code, Codex, pi or OpenCode in another directory is absent for `agents_running`, `agents_stop`,
+  `agents_archive`, `agents_session_history`, the live table of the session files and the notes about the sessions
+  that wait. Megachat reads of such a log only the first lines, which give its directory.
+- It has no cloud sessions: the setting `cloud.sessions` stays off, so the tool `agents_cloud` is not there.
+- When you ask it for work in another project, it tells you to add a Megachat for that project, or the Megachat of the
+  IDE.
+
+The variable `MEGACHAT_PROJECT` selects a project scope: the absolute path of the project directory. Air sets it when
+it starts the command of the entry for a project. Megachat uses the real path of the directory. It refuses a path that
+cannot be a known repository, such as the home directory or the state directory, with one line and the exit code 1.
+Without the variable, Megachat has the machine scope.
+
+The state of a project scope is in `~/.jetbrains/air/megachat/projects/<name>-<digest>`: the last segment of the
+project directory, and 12 hexadecimal digits of the SHA-256 of its real path. The file `project.json` in it names the
+project directory, so `status` or `stop` with only that directory as the argument finds the scope. Each Megachat has
+its own daemon, conversation, settings, learned memory, spend limit and index of past sessions. A Megachat of a project
+copies nothing from the Megachat of the IDE, and it asks its own short setup.
+
+Know these limits:
+
+- Each Megachat is a daemon. Each daemon sends its own keep-alive requests of the prompt cache, runs its own automatic
+  turns and counts its own `budget.dailyUsd`. Remove a Megachat that you do not use (see "Remove one Megachat").
+- One daemon runs one child in a checkout at a time. The Megachat of the IDE and the Megachat of a project are two
+  daemons, so each of them can run a child in the same checkout at the same time. Two Megachats of nested directories
+  can do so too.
+- A project directory that moves or gets another name gets a new, empty Megachat. The earlier state directory stays in
+  `projects/`, and its `project.json` names the earlier path. Delete it yourself when you do not want it.
 
 ## The state directory
 
@@ -347,6 +429,8 @@ JetBrains product of the user shares it. `MEGACHAT_HOME` or the directory argume
 | `sessions.sqlite` | The index of your past Claude Code, Codex and pi sessions. It exists only while the setting `sessions.index` is `on`. |
 | `session-archive.jsonl` | The cards of the archived sessions (see "Archive a session"), one JSON line for each step. The first archive makes the file. |
 | `daemon/connection.json` | The process ID, the port, the build and the token of the running daemon. Keep the token private. |
+| `projects/<name>-<digest>/` | The state directory of the Megachat of one project, with the same files as this table. Only the state directory of the machine scope has it. See [The scopes of Megachat](#the-scopes-of-megachat). |
+| `project.json` | The project directory of a project scope: `{"schema":1,"directory":"<real path>"}`. Only the state directory of a project scope has it. |
 | `daemon/daemon.log` | The log of a daemon that `start` started, with the mode 0600. For each child run, it holds a line for the start, a line for the end, and for an error a line with its class. For a failed child run, it also holds the answer of the agent and the end of its error output, without the known secrets. No line holds a prompt. |
 
 Each directory has the mode 0700, and each file has the mode 0600. When the shared directory has no conversation, the
@@ -400,7 +484,9 @@ requests and on the summary, and the results still wait.
 
 ## Settings and the first run
 
-Megachat keeps its settings in `settings.json` in the state directory. The file is apart from the conversation, so a
+Megachat keeps its settings in `settings.json` in the state directory. Each Megachat has its own file: the Megachat of
+a project keeps its own settings, and its setup asks two questions, the pair of agents and the index of the past
+sessions of this project. The file is apart from the conversation, so a
 compaction does not change it. Change a setting in the chat, for example "answer in German" or "use Sonnet 5.5 for the
 main agent". The main agent stores the value with its tool `agents_settings`. A change applies at once when no turn
 runs, else at the end of the current turn. No setting needs a restart.
@@ -426,17 +512,18 @@ runs, else at the end of the current turn. No setting needs a restart.
 | `reply.length` | `short` | | The length of the answers: `short`, `normal` or `detailed`. |
 | `chat.html` | `auto` | | The main agent can show a chart, a dashboard or a table with colors as a page in the chat: it writes an `air-html` code fence, and Air draws it in place. `auto` gives the page rules to the main agent when the client is Air (`_meta.jetbrains.air.version` 1 or more, or the capability `htmlFence`). `on` always gives them. `off` never gives them. A child agent never gets them. With the rules on, the morning report is one page too. The rules are in `resources/air-html.md`, a short copy of the skill `air-html` of Air. |
 | `reply.quoteRequest` | `false` | | A report of a child result quotes your original request first. |
-| `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude` or `codex`. A follow-up stays with the agent of its session. |
+| `children.agent` | `claude` | | The agent of a new task when you name no agent: `claude`, `codex` or `junie`. A follow-up stays with the agent of its session. |
 | `children.parallel` | `3` | | The count of the tasks that run at the same time, 1 to 8. Tasks in one checkout run one after the other. See below. |
 | `children.piModel` | `anthropic/claude-haiku-5-5` | | The model of a pi child. When the model registry does not know it, a pi child uses the model of the main agent. |
 | `children.claudeModel` | `inherit` | | The model of a Claude child: `inherit` (the model of your settings of Claude Code, else `anthropic/claude-sonnet-5-5`), or a model of Claude Code as `anthropic/<model ID>`. See below. |
 | `children.codexModel` | `inherit` | | The model of a Codex child: `inherit` (the model of your configuration of Codex, else the default model of Codex), or a model of Codex as `openai/<model ID>`. See below. |
+| `children.junieModel` | `inherit` | | The model of a Junie child: `inherit` (the configuration of Junie decides), or a model of the model list of Junie as `junie/<model ID>`. See below. |
 | `children.permissionMode` | `inherit` | | The permission mode of a Claude child: `inherit` (the settings of Claude Code decide), `ask`, `allowEdits` or `auto`. It does not change a Codex child or a pi child. See below. |
 | `children.commit` | `allow` | | Whether a child may make a git commit: `allow`, `ask` or `deny`. |
 | `children.push` | `ask` | | Whether a child may push: `allow`, `ask` or `deny`. |
 | `children.daemonRestart` | `ask` | | Whether a child may restart or stop the Megachat daemon: `allow`, `ask` or `deny`. |
 | `children.timeoutMinutes` | `240` | | The time limit of a child run in minutes, from `0` to `1440`. `0` gives no limit. A run keeps the limit of its start. The wait for a permission request does not count. |
-| `children.showInProject` | `true` | | With `true`, a new Claude or Codex child session shows in the session list of its project in Air. With `false`, Air shows it only in the Service Sessions group. A session keeps the choice of its first run. |
+| `children.showInProject` | `true` | | With `true`, a new Claude, Codex or Junie child session shows in the session list of its project in Air. With `false`, Air shows it only in the Service Sessions group. A session keeps the choice of its first run. |
 | `projects.newRoot` | `~/src` | | The directory where a new project without a named location goes. |
 | `budget.dailyUsd` | `0` | | The daily spend limit of the main agent and the pi children in USD, with one warning on each day. `0` is no limit. |
 | `memory.characters` | `4000` | | The cap of the size of `memory.md` in characters, from `1000` to `20000`. Above it, the main agent cannot add an entry. |
@@ -453,7 +540,7 @@ says that you approved it. Else it says in its result that the step is necessary
 next child, also in the turn that made it.
 
 A setting of one child run can have a value for one project: `children.agent`, `children.piModel`,
-`children.claudeModel`, `children.codexModel`, `children.permissionMode`, `children.commit`, `children.push`,
+`children.claudeModel`, `children.codexModel`, `children.junieModel`, `children.permissionMode`, `children.commit`, `children.push`,
 `children.daemonRestart`, `children.timeoutMinutes` and `children.showInProject`. Say for example "in this project, children do not push". The main agent then stores the value for the directory of the
 project, and the global value stays. A child gets the value of the nearest project directory that is its directory or
 holds it, else the global value. A symbolic link to a project is that project. The daemon reads the value at each
@@ -463,8 +550,8 @@ settings show it as missing until you remove it. Each other setting applies to t
 refuses a project value of it. `settings.json` keeps the project values under the key `projects`, by the real path of the
 directory. Megachat 0.3.0 opens such a file, ignores the project values and keeps them.
 
-Tasks in different directories run at the same time, at most `children.parallel` of them. Claude, Codex and pi children
-count together, and at most one pi child runs at a time. Two tasks in one directory, or in a directory and a directory
+Tasks in different directories run at the same time, at most `children.parallel` of them. Claude, Codex, Junie and pi
+children count together, and at most one pi child runs at a time. Two tasks in one directory, or in a directory and a directory
 inside it, never run at the same time, because two agents that change one checkout break the work of each other.
 Megachat compares the real paths by their segments, so a symbolic link to a project is that project, and `app2` is not
 in `app`. A task waits while a task in its checkout runs, and behind an earlier task of its checkout that waits. A task
@@ -491,6 +578,13 @@ project has an `AGENTS.md` and no `CLAUDE.md`, the daemon adds `AGENTS.md` to th
 A Codex child works as `central run codex` in a terminal in its project. Codex reads its own configuration: `config.toml`,
 the profiles, the MCP servers and `AGENTS.md` of `~/.codex` (or of `CODEX_HOME`), and the `AGENTS.md` files of the
 project. It reads no file and no variable of Claude Code.
+
+A Junie child works as `central run junie -- --acp=true` in its project. Junie reads its own configuration in
+`~/.junie`, and the `AGENTS.md` of the project. It gets no variable of Claude Code. Megachat sends no mode to a Junie
+child, so the settings of Junie decide its Brave Mode: with the Brave Mode on, a Junie child runs each command without
+a question, and with it off, it asks you in the chat before a command that Junie does not hold for safe. The settings
+`children.permissionMode`, `children.claudeModel` and `children.codexModel` do not change a Junie child. A Junie child
+that needs an answer of you writes its question in its result, and you answer with a message to its task.
 
 Each child gets the environment of the daemon, which is the environment that the IDE gives Megachat, with these changes:
 
@@ -536,6 +630,13 @@ continuation, so it wins over your configuration. The child keeps its reasoning 
 the model list of Codex does not hold the model, the task fails before it starts. Megachat 0.3.0 opens a
 `settings.json` with the key, ignores it and keeps it.
 
+With `children.junieModel` `inherit`, Megachat sends no model to a Junie child: the configuration of Junie decides.
+Another value names a model of Junie as `junie/<model ID>`, such as `junie/claude-opus-5-5` or `junie/gpt-6-astra`.
+Each session of Junie lists its models, and a value of that list holds the route of the machine before the model ID.
+So Megachat finds the model ID in the list of the session and sends the value of the list, after the start of each
+Junie child, also of a follow-up and of a continuation. When the list does not hold the model, the task fails before
+it starts. The request does not change the model of your other sessions of Junie.
+
 In the setup, the main agent looks for git repositories in `~/src`, in `~/IdeaProjects` and in the roots of
 `MEGACHAT_PROJECT_ROOTS`, two levels deep, and offers the ones that are not listed yet, at most 200, the newest first.
 The scan follows no symbolic link and reads no file. You choose the repositories, and the agent adds them to the known
@@ -548,11 +649,13 @@ a location, the agent makes `<projects.newRoot>/<name>`, with a number at the en
 
 Megachat counts the cost of each request of the main agent and of the pi children on the local day: the replies, the
 summaries and the keep-alive requests. The cost of the Claude and Codex children is not in the count, because the
-accounts of Claude and Codex pay for them. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
+accounts of Claude and Codex pay for them. The cost of a Junie child is not in the count either. When the count passes `budget.dailyUsd`, the main agent warns you one time on that day, and the work goes on.
 `spend.json` keeps the count across a restart. Ask the agent for the settings to see the spend of the day.
 
 At the end of the setup, the main agent checks the accounts with its tool `agents_accounts`. This is no question. The
 check starts Claude Code and Codex as a task starts them and opens a session without a prompt, so it spends no tokens.
+It checks Junie too, but only when the command `junie` is on the `PATH`. Each check of Junie leaves one folder with one
+small file in `~/.junie/sessions`. Air does not list it as a session.
 The agent shows only the agents with a problem and what to fix, for example a missing login, and it says nothing about
 the check when each agent is ready. A session that opens does not prove that the provider accepts the login, or that
 Codex offers the model of `children.codexModel`: the first task shows that. Ask the agent to check the accounts again
@@ -711,7 +814,7 @@ ask for one, or object to the named session.
 
 Send the information in the main chat while the child works, for example one more link, a correction or the next step
 of the same task. The main agent calls its tool `agents_steer`, and the child gets the message during its turn, without a wait for the end of the
-task. Claude Code and Codex take the message through the ACP extension `_session/steering`. An agent without it, or a
+task. Claude Code, Codex and Junie take the message through the ACP extension `_session/steering`. An agent without it, or a
 request to stop the current step, gets a cancel of the turn and then a continuation in the same session with the
 message. A task that waits in the queue gets the message in its prompt. The task keeps one result. The daemon records
 each message before it sends it, so a message survives a restart of the daemon. After a restart, a message that the
@@ -754,11 +857,11 @@ On other platforms, only the process group of the agent ends, as before.
 
 ## Read the transcript of a task
 
-Click the title of a running task in the Background Tasks tab. For a Claude or Codex task, an Air build that supports
+Click the title of a running task in the Background Tasks tab. For a Claude, Codex or Junie task, an Air build that supports
 it opens the session of the child and selects it in the sessions tree. Else, and for a pi task, the IDE opens the
 transcript of that run, a plain text file in `transcripts/` of the state directory. It holds the task, the messages of
 the child, each tool call by its name and title, each permission request, each message that you added with
-`agents_steer`, and the end of the run. Claude, Codex and pi children have one. The secret filter of the index of past sessions removes the text that looks like a
+`agents_steer`, and the end of the run. Claude, Codex, Junie and pi children have one. The secret filter of the index of past sessions removes the text that looks like a
 key or a password. It also removes the exact key and base URL of Central that the daemon knows, which it keeps in its
 memory only. A transcript stops at 1 MB with a note. The file goes away when the state drops its run. A
 continuation of a task, for example after a restart or a message, is a new run with a new row and a file of its own.
@@ -785,7 +888,7 @@ instructions tell it never to copy the value of a token, a key or a password int
 Code.
 
 Use pi only to read and to summarize. Give each task that changes code, runs a command or needs the tools of Claude
-Code to Claude or Codex. The main agent uses pi for a look (see the next section) or when you name it, and
+Code to Claude, Codex or Junie. The main agent uses pi for a look (see the next section) or when you name it, and
 `children.agent` cannot select it.
 
 A pi child is a task as the others are: the chat lists it as a background task of the agent Pi, it waits its turn, it
@@ -815,7 +918,8 @@ added", the agent takes the directory with the newest `addedAt`.
 ## The sessions that run on the machine
 
 Ask the agent "what is running now?". The main agent calls its tool `agents_running` and answers in the chat. The tool
-lists the running sessions of Claude Code, Codex, pi and OpenCode on the machine, from a terminal, an IDE or Megachat.
+lists the running sessions of Claude Code, Codex, Junie, pi and OpenCode on the machine, from a terminal, an IDE or
+Megachat.
 It reads the process table with one `ps` call, and the working directory and the open session logs of each new
 session with one `lsof` call. It changes nothing. Each session has its agent, its project,
 its start time, its owner (the terminal, the multiplexer, the IDE or Megachat) and a state:
@@ -846,15 +950,19 @@ title, the time of the last write to its log, and a status:
   permission request of its run in the state of Megachat tells it. For another Claude Code session,
   `~/.claude/sessions/<PID>.json` tells it, such as a prompt for a tool call or a network request of the sandbox.
 - `waiting_for_user` also comes from `~/.claude/sessions/<PID>.json` when Claude Code asks the user a question.
+- For a Junie session, the event log tells both: `waiting_for_permission` when the log ends with a command that waits
+  for your approval, and `waiting_for_user` when it ends with a question of Junie to you. Such a session does not
+  become `stuck` or `idle`, however long it waits.
 
 The other statuses are a reading of the log, not a fact from the agent. Claude Code, Codex and pi write no record of a
-permission prompt to their logs. Outside its children, Megachat takes a status from the process file of Claude Code
+permission prompt to their logs. Junie writes one. Outside its children, Megachat takes a status from the process file of Claude Code
 only when the file has the PID and the start time of the process, the log has no later write, and the process has no
 CPU load after the first 2 minutes of the wait. A question of the agent is no permission request. Codex writes no file
 that tells a permission prompt, so a Codex session outside Megachat that waits for a permission shows as `working`,
 and after 10 minutes as `stuck`. Megachat links a process to its log only when the link is certain: Codex keeps its
-log open, Claude Code writes `~/.claude/sessions/<PID>.json`, and for pi the log must begin in the first 30 seconds of
-the process. A session without a certain link has no title and no status, and the answer says so. A `codex app-server`
+log open, Claude Code writes `~/.claude/sessions/<PID>.json`, and for pi and Junie the log must begin in the first 30
+seconds of the process. So a Junie process that continues an old session (`junie --resume`) has no title and no
+status. A Junie child of Megachat has the session of its run. A session without a certain link has no title and no status, and the answer says so. A `codex app-server`
 gives one row for each open session. Then ask "what is session X doing?": the main agent reads the last messages of
 the session from the end of its log, also for a log of hundreds of MB. Without the consent, Megachat reads no session
 log, and the answer says so.
@@ -866,7 +974,8 @@ time. Say "tell me when a session waits for me" to turn it on. It is off by defa
 they also need the consent `sessions.index`. Without it, they stay off, and the settings say why.
 
 - **What gives a note.** A session outside Megachat that seems to wait for a permission for 5 minutes or more, from the
-  process file of Claude Code, and a session that is `stuck`: an open step and no log write for 10 minutes. A child of
+  process file of Claude Code or from the event log of Junie, and a session that is `stuck`: an open step and no log
+  write for 10 minutes. A Junie session that waits for the answer to a question gets no note. A child of
   Megachat that waits for a permission gets no note, because the chat shows its dialog. A session after a finished turn
   gets no note, because that is the usual state of a session. A Codex session outside Megachat that waits for a
   permission shows as `stuck` after 10 minutes, because Codex writes no file that tells the wait.
@@ -937,9 +1046,16 @@ The tool needs the setting `sessions.index` on. Megachat archives as Air does, s
   a last activity less than 1 hour ago give a warning in the dialog.
 - **The hide.** When no process of the session runs, Megachat writes the records that Air writes for Done: for Claude
   Code a `custom-title` and an `agent-name` line with the title `[archived] <title>`, for pi a `session_info` line, and for
-  Codex it runs `codex archive`. Air then shows the session as Done. A session that you archived in Air counts as
+  Codex it runs `codex archive`. Air shows the Junie sessions from `index.jsonl`, or from `session/list` of the Junie
+  that Air installs from the ACP registry, and each way has its own Done state. So for Junie, Megachat writes both: one
+  line in `~/.junie/sessions/agent-workbench-archive-state.jsonl` (the session ID, the time, the project directory and
+  `archived` true), and `"archived": true` in `session_metadata.json` of the session folder. A restore writes
+  `archived` false to both. These are the only files of Junie that Megachat writes, and it keeps each other line and
+  field of them. Air then shows the session as Done. A session that you archived in Air counts as
   archived in Megachat, and `restore` brings it back with the title records that Air writes for Reopen, or with
   `codex unarchive`. The tool never writes while a process of the session runs.
+
+The card of a Junie session gives the command `junie --resume --session-id=<session ID>` to continue it.
 
 `list` and `search` give the cards, also after a restore. A card is never deleted. Air can keep its own state for a
 session that it ran and that you reopened in Air. Such a row can stay active in Air after an archive of Megachat.
@@ -965,24 +1081,35 @@ PIDs and the outcome only. The tool works on macOS only.
 
 ## The index of past sessions
 
-With your consent, Megachat keeps an index of your past Claude Code, Codex and pi sessions. Then the main agent and
-the children find an earlier session at once, and they can read pi sessions. The same consent lets `agents_running`
+With your consent, Megachat keeps an index of your past Claude Code, Codex, Junie and pi sessions. Then the main agent
+and the children find an earlier session at once, and they can read Junie and pi sessions. The same consent lets `agents_running`
 read the log of each agent session that runs on the machine: its metadata and its status, and its content only when
 you ask for it. The setting `sessions.index` is on by default, so the first pass starts at the first start of the
-daemon, before the setup. The setup asks one time: "Index past Claude, Codex and pi sessions in your projects, and read
-the logs of the agent sessions that run on this machine to show their status? Megachat reads the content of a session
+daemon, before the setup. The setup asks one time: "Index past Claude, Codex, Junie and pi sessions in your projects,
+and read the logs of the agent sessions that run on this machine to show their status? Megachat reads the content of a session
 only when you ask. Everything stays local." The answer off deletes the index and the table of the running sessions.
 Say "turn on the session index" or "turn off the session index" in the chat at any time. A `settings.json` of v0.6.3
 or older after its setup or after a skip keeps the index off, because that setup stored no answer off. Without your
 consent, Megachat reads no session file and keeps no index file. The search in Claude Code and Codex sessions then
-reads them live, as before.
+reads them live, as before, and the Junie and pi sessions are not available. A consent that you gave before Megachat
+read the sessions of Junie covers them too.
 
 - **What is in it.** The sessions in `~/.claude/projects`, in `~/.codex/sessions` and `~/.codex/archived_sessions` (or
-  the same directories in `$CODEX_HOME`), and in `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`), also the
-  Codex sessions that Codex compressed to `.jsonl.zst` after 7 days, only when the directory of a session is a listed
+  the same directories in `$CODEX_HOME`), in `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`), and in
+  `~/.junie/sessions`, also the Codex sessions that Codex compressed to `.jsonl.zst` after 7 days, only when the directory of a session is a listed
   directory or a directory in one: a project of an IDE, a known repository, or the Megachat workspace. A newly listed
   directory brings its old sessions. The import takes the sessions with activity in the last 180 days, and the setting
   `sessions.days` changes that count.
+- **The sessions of Junie.** A session of Junie is a folder `~/.junie/sessions/<session ID>`. Megachat reads its event
+  log `events.jsonl`: the prompts, the answers of the user, the commands and the tool steps with their output, and the
+  result of each turn. The log names no project, so the project directory and the title come from `summary.json` of
+  the folder, else from the line of the session in `~/.junie/sessions/index.jsonl`. A session without both is in no
+  project, so it is not in the index. Megachat opens each of these files read-only. It reads no other file of the
+  folder. A task that Junie got on its command line (`junie "<task>"`) is not in the event log, so the index has the
+  steps and the result of such a session without its prompt.
+  When you ask the agent to continue an earlier Junie session, a Junie child loads that session and gets your request
+  (the tool `agents_resume`). This needs the index, because only the index tells that the session is of a listed
+  directory, and the command `junie` (see "The machine needs").
 - **What it keeps.** For each session: the agent, the session ID, the directory, the title, the start time and the time
   of the last activity. For each message, tool call and tool result: at most about 2 KB of its text.
 - **Where it is.** `sessions.sqlite` in the state directory, with the mode 0600. Nothing leaves the machine.
@@ -1016,7 +1143,7 @@ The session text is data for the agent, not instructions.
 |---|---|
 | `bin/megachat.mjs` | The launcher. It checks the version of Node.js, then loads `src/main.mjs`. |
 | `src/main.mjs` | The commands. `start` connects to the daemon, replaces a daemon of another build, uses a live daemon of a legacy directory, or starts a new daemon. |
-| `src/MegachatHome.mjs` | The state directory, the legacy directories, the migration, the schema check, and the rules of the user. |
+| `src/MegachatHome.mjs` | The state directory, the project scope (`MEGACHAT_PROJECT`, its state directory and `project.json`), the state tree, the legacy directories, the migration, the schema check, and the rules of the user. `resources/instructions-project.md` and `resources/instructions-onboarding-project.md` hold the rules and the setup of a project scope. |
 | `src/MegachatState.mjs` | The durable admission, the child runs, the permissions, the proposals, the continuation of an interrupted run, and the retention. |
 | `src/PiMegachatService.mjs` | The main agent on the Pi Durable harness, and the `agents_*` tools. `resources/instructions.md` holds its bundled rules, and `resources/compaction.md` holds the instructions of a summary. |
 | `src/PromptCacheKeepAlive.mjs` | The timer of the idle daemon: a keep-alive request or a summary before the prompt cache expires, and the sleep outside the working hours. |
@@ -1025,12 +1152,13 @@ The session text is data for the agent, not instructions.
 | `src/MegachatUpdate.mjs` | The automatic update: the check of the release tags with `git ls-remote`, the notice, the conditions and the time of the stop of a copy of npx, and the message after an update with the notes of the GitHub releases. |
 | `src/AcpBridge.mjs` | The ACP agent side. It lists the unfinished child runs as background tasks, with their Stop, their session and their transcript. |
 | `src/ChildTranscript.mjs` | The transcript of each child run, its limit, its secret filter and its removal with the run. |
-| `src/AcpRunService.mjs`, `src/child-supervisor.mjs`, `src/RunProcesses.mjs` | The Claude and Codex child runs. The supervisor stops the child when the daemon exits, and at a stop or a failure of a task it ends each process that the task started. |
+| `src/AcpRunService.mjs`, `src/child-supervisor.mjs`, `src/RunProcesses.mjs` | The Claude, Codex and Junie child runs. The supervisor stops the child when the daemon exits, and at a stop or a failure of a task it ends each process that the task started. |
 | `src/ChildPool.mjs` | The places for the child runs, which the ACP and the pi run services share: the limit `children.parallel`, one child in a checkout, and one pi child. |
 | `src/PiRunService.mjs`, `src/PiChild.mjs`, `src/ProjectReadEnv.mjs`, `src/PiChildHistory.mjs` | The pi child runs: their conversations in the harness, the choices, the tools `read` and `ls` and the rules of a child, the read-only environment of its project, and the read of its transcript. |
 | `src/CentralConfigurationService.mjs`, `bin/pi`, `bin/codex` | The Central configuration and the launch of the children. |
-| `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, without a prompt. |
+| `src/AgentAccountCheck.mjs` | The check of the accounts of Claude Code and Codex, and of Junie when its command is there, without a prompt. |
 | `src/DaemonServer.mjs`, `src/DaemonClient.mjs`, `src/DaemonDirectory.mjs` | The local HTTP server, its client, the owner lock and the connection file. |
+| `src/DaemonWork.mjs` | The work of a daemon that keeps it from a stop, and the stop of a daemon with the wait for its end. `uninstall` and the request `_agent/stop` use it. |
 | `src/ReplyStream.mjs` | The stream of the partial reply of the main agent from the daemon to each client. |
 | `src/MegachatBuild.mjs`, `src/sourceBuildId.mjs` | The version of the build, from `git describe` in a checkout, and the build ID. |
 | `src/MegachatInstall.mjs` | The command `install`: the checks and the entry in `acp.json`. |
@@ -1038,6 +1166,7 @@ The session text is data for the agent, not instructions.
 | `src/ProjectDirectories.mjs` | The directories where a child can work: the checks of a known repository, the origins of the list, the discovery of the repositories, the detection of the linked worktrees, and the directory of a new project. The real path of a directory, and the check that one directory holds another. |
 | `src/RunningAgents.mjs`, `src/AgentProcesses.mjs`, `src/ProcessTable.mjs` | The tool `agents_running`: the view of the running sessions, the rules that find an agent session and its owner, and the process table of macOS. |
 | `src/SessionArchive.mjs` | The tool `agents_archive`: the checks and the warnings, the card, the stop of the process, the hide and the restore in the format of Air. |
+| `src/JunieSessionSource.mjs` | The sessions of Junie: the event log of each session folder, the project directory and the title from the files next to it, the entries and the steps of a log, the archive state file of Air, and the archive state in `session_metadata.json`. |
 | `src/AgentStop.mjs` | The tool `agents_stop`: the stop requests for the dialog of the client, the answer of the user, the check of the process directly before the signal, and the refused PIDs. |
 | `src/SessionCatalog.mjs`, `src/SessionLinks.mjs`, `src/SessionStatus.mjs`, `src/SessionTail.mjs` | The live table of the session files, the certain link of a process to its log, the status from the log tail, and the read of a log from its end. |
 | `src/SessionNotes.mjs` | The notes about the sessions that wait: the rules of a note, its text, the records of the sent notes and the timer of the checks. |

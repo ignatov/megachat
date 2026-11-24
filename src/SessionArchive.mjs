@@ -6,7 +6,8 @@ import { promisify } from 'node:util'
 import { AirStore } from './AirArchive.mjs'
 import { message, MegachatError, requireCondition } from './messages.mjs'
 import { OPEN_STEPS } from './SessionStatus.mjs'
-import { parseLine, readLines } from './SessionLog.mjs'
+import { directoriesOf } from './ProjectDirectories.mjs'
+import { directoryOf, isCompressed, parseLine, readLines } from './SessionLog.mjs'
 import { indexedText } from './SessionText.mjs'
 
 const execute = promisify(execFile)
@@ -25,6 +26,8 @@ export const AIR_RECHECK_MS = 1500
 export const CODEX_QUIET_MS = 10 * 60 * 1000
 /** A row with a log write in this time gets a warning. */
 export const RECENT_MS = 60 * 60 * 1000
+/** The bytes that the archive reads at most to find the `cwd` of a session file, for the Megachat of one project. */
+const PEEK_BYTES = 1024 * 1024
 const STATUSES_REFUSED = new Set(['working', 'stuck', 'waiting_for_permission'])
 const OWNERS_STOPPED = new Set(['terminal', 'multiplexer'])
 const HELPERS = /mcp|helper|caffeinate/i
@@ -59,9 +62,12 @@ export const shortId = sessionId => String(sessionId).slice(0, 8)
 /** The name of a session for the user: the title and the short ID, because titles repeat. */
 export const sessionLabel = (title, sessionId) => `${visibleTitle(title ?? '', sessionId)} (${shortId(sessionId)})`
 
+/** The agents whose sessions the archive takes. */
+const ARCHIVE_AGENTS = ['claude', 'codex', 'junie', 'pi']
+
 /** The command that continues a session. */
 export const resumeCommand = (agent, sessionId) => agent === 'claude' ? `claude --resume ${sessionId}`
-  : agent === 'codex' ? `codex resume ${sessionId}` : `pi --session ${sessionId}`
+  : agent === 'codex' ? `codex resume ${sessionId}` : agent === 'junie' ? `junie --resume --session-id=${sessionId}` : `pi --session ${sessionId}`
 
 /** The bytes of the title records of Claude Code, as Air writes them: `custom-title`, then `agent-name`. */
 const claudeRecords = (sessionId, title) => [['custom-title', 'customTitle'], ['agent-name', 'agentName']]
@@ -195,7 +201,8 @@ const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
  * The tool `agents_archive`: it archives agent sessions, as the action Done of Air does, and it keeps a card of each
  * one. The order for a row (see the design of the change `session-archive`): the checks, the card, the stop of the
  * process (only for the owner `terminal` or `multiplexer`, and an orphan), a wait for its end, the hide. The hide is the
- * title record that Air writes for Claude Code and pi, and `codex archive` for Codex. The dialog is the one of
+ * title record that Air writes for Claude Code and pi, `codex archive` for Codex, and for Junie a line of the archive
+ * state file of Air and the field `archived` of `session_metadata.json`. The dialog is the one of
  * `agents_stop`: only the answer `archive` of the user starts the steps. The checks run again after the answer.
  */
 export class SessionArchive {
@@ -213,7 +220,7 @@ export class SessionArchive {
       return this.named(await this.cards.page({ query, cursor }))
     }
     requireCondition(Array.isArray(sessions) && sessions.length >= 1 && sessions.length <= ARCHIVE_MAX_SESSIONS)
-    requireCondition(sessions.every(item => item && ['claude', 'codex', 'pi'].includes(item.agent) && typeof item.sessionId === 'string' && /^[\w.:-]{1,100}$/.test(item.sessionId)))
+    requireCondition(sessions.every(item => item && ARCHIVE_AGENTS.includes(item.agent) && typeof item.sessionId === 'string' && /^[\w.:-]{1,100}$/.test(item.sessionId)))
     requireCondition(new Set(sessions.map(item => `${item.agent}:${item.sessionId}`)).size === sessions.length)
     const catalog = this.catalog()
     if (!catalog) throw new MegachatError('archiveConsent')
@@ -225,7 +232,7 @@ export class SessionArchive {
     const named = []
     for (const card of cards) {
       const entry = { ...card, label: sessionLabel(card.title, card.sessionId) }
-      if (!card.restoredAt && (card.hidden === 'title' || card.hidden === 'codex')) Object.assign(entry, await this.airState(card.agent, card.sessionId, card.cwd, true, false))
+      if (!card.restoredAt && ['title', 'codex', 'junie'].includes(card.hidden)) Object.assign(entry, await this.airState(card.agent, card.sessionId, card.cwd, true, false))
       named.push(entry)
     }
     return { cards: named, nextCursor }
@@ -262,9 +269,29 @@ export class SessionArchive {
     for (const { path } of await source.files(undefined, this.fs).catch(() => [])) {
       if (source.nameId(path) !== sessionId) continue
       const stat = await this.fs.stat(path).catch(() => undefined)
-      if (stat?.isFile()) return { path, agent, nameId: sessionId, mtimeMs: stat.mtimeMs, read: false }
+      if (!stat?.isFile()) continue
+      // The Megachat of one project takes only a session of its listed directories. The first lines of the file tell.
+      if (this.state.project && !await this.inScope(source, path)) return undefined
+      return { path, agent, nameId: sessionId, mtimeMs: stat.mtimeMs, read: false }
     }
     return undefined
+  }
+
+  /** True when the first lines of the session file at [path] give a `cwd` that is a listed directory or a directory in one. */
+  async inScope(source, path) {
+    const listed = directoriesOf(await this.state.snapshot())
+    try {
+      // The files next to the log tell the directory of a source with `describe`.
+      if (source.describe) return Boolean(directoryOf((await source.describe(path, this.fs)).cwd, listed))
+      for await (const batch of readLines(this.fs, path, { end: PEEK_BYTES, batchLines: 8, compressed: isCompressed(path) })) {
+        for (const line of batch.lines) {
+          const cwd = parseLine(source, line, path)?.parsed.meta?.cwd
+          if (cwd) return Boolean(directoryOf(cwd, listed))
+        }
+      }
+    }
+    catch { /* A file that Megachat cannot read is no session of the scope. */ }
+    return false
   }
 
   /** The live rows of a session now, with the owner of each process, from one read of the table. */
@@ -315,7 +342,25 @@ export class SessionArchive {
 
   async archivedState(agent, record) {
     if (agent === 'codex') return this.codexArchived(record.sessionId ?? record.nameId)
+    if (agent === 'junie') {
+      const { air, junie } = await this.junieStates(record.sessionId ?? record.nameId, record)
+      return air === true && junie === true
+    }
     return (await titleState(agent, record.path, this.fs).catch(() => undefined))?.archived === true
+  }
+
+  /**
+   * The two archive states of a session of Junie: `air` from the archive state file of Air, and `junie` from
+   * `session_metadata.json` of the session folder. Air reads the first one for the rows that come from `index.jsonl`,
+   * and Junie reads the second one for the rows that come from its `session/list`. Each one is true, false or undefined.
+   */
+  async junieStates(sessionId, record) {
+    const source = this.catalog()?.source('junie')
+    if (!source) return {}
+    const described = record.path ? await source.describe(record.path, this.fs) : undefined
+    const cwd = described?.cwd ?? record.cwd
+    return { source, described, cwd, air: await source.archived(sessionId, cwd, this.fs),
+      junie: record.path ? await source.metadataArchived(record.path, this.fs).catch(() => undefined) : undefined }
   }
 
   async warnings(item, record, now, view) {
@@ -395,7 +440,10 @@ export class SessionArchive {
     }
   }
 
-  /** Hides a session that no process runs: the title records of Air, or `codex archive`. Gives the kind of the hide. */
+  /**
+   * Hides a session that no process runs: the title records of Air, `codex archive`, or for a session of Junie a line
+   * of the archive state file of Air and the field `archived` of `session_metadata.json`. Gives the kind of the hide.
+   */
   async hide({ agent, sessionId }, record) {
     if (agent === 'codex') {
       await this.codex(['archive', sessionId])
@@ -403,8 +451,28 @@ export class SessionArchive {
     }
     const { rows } = await this.processes(agent, sessionId)
     if (rows.some(row => row.pid)) throw new MegachatError('archiveLive')
+    if (agent === 'junie') return await this.junieState(sessionId, record, true) ? 'junie' : 'pending'
     await writeTitle({ agent, path: record.path, sessionId, archive: true, title: record.title, now: this.clock.now() }, this.fs)
     return (await titleState(agent, record.path, this.fs))?.archived ? 'title' : 'pending'
+  }
+
+  /**
+   * Writes the archive state [archived] of a session of Junie to the two stores that Air shows (see [junieStates]),
+   * each one only when it does not tell that state already. A store that does not name the session tells "not
+   * archived", so a restore writes nothing to it. The archive state file of Air gets one whole line with the append
+   * flag. `session_metadata.json` of the session folder gets the field `archived`, and its other fields stay. No other
+   * line and no other file of Junie changes. The project directory of the session is necessary: without it, Megachat
+   * writes nothing. Gives true when both stores tell the state after the call.
+   */
+  async junieState(sessionId, record, archived) {
+    const { source, described, cwd, air, junie } = await this.junieStates(sessionId, record)
+    if (!source || !cwd) throw new MegachatError('archiveNoDirectory')
+    const matches = state => state === archived || !archived && state === undefined
+    if (!matches(air)) await appendFile(source.archiveFile, source.archiveLine({ sessionId, cwd, archived, updatedAt: described?.updatedAt, now: this.clock.now() }), { flag: 'a', mode: 0o600 })
+    // A file that is not a JSON object throws here, so Megachat does not replace it.
+    if (!matches(junie)) await source.writeMetadataArchived(record.path, archived, this.fs)
+    const after = await this.junieStates(sessionId, record)
+    return matches(after.air) && matches(after.junie)
   }
 
   async restore(sessions, catalog) {
@@ -423,6 +491,12 @@ export class SessionArchive {
       try {
         if (item.agent === 'codex') {
           await this.codex(['unarchive', item.sessionId])
+        }
+        else if (item.agent === 'junie') {
+          // A session that one of the two stores tells as archived is archived for one kind of the rows of Air.
+          const { air, junie } = await this.junieStates(item.sessionId, record)
+          if (air !== true && junie !== true) { refuse(item, message('archive.skipped.notArchived')); continue }
+          await this.junieState(item.sessionId, record, false)
         }
         else {
           const state = await titleState(item.agent, record.path, this.fs).catch(() => undefined)

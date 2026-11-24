@@ -51,7 +51,7 @@ export const ONBOARDING_STATES = ['pending', 'done', 'skipped']
 export const DEFAULTS = 2
 const EARLIER_DEFAULTS = { 'sessions.index': 'off' }
 /** The default agents of a new child task. A pi child cannot change code, so it is no default: the user names it. */
-export const CHILD_AGENTS = ['claude', 'codex']
+export const CHILD_AGENTS = ['claude', 'codex', 'junie']
 /** The time limit of a child run in minutes by default, the value of `children.timeoutMinutes`. */
 export const DEFAULT_CHILD_TIMEOUT_MINUTES = 240
 
@@ -160,6 +160,17 @@ const codexModel = value => {
   if (text === 'inherit') return 'inherit'
   return text.startsWith('openai/') && CODEX_MODEL_ID.test(modelRef(text).modelId) ? text : undefined
 }
+/**
+ * `inherit`, or a model of Junie as `junie/<model ID>`, for example `junie/claude-opus-5-5`. `junie` is no provider of
+ * the model registry: the models of Junie are of more than one provider, and Junie lists them in each session. The
+ * value of a model in that list depends on the machine, so the setting holds only the model ID, and the run finds the
+ * value (see `junieModelValue` of `AcpRunService.mjs`). A model ID has the pattern of a model ID of Codex.
+ */
+const junieModel = value => {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (text === 'inherit') return 'inherit'
+  return text.startsWith('junie/') && CODEX_MODEL_ID.test(modelRef(text).modelId) ? text : undefined
+}
 const modelValues = ({ models }) => ({ values: models.getModels().map(model => ({ value: `${model.provider}/${model.id}`, name: model.name,
   contextWindow: model.contextWindow, usdPerMillionTokens: model.cost })), note: message('settings.model.measurement') })
 const thinkingLevels = model => model?.reasoning ? getSupportedThinkingLevels(model) : [...MODEL_THINKING_LEVELS]
@@ -256,6 +267,8 @@ export const SETTINGS = [
     allowed: () => ({ values: ['inherit'], other: message('settings.claudeModel.other') }) },
   { key: 'children.codexModel', default: 'inherit', applies: 'nextChild', project: true, validate: codexModel,
     allowed: () => ({ values: ['inherit'], other: message('settings.codexModel.other') }) },
+  { key: 'children.junieModel', default: 'inherit', applies: 'nextChild', project: true, validate: junieModel,
+    allowed: () => ({ values: ['inherit'], other: message('settings.junieModel.other') }) },
   { key: 'children.permissionMode', default: 'inherit', applies: 'nextChild', project: true, validate: choice(Object.keys(CLAUDE_PERMISSION_MODES)),
     allowed: () => ({ values: Object.keys(CLAUDE_PERMISSION_MODES) }) },
   { key: 'children.commit', default: 'allow', applies: 'nextChild', project: true, validate: choice(CHILD_PERMISSIONS), allowed: () => ({ values: CHILD_PERMISSIONS }) },
@@ -269,7 +282,7 @@ export const SETTINGS = [
       return /^\d{1,4}$/.test(text) && Number(text) <= 1440 ? Number(text) : undefined
     },
     allowed: () => ({ minimum: 0, maximum: 1440 }) },
-  // true leaves a new Claude or Codex child session in the session list of its project in Air: no service record.
+  // true leaves a new Claude, Codex or Junie child session in the session list of its project in Air: no service record.
   { key: 'children.showInProject', default: true, applies: 'nextChild', project: true, validate: toBoolean,
     allowed: () => ({ values: [true, false] }) },
   { key: 'projects.newRoot', default: '~/src', applies: 'nextCall',
@@ -468,8 +481,9 @@ export class SettingsStore {
  * the run. [home] replaces the home directory for a `~` in a project path, for a test.
  */
 export class MegachatSettings {
-  constructor(store, { environment = process.env, overrides = {}, models, home } = {}) {
-    Object.assign(this, { store, environment, overrides, models, home })
+  /** [projectScope] is true for the Megachat of one project: the cloud sessions then stay off (see `set` and `entry`). */
+  constructor(store, { environment = process.env, overrides = {}, models, home, projectScope = false } = {}) {
+    Object.assign(this, { store, environment, overrides, models, home, projectScope })
   }
 
   get onboarding() { return this.store.onboarding }
@@ -510,7 +524,9 @@ export class MegachatSettings {
         : project ? [project.value, 'project']
           : valid !== undefined ? [valid, 'setting'] : [fallback, 'default']
     // A stored level that the model does not know becomes the nearest level of the model, so each request agrees.
-    const effective = key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
+    // In a project scope, the cloud sessions are off, whatever the file or a variable says.
+    const effective = this.projectScope && key === 'cloud.sessions' ? 'off'
+      : key === 'coordinator.thinking' && context.model?.reasoning ? clampThinkingLevel(context.model, value) : value
     return { key, value: effective, source, default: fallback,
       ...(definition.variable ? { variable: definition.variable } : {}),
       ...(stored === undefined ? {} : { stored }),
@@ -644,6 +660,8 @@ export class MegachatSettings {
     const directory = project === undefined ? undefined : await this.projectDirectory(project)
     const normalized = definition.validate(value, this.context())
     requireCondition(normalized !== undefined, 'settingValue')
+    // The cloud sessions belong to the login of Central, not to a directory, so a project scope does not have them.
+    requireCondition(!(this.projectScope && key === 'cloud.sessions' && normalized === 'on'), 'projectScope')
     await this.store.change(data => {
       if (directory === undefined) { data.values[key] = normalized; return }
       if (!isRecord(data.projects)) data.projects = {}

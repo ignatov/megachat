@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { basename } from 'node:path'
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk/unstable'
+import { STOP_WAIT_MS } from './DaemonClient.mjs'
+import { stopDaemon, workOf } from './DaemonWork.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { CENTRAL_CAUSES, MegachatError, message, requireCondition } from './messages.mjs'
 import { permissionOpen, serviceSessionsOf, terminalStates } from './MegachatState.mjs'
@@ -16,7 +18,7 @@ export function taskTitle(prompt) {
 }
 
 /** The name of the agent of a run for the chat. A run without the field is from before the choice of the agent. */
-const agentName = agent => agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude'
+const agentName = agent => ({ codex: 'Codex', junie: 'Junie', pi: 'Pi' })[agent] ?? 'Claude'
 
 /** The title of the task of [run]: its own title, else the title or the first prompt line of the first run of the task. */
 function runTitle(state, run) {
@@ -26,7 +28,7 @@ function runTitle(state, run) {
 }
 
 /** The name of an agent of `agents_running` for the stop dialog. */
-const sessionAgentName = agent => ({ claude: 'Claude Code', codex: 'Codex', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
+const sessionAgentName = agent => ({ claude: 'Claude Code', codex: 'Codex', junie: 'Junie', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
 
 /**
  * An `agent_message_chunk` of the main session. Each chunk has the phase `final_answer` of Air on the update
@@ -112,13 +114,13 @@ export function taskRows(state) {
 
 /**
  * The session of the provider of [run] for its row in Air, with the same address as `_session/service/record`, or
- * `null`. Only a Claude or a Codex run with a provider session has one. A pi run has `providerSessionId` too, but it
- * is the conversation of the harness and not a session of Claude Code or Codex. A run without the field `agent` is
- * from before the choice of the agent, so it is a Claude run.
+ * `null`. Only a Claude, a Codex or a Junie run with a provider session has one. A pi run has `providerSessionId` too,
+ * but it is the conversation of the harness and not a session of an agent that Air lists. A run without the field
+ * `agent` is from before the choice of the agent, so it is a Claude run. The agent ID of Junie in Air is `junie`.
  */
 export function rowSession(run) {
   const agentId = run?.agent ?? 'claude'
-  if (!run?.providerSessionId || (agentId !== 'claude' && agentId !== 'codex')) return null
+  if (!run?.providerSessionId || !['claude', 'codex', 'junie'].includes(agentId)) return null
   return { agentId, sessionId: run.providerSessionId, cwd: run.cwd }
 }
 
@@ -191,11 +193,15 @@ export class AcpBridge {
    * [daemon] is the client of the daemon of the start of the bridge. The bridge never starts another daemon: when its
    * daemon is gone, it ends the ACP connection, so the next start of the agent goes through the entry again (see the
    * capability `daemon`). [healthIntervalMs] replaces the interval of the check of `/health`, and [reshowMs] replaces
-   * [RESHOW_MS], for a test.
+   * [RESHOW_MS], for a test. [project] is the project directory of a project scope: the bridge then announces the
+   * capability `projectScope`. [stopTimeoutMs] replaces the wait for the end of the daemon after `_agent/stop`, for a
+   * test.
    */
-  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS, reshowMs = RESHOW_MS } = {}) {
+  constructor(daemon, { transcripts, healthIntervalMs = HEALTH_INTERVAL_MS, reshowMs = RESHOW_MS, project, stopTimeoutMs = STOP_WAIT_MS } = {}) {
     this.daemon = daemon
     this.transcripts = transcripts
+    this.project = project
+    this.stopTimeoutMs = stopTimeoutMs
     this.healthIntervalMs = healthIntervalMs
     this.reshowMs = reshowMs
     this.views = new Map()
@@ -207,7 +213,8 @@ export class AcpBridge {
    * waits [END_DELAY_MS], so a request that found no daemon first gets its error answer.
    */
   end(key, ...args) {
-    if (this.ended) return
+    // While a stop at the request of the client runs, only that stop ends the connection, after its answer.
+    if (this.ended || this.stopping) return
     this.ended = true
     process.stderr.write(`${message(key, ...args)}\n`)
     setTimeout(() => this.connection?.close(), END_DELAY_MS)
@@ -258,8 +265,10 @@ export class AcpBridge {
         return {
           protocolVersion: 1, agentInfo: { name: 'air-megachat', title: message('title'), version: megachatVersion() },
           agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, sessionCapabilities: { close: {} } }, authMethods: [],
+          // `agentStop`: the client can send `_agent/stop`. `projectScope`: this Megachat belongs to one project, so a
+          // client that set `MEGACHAT_PROJECT` can tell a release that does not know the variable.
           _meta: { jetbrains: { air: { version: 1, capabilities: ['persistentSession',
-            ...(this.nativeTurns ? ['asyncTasks'] : [])] } } },
+            ...(this.nativeTurns ? ['asyncTasks'] : []), 'agentStop', ...(this.project ? ['projectScope'] : [])] } } },
         }
       })
       .onRequest(methods.agent.session.new, ctx => this.attach(ctx, false))
@@ -271,11 +280,40 @@ export class AcpBridge {
       // only for the answer `stopped: true`. The row then ends with its terminal update.
       .onRequest('_session/async_task/stop', params => params, ctx => this.views.get(ctx.params?.sessionId)?.stopTask(ctx.params.asyncTaskId)
         ?? { stopped: false })
+      // The action "Remove Megachat" of the client. The request names no session: one bridge has one daemon.
+      .onRequest('_agent/stop', params => params, () => this.stopAgent())
       .onRequest(methods.agent.session.close, async ctx => {
         this.view(ctx.params.sessionId).close()
         this.views.delete(ctx.params.sessionId)
         return {}
       })
+  }
+
+  /**
+   * The request `_agent/stop`: stops the daemon of this bridge when it has no work, and then ends the ACP connection.
+   * With a turn or a child run that is not in a final state, nothing changes, and the answer gives the reason. The state
+   * directory stays as it is, so the next start opens the same conversation. A second request during a stop gets the
+   * answer of the first one.
+   */
+  stopAgent() {
+    return this.agentStop ??= (async () => {
+      const work = await workOf(await this.daemon.json('/state'))
+      if (work.turn || work.runs.length > 0) {
+        const runs = work.runs.length === 1 ? message('stop.agent.run') : message('stop.agent.runs', work.runs.length)
+        const parts = [...(work.turn ? [message('stop.agent.turn')] : []), ...(work.runs.length > 0 ? [runs] : [])]
+        return { stopped: false, reason: message('stop.agent.busy', parts.length === 2 ? message('stop.agent.and', ...parts) : parts[0]) }
+      }
+      const { pid } = await this.daemon.json('/health', undefined, AbortSignal.timeout(HEALTH_TIMEOUT_MS))
+      // The stop of the daemon ends each event stream. The views and the health check must not end the connection before
+      // the answer of this request goes out.
+      this.stopping = true
+      let ended
+      try { ended = await stopDaemon(this.daemon, pid, this.stopTimeoutMs) }
+      finally { this.stopping = false }
+      if (!ended) return { stopped: false, reason: message('stop.agent.timeout', pid, Math.ceil(this.stopTimeoutMs / 1000)) }
+      this.end('log.agentStopped')
+      return { stopped: true }
+    })().finally(() => { this.agentStop = undefined })
   }
 
   view(id) {
@@ -544,7 +582,8 @@ class AcpBridgeSession {
       if (received.has('conversation') && received.has('tasks')) resolveReady()
     }), abort.signal).then(() => { if (!abort.signal.aborted) throw new Error('Daemon stream ended') }).catch(error => {
       rejectReady(error)
-      if (!abort.signal.aborted) {
+      // A stop at the request of the client ends the stream on purpose, and that stop ends the connection.
+      if (!abort.signal.aborted && !this.bridge.stopping && !this.bridge.ended) {
         const code = String(error.cause?.code ?? error.code ?? error.name)
         process.stderr.write(`${message('error.connection', /^[a-zA-Z0-9_-]{1,64}$/.test(code) ? code : 'unknown')}\n`)
         // The wait lets a prompt that lost the same daemon send its answer first.

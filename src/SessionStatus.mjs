@@ -3,7 +3,8 @@
  * agent: the log tells the last step of the session and the time of the last write, and nothing more. Claude Code,
  * Codex and pi write no record of a permission request to the log. Only the process file of Claude Code tells that a
  * session waits for a permission or for the answer to a question, and only the state of Megachat tells it for a child
- * of Megachat. So only these sessions can get the status `waiting_for_permission`.
+ * of Megachat. Junie writes the wait to its event log, so the log of a Junie session tells it. So only these sessions
+ * can get the status `waiting_for_permission`.
  */
 
 /**
@@ -27,6 +28,11 @@ export const IDLE_MS = 30 * 60 * 1000
  * a finished turn, and `none` for a log without a turn.
  */
 export const OPEN_STEPS = new Set(['call', 'result', 'prompt', 'open'])
+/**
+ * The steps of a log that records a wait for the user: `permission` for a permission request and `question` for a
+ * question to the user. They are no open steps: such a session is not stuck, however long it waits.
+ */
+export const WAIT_STEPS = new Set(['permission', 'question'])
 
 /**
  * The time after the start of a wait in a process file in which a log write still belongs to the step before the
@@ -58,10 +64,13 @@ export function processWaitStatus(process, sessionId, record, busy, now) {
  * write is less than 10 minutes old. A step without a write and without a CPU load for 2 to 10 minutes stays working,
  * because the log cannot tell a slow tool from a prompt of the agent. `stuck`: such an open step and no write for
  * 10 minutes or more. `waiting_for_user`: the tail ends with a finished turn. `idle`: a finished turn and no write for
- * 30 minutes or more.
+ * 30 minutes or more. A log that ends with a recorded wait gives `waiting_for_permission` or `waiting_for_user` at each
+ * age of the last write.
  */
 export function sessionStatus(record, now) {
   if (!record?.step || !Number.isFinite(record.mtimeMs)) return null
+  if (record.step === 'permission') return 'waiting_for_permission'
+  if (record.step === 'question') return 'waiting_for_user'
   const quiet = now - record.mtimeMs
   if (OPEN_STEPS.has(record.step)) return quiet >= STUCK_MS ? 'stuck' : 'working'
   return quiet >= IDLE_MS ? 'idle' : 'waiting_for_user'

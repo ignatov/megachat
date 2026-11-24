@@ -9,7 +9,8 @@ import { STOPPED_KIND } from './ReplyStream.mjs'
 import { forgottenTopic } from './MegachatMemory.mjs'
 import { REFLECTION_TURNS } from './MemoryReflection.mjs'
 import { rmdir } from 'node:fs/promises'
-import { createProjectDirectory, DISCOVERY_LIMIT, discoverRepositories, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, mainRepositoryOf, resolveRepository } from './ProjectDirectories.mjs'
+import { basename } from 'node:path'
+import { createProjectDirectory, DISCOVERY_LIMIT, discoverRepositories, inProjectScope, isDirectoryOf, KNOWN_PROJECTS_LIMIT, listedDirectory, mainRepositoryOf, resolveRepository } from './ProjectDirectories.mjs'
 import { ChildTextFilter, redactOwnSecrets } from './SessionText.mjs'
 import { PROMPT_SUGGESTION_LIFETIME_MS } from './Suggestions.mjs'
 import { baseVersion, higherVersion, updateNoteText } from './MegachatUpdate.mjs'
@@ -320,7 +321,7 @@ export const morningPrompt = html => [message('event.morning'), message(html ? '
 
 /** Owns the durable admission, child runs, and permission decisions of the shared conversation. */
 export class MegachatState {
-  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, stateDirectory, home, projectRoots, suggestions = 'off',
+  constructor(harness, root, { resumeDelayMs = 5000, reportRetryDelayMs = 5000, workspace, project, stateDirectory, home, projectRoots, suggestions = 'off',
     promptSuggestionLifetimeMs = PROMPT_SUGGESTION_LIFETIME_MS, secrets } = {}) {
     // The exact values of the own secret of Megachat (a `KnownSecrets`), such as the key of Central. Each text of a
     // child goes through `redactOwnSecrets` before the state keeps it.
@@ -333,6 +334,9 @@ export class MegachatState {
     this.eventSuffix = suggestions === 'off' ? '' : '.suggest'
     this.promptSuggestionLifetimeMs = promptSuggestionLifetimeMs
     this.workspace = workspace
+    // The project directory of a project scope, a real path, or `undefined` in the machine scope. In a project scope,
+    // only the directories of that project can be listed (see the capability `project-scope`).
+    this.project = project
     this.repositoryOptions = { stateDirectory, home, roots: projectRoots }
     this.home = home
     this.harness = harness
@@ -381,6 +385,13 @@ export class MegachatState {
       state.morningReport ??= { lastDate: null, pending: null, running: null }
       // The workspace of Megachat follows the state directory of this start, so the state does not keep an old one.
       state.megachatWorkspace = this.workspace ?? null
+      // The project directory follows the scope of this start too. A state of an earlier build has none. In a project
+      // scope, the state keeps no known repository and no directory out of the scope.
+      state.projectDirectory = this.project ?? null
+      if (this.project) {
+        state.projects = []
+        state.workspaces = state.workspaces.filter(cwd => cwd !== this.project && inProjectScope(this.project, cwd))
+      }
       // A build from before the output limit of the tail kept each update of a run. Nothing read these updates, and
       // they were most of the document.
       for (const run of Object.values(state.runs)) {
@@ -412,7 +423,16 @@ export class MegachatState {
     await this.change(state => { state.airSupport = support })
   }
 
+  /**
+   * Lists a directory that a client registered. In a project scope, only a directory of that scope comes into the list,
+   * and each other directory is refused as a directory that is not listed.
+   */
   async addWorkspace(cwd) {
+    if (this.project) {
+      requireCondition(inProjectScope(this.project, cwd), 'workspace')
+      // The project directory is listed with its own origin.
+      if (cwd === this.project) return
+    }
     await this.change(state => {
       if (state.workspaces.includes(cwd)) return
       noteAddition(state, cwd)
@@ -1002,6 +1022,11 @@ export class MegachatState {
    * is left to write (it went out, or the user wrote first, or the setup is not pending), and `false` when the note
    * waits for an idle conversation. [pending] tells whether the onboarding is pending.
    */
+  /** The text of the setup note. In a project scope, it names the project by the last segment of its directory. */
+  onboardingOffer() {
+    return this.project ? message('onboarding.offer.project', basename(this.project).slice(0, 100)) : message('onboarding.offer')
+  }
+
   async writeOnboardingNote(pending) {
     if (!pending() || (await this.snapshot())?.onboardingOffer !== null) return true
     return this.change(async (state, tx) => {
@@ -1009,7 +1034,7 @@ export class MegachatState {
       if (state.current || (await tx.doc(LiveDoc, this.root.id)).run !== undefined
         || (await tx.doc(InboxDoc, this.root.id)).items.length > 0) return false
       await this.root.submit(tx, { type: 'write', requestId: `onboarding:${randomUUID()}`,
-        entry: { kind: NOTE_KIND, data: { type: 'onboarding' }, model: [noteMessage(message('onboarding.offer'), Date.now())] } })
+        entry: { kind: NOTE_KIND, data: { type: 'onboarding' }, model: [noteMessage(this.onboardingOffer(), Date.now())] } })
       state.onboardingOffer = 'offered'
       return true
     })
@@ -1182,7 +1207,7 @@ export class MegachatState {
       const previous = args.childSessionId && Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
       // A run without the field is from before the choice of the agent, so it is a Claude run.
       const agent = previous ? previous.agent ?? 'claude' : args.agent ?? defaultAgent
-      requireCondition(['claude', 'codex', 'pi'].includes(agent))
+      requireCondition(['claude', 'codex', 'junie', 'pi'].includes(agent))
       requireCondition(!args.agent || args.agent === agent, 'conflict')
       // A pi child is a conversation of this daemon. A session of the pi command-line agent cannot continue as one.
       requireCondition(agent !== 'pi' || !args.providerSessionId)
@@ -1202,7 +1227,7 @@ export class MegachatState {
         requestId, digest: hash, prompt: args.prompt, cwd: args.cwd, status: 'admitted',
         ...(args.title === undefined ? {} : { title: args.title.trim() }),
         providerSessionId,
-        // A pi child has no session file of Claude Code or Codex, so Air has no session of it to hide. With
+        // A pi child has no session file of Claude Code, Codex or Junie, so Air has no session of it to hide. With
         // `children.showInProject`, a new session stays in the session list of its project. A next run keeps the choice.
         serviceSession: agent === 'pi' ? false : previous?.serviceSession ?? (!args.providerSessionId && !showInProject),
         generation: null, pid: null, output: '', truncated: false,
