@@ -26,10 +26,13 @@ async function description(t, name) {
   return service.extension().tools.find(item => item.name === name).description
 }
 
-test('the rules allow a pi child for a look or when the user names pi, and send each other task to Claude or Codex', async t => {
-  holds(await rules(), ['Use agent=pi for a look, or when the user names pi.', 'Send each other task to Claude or Codex.'])
+test('the rules allow a pi child for a look or when the user names pi, and send each other task to Claude, Codex or Junie', async t => {
+  holds(await rules(), ['Use agent=pi for a look, or when the user names pi.', 'Send each other task to Claude, Codex or Junie.',
+    'Pass agent=claude, agent=codex or agent=junie when the user names an agent.'])
   assert.ok(!(await rules()).includes('Use agent=pi only when the user names pi.'))
-  assert.match(await description(t, 'agents_spawn'), /Use agent=pi for a look/)
+  const spawn = await description(t, 'agents_spawn')
+  assert.match(spawn, /Use agent=pi for a look/)
+  assert.match(spawn, /agent=junie/)
 })
 
 test('the rules forbid a question where a thing is in a listed project, and allow a look in at most 3 projects', async () => {
@@ -53,8 +56,8 @@ test('the rules define a look, its own result turn and a failed look', async () 
 test('a look and the task that it proposes keep the rules of a hot child session', async () => {
   const text = await rules()
   holds(text, ['When the request continues the task of a hot child session there, continue that session',
-    'A look needs the agent pi, so it does not continue a hot Claude or Codex session.',
-    'It continues a hot Claude or Codex session only when the request continues the task of that session.',
+    'A look needs the agent pi, so it does not continue a hot Claude, Codex or Junie session.',
+    'It continues a hot Claude, Codex or Junie session only when the request continues the task of that session.',
     'Start a new session with agents_spawn for an unrelated task, for a task that needs another agent than the session has'])
 })
 
@@ -69,6 +72,6 @@ test('the rules take the directory with the newest addedAt for the folder that t
 
 test('the rules forbid a claim that a child lacks a means without a child run in the project of the task', async () => {
   holds(await rules(), ['Do not say that a child lacks a tool, a skill, an MCP server, a login or a token unless a child run in the project of the task reported it.',
-    'agents_accounts sees only the start of Claude Code and Codex in the Megachat workspace',
+    'agents_accounts sees only the start of Claude Code, Codex and Junie in the Megachat workspace',
     'Start the task in its project, and report what the child found.'])
 })

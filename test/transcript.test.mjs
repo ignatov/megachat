@@ -329,3 +329,23 @@ test('a view with asyncTaskSessions gets the session of a new Claude child in on
   await service.state.stopChild(first.id)
   await ended(service, first.id)
 })
+
+test('the row of a Junie child says Junie, its transcript names Junie, and a view with asyncTaskSessions gets its session with the agent ID junie', { timeout: 15000 }, async t => {
+  const launch = Promise.withResolvers()
+  const opened = await open(t, { server: true, launch: launch.promise })
+  const { service, cwd, daemon, path } = opened
+  const air = await view(daemon, cwd, { transcripts: path }, ['asyncTasks', 'asyncTaskSessions'])
+  t.after(() => air.close())
+  const first = await admit(service, { cwd, prompt: 'hello', title: 'First', agent: 'junie' })
+  const id = `${first.id}:running`
+  while (!updatesOf(air, 'async_task_spawned').some(update => update.asyncTaskId === id)) await new Promise(resolve => setTimeout(resolve, 10))
+  const row = updatesOf(air, 'async_task_spawned').find(update => update.asyncTaskId === id)
+  assert.equal(message('child.running', 'Junie', 'project'), 'Junie · project')
+  assert.deepEqual([row.name, row.description, row.session], ['First', 'Junie · project', undefined])
+  launch.resolve()
+  const text = untimed(await transcriptOf(opened, first.id))
+  assert.ok(text.includes(message('transcript.agent', 'Junie')))
+  // The agent gave the session `fake-session`, and the view got it in one progress.
+  assert.deepEqual(updatesOf(air, 'async_task_progress'),
+    [{ sessionUpdate: 'async_task_progress', asyncTaskId: id, session: { agentId: 'junie', sessionId: 'fake-session', cwd } }])
+})

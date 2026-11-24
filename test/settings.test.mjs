@@ -118,7 +118,7 @@ test('the registry gives the environment, then the stored setting, then the defa
     'workday.enabled': false, 'workday.start': '09:00', 'workday.end': '19:00', 'workday.days': ['mon', 'tue', 'wed', 'thu', 'fri'],
     'workday.timezone': 'auto', 'workday.idleMinutes': 30, 'report.morning': false, 'update.auto': true, 'reply.suggestions': 'ghost', 'reply.language': 'auto', 'reply.length': 'short',
     'reply.quoteRequest': false, 'chat.html': 'auto',
-    'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
+    'children.agent': 'claude', 'children.parallel': 3, 'children.piModel': 'anthropic/claude-haiku-5-5', 'children.claudeModel': 'inherit', 'children.codexModel': 'inherit', 'children.junieModel': 'inherit', 'children.permissionMode': 'inherit', 'children.commit': 'allow', 'children.push': 'ask', 'children.daemonRestart': 'ask',
     'children.timeoutMinutes': 240, 'children.showInProject': true,
     'projects.newRoot': '~/src', 'budget.dailyUsd': 0, 'memory.characters': 4000, 'memory.reflection': true, 'sessions.index': 'on', 'sessions.days': 180, 'sessions.notes': 'off',
     'cloud.sessions': 'off',
@@ -168,7 +168,7 @@ test('each setting accepts its allowed values and refuses each other value', asy
     'reply.length': [['detailed', 'detailed'], ['normal', 'normal']],
     'reply.quoteRequest': [['yes', true], [false, false]],
     'chat.html': [['on', 'on'], [' off ', 'off'], ['auto', 'auto']],
-    'children.agent': [['codex', 'codex'], [' claude ', 'claude']],
+    'children.agent': [['codex', 'codex'], [' claude ', 'claude'], ['junie', 'junie']],
     'children.parallel': [[1, 1], [' 8 ', 8], ['3', 3]],
     'children.piModel': [[FAST, FAST], [` ${DEEP} `, DEEP]],
     'children.permissionMode': [['ask', 'ask'], [' allowEdits ', 'allowEdits'], ['auto', 'auto'], ['inherit', 'inherit']],
@@ -178,6 +178,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     // A model ID of Codex needs no model of the registry either.
     'children.codexModel': [['inherit', 'inherit'], [' inherit ', 'inherit'], ['openai/gpt-5.5', 'openai/gpt-5.5'],
       [' openai/gpt-5.3-codex ', 'openai/gpt-5.3-codex'], ['openai/o4_mini', 'openai/o4_mini']],
+    // A model ID of Junie needs no model of the registry: Junie lists its own models, of more than one provider.
+    'children.junieModel': [['inherit', 'inherit'], [' inherit ', 'inherit'], ['junie/claude-opus-5-5', 'junie/claude-opus-5-5'],
+      [' junie/gemini-3.7-flash ', 'junie/gemini-3.7-flash'], ['junie/gpt-6-astra', 'junie/gpt-6-astra']],
     'children.commit': [['deny', 'deny'], ['ask', 'ask']],
     'children.push': [['allow', 'allow']],
     'children.daemonRestart': [['deny', 'deny']],
@@ -224,6 +227,9 @@ test('each setting accepts its allowed values and refuses each other value', asy
     // Codex selects a model by its base ID, so a reasoning level in brackets is not part of the value.
     'children.codexModel': [FAST, 'gpt-5.5', 'Inherit', '', 7, 'openai/', 'openai/gpt 5', 'openai/a/b', 'openai/-gpt',
       'openai/gpt-5.5[high]', `openai/${'a'.repeat(101)}`, 'OpenAI/gpt-5.5', 'anthropic/claude-sonnet-5-5'],
+    // The value has the prefix junie and a model ID. A value of the model list of Junie, with its colons, is no model ID.
+    'children.junieModel': ['claude-opus-5-5', 'anthropic/claude-opus-5-5', 'junie/claude opus', 'junie/v1:13:proxy:central:claude-opus-5-5',
+      'Inherit', '', 7, 'junie/', 'junie/a/b', 'junie/-opus', `junie/${'a'.repeat(101)}`, 'Junie/claude-opus-5-5', 'openai/gpt-5.5'],
     'children.commit': ['yes', true],
     'children.push': ['never'],
     'children.daemonRestart': ['', 1],
@@ -292,6 +298,30 @@ test('the levels of a model limit the reasoning level, and get lists the models 
   for (const value of ['gpt-5.5', 'openai/', 'anthropic/claude-haiku-5-5'])
     await assert.rejects(opus.set('children.codexModel', value), { code: 'settingValue' }, value)
   assert.deepEqual(opus.describe().settings.find(entry => entry.key === 'children.codexModel').values, ['inherit'])
+})
+
+test('children.junieModel takes inherit or a model ID of Junie, and a refused value keeps the value of settings.json', async t => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'megachat-junie-model-')))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'settings.json')
+  const { models } = fakeModels()
+  const settings = new MegachatSettings(await SettingsStore.open(path), { models, environment: {} })
+  assert.deepEqual([settings.entry('children.junieModel').value, settings.entry('children.junieModel').source], ['inherit', 'default'])
+  // The registry of this test has no model of Junie, and each value is valid all the same.
+  for (const [value, stored] of [['junie/claude-opus-5-5', 'junie/claude-opus-5-5'], [' junie/gemini-3.7-flash ', 'junie/gemini-3.7-flash'],
+    ['junie/gpt-6-astra', 'junie/gpt-6-astra']]) {
+    assert.equal((await settings.set('children.junieModel', value)).value, stored)
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).values['children.junieModel'], stored)
+  }
+  for (const value of ['claude-opus-5-5', 'anthropic/claude-opus-5-5', 'junie/claude opus', 'junie/v1:13:proxy:central:claude-opus-5-5']) {
+    await assert.rejects(settings.set('children.junieModel', value), { code: 'settingValue' }, value)
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).values['children.junieModel'], 'junie/gpt-6-astra', value)
+  }
+  const described = settings.describe().settings.find(entry => entry.key === 'children.junieModel')
+  assert.deepEqual([described.values, described.other, described.perProject], [['inherit'], message('settings.junieModel.other'), true])
+  // The agent of a new task takes junie.
+  assert.equal((await settings.set('children.agent', 'junie')).value, 'junie')
+  assert.deepEqual(settings.describe().settings.find(entry => entry.key === 'children.agent').values, ['claude', 'codex', 'junie'])
 })
 
 test('no file means a pending onboarding, and each answer goes at once to a private file that a new start reads', { timeout: 20000 }, async t => {

@@ -1207,7 +1207,7 @@ export class MegachatState {
       const previous = args.childSessionId && Object.values(state.runs).findLast(run => run.childSessionId === args.childSessionId)
       // A run without the field is from before the choice of the agent, so it is a Claude run.
       const agent = previous ? previous.agent ?? 'claude' : args.agent ?? defaultAgent
-      requireCondition(['claude', 'codex', 'pi'].includes(agent))
+      requireCondition(['claude', 'codex', 'junie', 'pi'].includes(agent))
       requireCondition(!args.agent || args.agent === agent, 'conflict')
       // A pi child is a conversation of this daemon. A session of the pi command-line agent cannot continue as one.
       requireCondition(agent !== 'pi' || !args.providerSessionId)
@@ -1227,7 +1227,7 @@ export class MegachatState {
         requestId, digest: hash, prompt: args.prompt, cwd: args.cwd, status: 'admitted',
         ...(args.title === undefined ? {} : { title: args.title.trim() }),
         providerSessionId,
-        // A pi child has no session file of Claude Code or Codex, so Air has no session of it to hide. With
+        // A pi child has no session file of Claude Code, Codex or Junie, so Air has no session of it to hide. With
         // `children.showInProject`, a new session stays in the session list of its project. A next run keeps the choice.
         serviceSession: agent === 'pi' ? false : previous?.serviceSession ?? (!args.providerSessionId && !showInProject),
         generation: null, pid: null, output: '', truncated: false,

@@ -62,9 +62,12 @@ export const shortId = sessionId => String(sessionId).slice(0, 8)
 /** The name of a session for the user: the title and the short ID, because titles repeat. */
 export const sessionLabel = (title, sessionId) => `${visibleTitle(title ?? '', sessionId)} (${shortId(sessionId)})`
 
+/** The agents whose sessions the archive takes. */
+const ARCHIVE_AGENTS = ['claude', 'codex', 'junie', 'pi']
+
 /** The command that continues a session. */
 export const resumeCommand = (agent, sessionId) => agent === 'claude' ? `claude --resume ${sessionId}`
-  : agent === 'codex' ? `codex resume ${sessionId}` : `pi --session ${sessionId}`
+  : agent === 'codex' ? `codex resume ${sessionId}` : agent === 'junie' ? `junie --resume --session-id=${sessionId}` : `pi --session ${sessionId}`
 
 /** The bytes of the title records of Claude Code, as Air writes them: `custom-title`, then `agent-name`. */
 const claudeRecords = (sessionId, title) => [['custom-title', 'customTitle'], ['agent-name', 'agentName']]
@@ -198,7 +201,8 @@ const iso = time => Number.isFinite(time) ? new Date(time).toISOString() : null
  * The tool `agents_archive`: it archives agent sessions, as the action Done of Air does, and it keeps a card of each
  * one. The order for a row (see the design of the change `session-archive`): the checks, the card, the stop of the
  * process (only for the owner `terminal` or `multiplexer`, and an orphan), a wait for its end, the hide. The hide is the
- * title record that Air writes for Claude Code and pi, and `codex archive` for Codex. The dialog is the one of
+ * title record that Air writes for Claude Code and pi, `codex archive` for Codex, and a line of the archive state file
+ * of Air for Junie. The dialog is the one of
  * `agents_stop`: only the answer `archive` of the user starts the steps. The checks run again after the answer.
  */
 export class SessionArchive {
@@ -216,7 +220,7 @@ export class SessionArchive {
       return this.named(await this.cards.page({ query, cursor }))
     }
     requireCondition(Array.isArray(sessions) && sessions.length >= 1 && sessions.length <= ARCHIVE_MAX_SESSIONS)
-    requireCondition(sessions.every(item => item && ['claude', 'codex', 'pi'].includes(item.agent) && typeof item.sessionId === 'string' && /^[\w.:-]{1,100}$/.test(item.sessionId)))
+    requireCondition(sessions.every(item => item && ARCHIVE_AGENTS.includes(item.agent) && typeof item.sessionId === 'string' && /^[\w.:-]{1,100}$/.test(item.sessionId)))
     requireCondition(new Set(sessions.map(item => `${item.agent}:${item.sessionId}`)).size === sessions.length)
     const catalog = this.catalog()
     if (!catalog) throw new MegachatError('archiveConsent')
@@ -228,7 +232,7 @@ export class SessionArchive {
     const named = []
     for (const card of cards) {
       const entry = { ...card, label: sessionLabel(card.title, card.sessionId) }
-      if (!card.restoredAt && (card.hidden === 'title' || card.hidden === 'codex')) Object.assign(entry, await this.airState(card.agent, card.sessionId, card.cwd, true, false))
+      if (!card.restoredAt && ['title', 'codex', 'junie'].includes(card.hidden)) Object.assign(entry, await this.airState(card.agent, card.sessionId, card.cwd, true, false))
       named.push(entry)
     }
     return { cards: named, nextCursor }
@@ -277,6 +281,8 @@ export class SessionArchive {
   async inScope(source, path) {
     const listed = directoriesOf(await this.state.snapshot())
     try {
+      // The files next to the log tell the directory of a source with `describe`.
+      if (source.describe) return Boolean(directoryOf((await source.describe(path, this.fs)).cwd, listed))
       for await (const batch of readLines(this.fs, path, { end: PEEK_BYTES, batchLines: 8, compressed: isCompressed(path) })) {
         for (const line of batch.lines) {
           const cwd = parseLine(source, line, path)?.parsed.meta?.cwd
@@ -336,6 +342,7 @@ export class SessionArchive {
 
   async archivedState(agent, record) {
     if (agent === 'codex') return this.codexArchived(record.sessionId ?? record.nameId)
+    if (agent === 'junie') return await this.catalog()?.source('junie')?.archived(record.sessionId ?? record.nameId, record.cwd, this.fs) === true
     return (await titleState(agent, record.path, this.fs).catch(() => undefined))?.archived === true
   }
 
@@ -416,7 +423,10 @@ export class SessionArchive {
     }
   }
 
-  /** Hides a session that no process runs: the title records of Air, or `codex archive`. Gives the kind of the hide. */
+  /**
+   * Hides a session that no process runs: the title records of Air, `codex archive`, or a line of the archive state
+   * file of Air for a session of Junie. Gives the kind of the hide.
+   */
   async hide({ agent, sessionId }, record) {
     if (agent === 'codex') {
       await this.codex(['archive', sessionId])
@@ -424,8 +434,27 @@ export class SessionArchive {
     }
     const { rows } = await this.processes(agent, sessionId)
     if (rows.some(row => row.pid)) throw new MegachatError('archiveLive')
+    if (agent === 'junie') return await this.junieState(sessionId, record, true) ? 'junie' : 'pending'
     await writeTitle({ agent, path: record.path, sessionId, archive: true, title: record.title, now: this.clock.now() }, this.fs)
     return (await titleState(agent, record.path, this.fs))?.archived ? 'title' : 'pending'
+  }
+
+  /**
+   * Adds one line with the archive state [archived] of a session of Junie to the archive state file of Air, when the
+   * last line of the session does not tell that state already. The line is one whole write with the append flag, and
+   * no other line and no other file of Junie changes. The line needs the project directory of the session: without
+   * it, Megachat writes nothing. Gives true when the file tells the state after the call.
+   */
+  async junieState(sessionId, record, archived) {
+    const source = this.catalog()?.source('junie')
+    const described = source && record.path ? await source.describe(record.path, this.fs) : undefined
+    const cwd = described?.cwd ?? record.cwd
+    if (!source || !cwd) throw new MegachatError('archiveNoDirectory')
+    const state = await source.archived(sessionId, cwd, this.fs)
+    // A session that the file does not name is not archived, so a restore of it needs no line.
+    if (state === archived || !archived && state === undefined) return true
+    await appendFile(source.archiveFile, source.archiveLine({ sessionId, cwd, archived, updatedAt: described?.updatedAt, now: this.clock.now() }), { flag: 'a', mode: 0o600 })
+    return await source.archived(sessionId, cwd, this.fs) === archived
   }
 
   async restore(sessions, catalog) {
@@ -444,6 +473,10 @@ export class SessionArchive {
       try {
         if (item.agent === 'codex') {
           await this.codex(['unarchive', item.sessionId])
+        }
+        else if (item.agent === 'junie') {
+          if (!await this.archivedState('junie', { ...record, sessionId: item.sessionId })) { refuse(item, message('archive.skipped.notArchived')); continue }
+          await this.junieState(item.sessionId, record, false)
         }
         else {
           const state = await titleState(item.agent, record.path, this.fs).catch(() => undefined)

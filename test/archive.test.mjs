@@ -8,6 +8,7 @@ import { zstdCompressSync } from 'node:zlib'
 import { stopPermission } from '../src/AcpBridge.mjs'
 import { AgentStop } from '../src/AgentStop.mjs'
 import { ClaudeSessionSource } from '../src/ClaudeSessionSource.mjs'
+import { JunieSessionSource } from '../src/JunieSessionSource.mjs'
 import { message } from '../src/messages.mjs'
 import { PiSessionSource } from '../src/PiSessionSource.mjs'
 import { ARCHIVED_TITLE_PREFIX, archivedTitle, SessionArchive } from '../src/SessionArchive.mjs'
@@ -62,13 +63,16 @@ async function rig({ processes = BASE(), sessions = {}, git = async () => '', co
   await mkdir(directory)
   const claude = new ClaudeSessionSource({ home, environment: {} })
   const pi = new PiSessionSource({ home, environment: {} })
-  const sources = { claude, pi, codex: new CodexSessionSource({ home, environment: {} }) }
+  const sources = { claude, pi, codex: new CodexSessionSource({ home, environment: {} }), junie: new JunieSessionSource({ home }) }
   const records = new Map()
   const context = { home, directory, signals: [], stubborn: new Set(), commands: [], table: undefined, turn: undefined }
   const add = async (agent, id, { text, cwd = '/work/json', title, step = 'end', age = 48 * 3600000, path } = {}) => {
-    const file = path ?? (agent === 'pi' ? join(home, '.pi', 'agent', 'sessions', '--work-json--', `2026-11-10T10-00-00-000Z_${id}.jsonl`) : claude.pathOf(cwd, id))
+    const file = path ?? (agent === 'pi' ? join(home, '.pi', 'agent', 'sessions', '--work-json--', `2026-11-10T10-00-00-000Z_${id}.jsonl`)
+      : agent === 'junie' ? join(home, '.junie', 'sessions', id, 'events.jsonl') : claude.pathOf(cwd, id))
     await mkdir(join(file, '..'), { recursive: true })
     await writeFile(file, text)
+    // The folder of a Junie session holds the project directory and the task name next to the event log.
+    if (agent === 'junie') await writeFile(join(file, '..', 'summary.json'), JSON.stringify({ sessionId: id, createdAt: START, updatedAt: START + 60000, projectDir: cwd, taskName: title }))
     records.set(`${agent}:${id}`, { path: file, agent, sessionId: id, nameId: id, cwd, title, step, startedAt: START, mtimeMs: NOW - age })
     return file
   }
@@ -470,4 +474,120 @@ test('the state of Air is unknown without a store of Air', async () => {
   await context.add('claude', IDS.one, { text: claudeLog(IDS.one), title: 'Old' })
   const row = await archiveOne(context, IDS.one)
   assert.equal(row.air, 'unknown')
+})
+
+const JUNIE_ID = 'session-260101-120000-abcd'
+const junieLine = (value, index) => line({ ...value, timestampMs: START + index * 1000 })
+const junieBlock = (state, kind, fields) => ({ kind: 'SessionA2uxEvent', event: { state, agentEvent: { kind, ...fields } } })
+/** The event log of a Junie session with one turn: a prompt, a command with a commit, and the result. */
+const junieLog = ({ prompt = 'Fix the parser for DEMO-7', waits = false } = {}) => [
+  { kind: 'UserPromptEvent', requestId: 'request-1', prompt, presentablePrompt: prompt },
+  junieBlock('IN_PROGRESS', 'TerminalBlockUpdatedEvent', { stepId: 'step-1', status: 'COMPLETED', command: 'git commit -m x', output: '[main 1a2b3c4] Fix the parser\n 1 file changed' }),
+  ...(waits ? [junieBlock('INPUT_REQUIRED', 'TerminalBlockUpdatedEvent', { stepId: 'step-2', status: 'IN_PROGRESS', command: 'git push', approvalRequest: { id: 'approval-1' } })]
+    : [junieBlock('COMPLETED', 'ResultBlockUpdatedEvent', { stepId: 'step-3', title: 'The parser', result: 'The parser works.' }), { kind: 'TaskState', state: 'COMPLETED' }]),
+].map(junieLine).join('')
+const junieArchiveFile = context => join(context.home, '.junie', 'sessions', 'agent-workbench-archive-state.jsonl')
+const JUNIE_BINARY = '/Users/user/.local/share/junie/versions/3579.7/Applications/junie.app/Contents/MacOS/junie'
+
+test('the archive of a Junie session saves a card with the command of Junie and adds one line to the archive state file of Air', async () => {
+  const context = await rig({ airCaches: null })
+  const file = await context.add('junie', JUNIE_ID, { text: junieLog(), cwd: '/work/demo-app', title: 'Fix the parser' })
+  // The file of Air holds one line of another session.
+  const other = '{"sessionId":"session-251201-090000-wxyz","updatedAt":1790000000000,"projectDir":"/work/other","archived":true}'
+  await writeFile(junieArchiveFile(context), `${other}\n`)
+  const before = await Promise.all([file, join(file, '..', 'summary.json')].map(async path => { const { size, mtimeMs } = await stat(path); return [size, mtimeMs] }))
+  const { result, request } = await answered(context, { action: 'archive', sessions: [item('junie', JUNIE_ID)] })
+  assert.deepEqual([request.rows.length, request.rows[0].agent, request.rows[0].action], [1, 'junie', 'hide'])
+  assert.match(stopPermission(request).toolCall.rawInput.command, /^Junie, project demo-app/)
+  // The line of a hide: the format of Air, with the time of the archive, and the line of the other session stays.
+  assert.deepEqual(await ends(junieArchiveFile(context)), [other,
+    `{"sessionId":"session-260101-120000-abcd","updatedAt":${NOW},"projectDir":"/work/demo-app","archived":true}`])
+  assert.deepEqual([result.outcome, result.archived[0].hidden, result.archived[0].resume], ['archived', 'junie', 'junie --resume --session-id=session-260101-120000-abcd'])
+  // The line of a hide at the time 1795000000000. A later `updatedAt` of the session wins over the time of the archive, as in Air.
+  const source = new JunieSessionSource({ home: context.home })
+  assert.equal(source.archiveLine({ sessionId: JUNIE_ID, cwd: '/work/demo-app/', archived: true, now: 1795000000000, updatedAt: 1794000000000 }),
+    '{"sessionId":"session-260101-120000-abcd","updatedAt":1795000000000,"projectDir":"/work/demo-app","archived":true}\n')
+  assert.equal(JSON.parse(source.archiveLine({ sessionId: JUNIE_ID, cwd: '/work/demo-app', archived: false, now: 1795000000000, updatedAt: 1795000009999 })).updatedAt, 1795000009999)
+  // The card of a Junie session.
+  const [card] = await context.archive.cards.all()
+  assert.deepEqual([card.agent, card.sessionId, card.title, card.cwd, card.hidden], ['junie', JUNIE_ID, 'Fix the parser', '/work/demo-app', 'junie'])
+  assert.deepEqual([card.resume.command, card.resume.arguments], ['junie --resume --session-id=session-260101-120000-abcd',
+    { agent: 'junie', sessionId: JUNIE_ID, cwd: '/work/demo-app' }])
+  assert.deepEqual([card.firstPrompt, card.lastReply, card.tickets, card.commits], ['Fix the parser for DEMO-7', 'The parser\nThe parser works.', ['DEMO-7'], ['1a2b3c4']])
+  // No other file of Junie changed, and no process got a signal.
+  const after = await Promise.all([file, join(file, '..', 'summary.json')].map(async path => { const { size, mtimeMs } = await stat(path); return [size, mtimeMs] }))
+  assert.deepEqual(after, before)
+  assert.deepEqual(await fs.readdir(join(context.home, '.junie', 'sessions')), ['agent-workbench-archive-state.jsonl', JUNIE_ID])
+  assert.deepEqual(context.signals, [])
+  // Archive twice: the last line of the session has `archived` true, so the file keeps its size.
+  const size = (await stat(junieArchiveFile(context))).size
+  const again = await context.archive.call({ action: 'archive', sessions: [item('junie', JUNIE_ID)] })
+  assert.deepEqual([again.outcome, again.skipped.map(row => row.reason)], ['none', [message('archive.skipped.already')]])
+  assert.equal(message('archive.skipped.already'), 'The session is archived already, in Megachat or in Air. Nothing changed.')
+  assert.equal((await stat(junieArchiveFile(context))).size, size)
+  // Restore of a Junie session: one more line with `archived` false, the card gets its time, and no process starts.
+  const processes = context.table.current.length
+  const restored = await context.archive.call({ action: 'restore', sessions: [item('junie', JUNIE_ID)] })
+  assert.deepEqual([restored.outcome, restored.restored.length, restored.restored[0].resume], ['restored', 1, 'junie --resume --session-id=session-260101-120000-abcd'])
+  assert.equal((await ends(junieArchiveFile(context))).at(-1), `{"sessionId":"session-260101-120000-abcd","updatedAt":${NOW},"projectDir":"/work/demo-app","archived":false}`)
+  assert.equal((await ends(junieArchiveFile(context))).length, 3)
+  assert.equal((await context.archive.cards.all())[0].restoredAt, restored.restored[0].restoredAt)
+  assert.equal(context.table.current.length, processes)
+  // A session that is not archived is refused by a restore, and the file keeps its size.
+  const second = await context.archive.call({ action: 'restore', sessions: [item('junie', JUNIE_ID)] })
+  assert.deepEqual(second.refused.map(row => row.reason), [message('archive.skipped.notArchived')])
+  assert.equal((await ends(junieArchiveFile(context))).length, 3)
+})
+
+test('a Junie session that waits for a permission, or with a run of Megachat, is refused, and a session that Air archived counts as archived', async () => {
+  const processes = [...BASE(), proc(40, 31, JUNIE_BINARY, { name: 'junie' })]
+  const context = await rig({ processes, sessions: { 40: { agent: 'junie', sessionId: JUNIE_ID, status: 'waiting_for_permission', cwd: '/work/demo-app' } }, airCaches: null })
+  // A process of the session lives, and its log ends with an approval request.
+  const file = await context.add('junie', JUNIE_ID, { text: junieLog({ waits: true }), cwd: '/work/demo-app', title: 'Fix the parser', step: 'permission' })
+  const run = await context.add('junie', 'session-260101-130000-run0', { text: junieLog(), cwd: '/work/demo-app', title: 'A task of Megachat' })
+  context.state.runs.push({ id: 'run', agent: 'junie', providerSessionId: 'session-260101-130000-run0', status: 'running' })
+  const sizes = async () => Promise.all([file, run].map(async path => (await stat(path)).size))
+  const before = await sizes()
+  const result = await context.archive.call({ action: 'archive', sessions: [item('junie', JUNIE_ID), item('junie', 'session-260101-130000-run0'), item('junie', 'session-260101-999999-none')] })
+  assert.equal(result.outcome, 'none')
+  assert.deepEqual(result.refused.map(row => row.reason), [message('archive.refused.busy', 'waiting_for_permission'), message('archive.refused.run'),
+    message('archive.refused.unknown', 'junie', 'session-260101-999999-none')])
+  // No file changed: the logs keep their size, and Megachat made no archive state file.
+  assert.deepEqual(await sizes(), before)
+  await assert.rejects(stat(junieArchiveFile(context)), { code: 'ENOENT' })
+  assert.deepEqual(context.views, [])
+  // "Done" of Air added a line for another session of the directory: it counts as archived. A line of another directory does not.
+  const done = await context.add('junie', 'session-260101-140000-done', { text: junieLog(), cwd: '/work/demo-app', title: 'Done in Air' })
+  await writeFile(junieArchiveFile(context), ['{"sessionId":"session-260101-140000-done","updatedAt":1,"projectDir":"/work/demo-app","archived":false}',
+    '{"sessionId":"session-260101-140000-done","updatedAt":2,"projectDir":"/work/demo-app/","archived":true}',
+    '{"sessionId":"session-260101-140000-done","updatedAt":3,"projectDir":"/work/elsewhere","archived":false}', 'not a JSON line', ''].join('\n'))
+  const size = (await stat(junieArchiveFile(context))).size
+  const again = await context.archive.call({ action: 'archive', sessions: [item('junie', 'session-260101-140000-done')] })
+  assert.deepEqual(again.skipped.map(row => row.reason), [message('archive.skipped.already')])
+  assert.equal((await stat(junieArchiveFile(context))).size, size)
+  // A session with a live process is not restored either.
+  context.sessions[40] = { agent: 'junie', sessionId: 'session-260101-140000-done', status: 'idle', cwd: '/work/demo-app' }
+  const restored = await context.archive.call({ action: 'restore', sessions: [item('junie', 'session-260101-140000-done')] })
+  assert.deepEqual(restored.refused.map(row => row.reason), [message('archive.refused.live')])
+  assert.equal((await stat(junieArchiveFile(context))).size, size)
+  void done
+})
+
+test('an idle Junie session in a terminal gets SIGTERM and then its line, and a session without a project directory keeps its card and writes no line', async () => {
+  const processes = [...BASE(), proc(40, 31, JUNIE_BINARY, { name: 'junie' })]
+  const context = await rig({ processes, sessions: { 40: { agent: 'junie', sessionId: JUNIE_ID, status: 'waiting_for_user', cwd: '/work/demo-app' } }, airCaches: null })
+  await context.add('junie', JUNIE_ID, { text: junieLog(), cwd: '/work/demo-app', title: 'Fix the parser' })
+  const { result, request } = await answered(context, { action: 'archive', sessions: [item('junie', JUNIE_ID)] })
+  assert.deepEqual([request.rows[0].action, request.rows[0].owner], ['stop', 'terminal'])
+  assert.deepEqual(context.signals, [[40, 'SIGTERM']])
+  assert.equal(result.archived[0].hidden, 'junie')
+  assert.equal((await ends(junieArchiveFile(context))).length, 1)
+  // A session whose folder names no project directory: Air does not list it, and Megachat writes no line for it.
+  const lost = await context.add('junie', 'session-260101-150000-lost', { text: junieLog(), cwd: undefined, title: 'A lost task' })
+  await fs.rm(join(lost, '..', 'summary.json'))
+  context.records.get('junie:session-260101-150000-lost').cwd = undefined
+  const { result: second } = await answered(context, { action: 'archive', sessions: [item('junie', 'session-260101-150000-lost')] })
+  assert.deepEqual([second.archived[0].step, second.archived[0].error], ['error', message('archive.error.step', 'archiveNoDirectory')])
+  assert.equal((await ends(junieArchiveFile(context))).length, 1)
+  assert.equal((await context.archive.cards.all()).find(card => card.sessionId === 'session-260101-150000-lost').hidden, 'pending')
 })

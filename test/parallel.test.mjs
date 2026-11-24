@@ -469,3 +469,17 @@ test('each run takes the time limit of children.timeoutMinutes of its directory 
   await new Promise(resolve => setTimeout(resolve, 600))
   assert.ok(!terminalStates.has((await service.state.snapshot()).runs[free.id].status))
 })
+
+test('a Claude task in the checkout of a Junie task waits until the Junie run ends', { timeout: 30000 }, async t => {
+  const { cwd, service } = await open(t)
+  const [junie, claude] = await admit(service, { cwd: cwd.a, prompt: 'approval', agent: 'junie' }, { cwd: cwd.a, prompt: 'hello', agent: 'claude' })
+  assert.deepEqual([junie.agent, claude.agent], ['junie', 'claude'])
+  let state = await until(service, value => pendingOf(value, junie))
+  assert.equal(state.runs[claude.id].status, 'admitted')
+  assert.deepEqual(await dispatches(cwd.a), ['approval'])
+  await answer(service, junie)
+  state = await finished(service)
+  assert.deepEqual([junie, claude].map(run => state.runs[run.id].status), ['completed', 'completed'])
+  assert.ok(state.runs[claude.id].startedAt >= state.runs[junie.id].finishedAt)
+  assert.deepEqual(await dispatches(cwd.a), ['approval', 'hello'])
+})

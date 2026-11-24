@@ -132,6 +132,22 @@ test('a session gets a note for a long wait for a permission or for a stuck step
   assert.match(lines[1], /about 1 h|60 min/)
 })
 
+test('a Junie session that waits for a permission for 5 minutes gets a note, and one that waits for an answer gets none', () => {
+  const now = Date.parse(NOON)
+  // The start of the wait of a Junie session is the time of the event of the wait in its log.
+  const rows = [row(10, 'waiting_for_permission', now - 6 * MINUTE, { agent: 'junie' }),
+    row(11, 'waiting_for_user', now - 6 * MINUTE, { agent: 'junie', title: 'Merge the branch' }),
+    row(12, 'waiting_for_permission', now - 4 * MINUTE, { agent: 'junie', title: 'A short wait' }),
+    // A Junie child of Megachat shows its permission request in the chat.
+    row(13, 'waiting_for_permission', now - HOUR, { agent: 'junie', parent: megachat }),
+    // A wait without a known start, as before the read of the log.
+    row(14, 'waiting_for_permission', null, { agent: 'junie' })]
+  const plan = planNotes({}, rows, now)
+  assert.deepEqual(plan.due.map(item => item.row.pid), [10])
+  assert.equal(noteText(plan.due, now), [message('notes.title.one'), '- Junie in demo-app, "Fix the parser": it seems to wait for a permission, for 6 min.',
+    message('notes.end')].join('\n'))
+})
+
 test('the notes are off by default: no read of a session, no timer and no note', async t => {
   const view = fakeView([row(10, 'waiting_for_permission', Date.parse(NOON) - HOUR)])
   const { service, tool, advance, notes } = await open(t, { view })

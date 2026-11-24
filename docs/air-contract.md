@@ -26,7 +26,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | Capability | Sender | What the other side does |
 |---|---|---|
 | `asyncTasks` | Air | Megachat sends its child runs as background tasks. Megachat also sends `asyncTasks` back. |
-| `asyncTaskSessions` | Air | With `asyncTasks`, Megachat sends `session` in the rows of the Claude and Codex runs. Megachat does not send it back. See "The session of a child run" below. |
+| `asyncTaskSessions` | Air | With `asyncTasks`, Megachat sends `session` in the rows of the Claude, Codex and Junie runs. Megachat does not send it back. See "The session of a child run" below. |
 | `serviceSessions` | Air | Megachat records each delegated session with `_session/service/record`. |
 | `workspaces` | Air | Megachat asks for the open projects with `_workspaces/list`. |
 | `persistentSession` | Megachat, always | Air sends no `session/cancel` and no `session/close` when it releases the runtime. Air loads the session again on each attach. Air sends `clientMessageId` with each prompt. |
@@ -40,7 +40,7 @@ Megachat reads the list of Air only when `version` is 1 or more.
 | Method | Sender | Parameters | What the other side does |
 |---|---|---|---|
 | `_workspaces/list` | Megachat | `{}` | Air returns `directories`: the trusted open project directories. Megachat registers each one in the daemon, and skips a directory that the daemon cannot read. Megachat asks on each attach and every 15 seconds while a view is open. |
-| `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude` or `codex`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code or Codex, so Megachat sends no record for it. |
+| `_session/service/record` | Megachat | `agentId`, `sessionId`, `cwd` | Air hides that session from the session list. `agentId` is `claude`, `codex` or `junie`. `sessionId` is the session of the provider. A pi child has no session file of Claude Code, Codex or Junie, so Megachat sends no record for it. |
 | `session/request_permission` | Megachat | `sessionId`, `toolCall`, `options`, `_meta.jetbrains.air.permission` | Air shows the request of a child, and the stop request of the main agent, as a permission dialog. See "The permissions" and "The stop dialog" below. |
 | `_session/async_task/stop` | Air | `sessionId`, `asyncTaskId` | Megachat cancels the child run of that row, and no other work. It answers `{ "stopped": true }` when it accepted the stop, and `{ "stopped": false }` for each other case. Then the row ends with its terminal update. See "The Stop of a row" below. |
 | `_agent/stop` | Air | `{}` | Megachat stops its daemon when no turn and no child run is in work, answers `{ "stopped": true }`, and ends the ACP connection. Else it answers `{ "stopped": false, "reason": "<text>" }`, and nothing changes. See "The removal of a Megachat" below. |
@@ -179,7 +179,7 @@ Megachat sends these updates through `session/update` only when Air sent `asyncT
 
 - `asyncTaskId`, `name`, `taskType` and `showInTranscript` are required.
 - Megachat sends one task for each unfinished child run. `name` is the title of the task. `description` gives the
-  agent (`Claude`, `Codex` or `Pi`), the project and the phase. `taskType` is `agent`, `showInTranscript` is `false`, and `canStop` is `true`.
+  agent (`Claude`, `Codex`, `Junie` or `Pi`), the project and the phase. `taskType` is `agent`, `showInTranscript` is `false`, and `canStop` is `true`.
 - The ID is `<run ID>:<phase>`. The phase is `queued`, `resuming`, `approval` or `running`. A change of the phase ends
   the task of the old phase with `completed` and sends a new task.
 - A run that ends gives `completed` when it completed, `stopped` when the user cancelled it, and `failed` otherwise.
@@ -225,9 +225,11 @@ This is a field that Air of today reads. It is not an extension of Megachat, and
 This is an extension of Megachat. Megachat sends it only when Air sent `asyncTasks` and `asyncTaskSessions`.
 
 - The field `session` is `{ "agentId", "sessionId", "cwd" }`, the same address as the parameters of
-  `_session/service/record`. `agentId` is `claude` or `codex`, `sessionId` is the session of the provider, and `cwd` is
-  the absolute directory of the run.
-- The row of a Claude or Codex run holds `session` in each phase (`queued`, `resuming`, `approval`, `running`) when the
+  `_session/service/record`. `agentId` is `claude`, `codex` or `junie`, `sessionId` is the session of the provider, and
+  `cwd` is the absolute directory of the run. `junie` is the agent ID of Junie in Air (`ProductDefaultAgents.kt`).
+- A Junie run has a session of Junie: Junie keeps it in `~/.junie/sessions/<session ID>`, and Air lists it as a Junie
+  session of the project. With the consent `sessions.index`, the session tools of Megachat read it from its event log.
+- The row of a Claude, Codex or Junie run holds `session` in each phase (`queued`, `resuming`, `approval`, `running`) when the
   daemon knows the session at the spawn of the row. So the row of a follow-up (`agents_send`) and of a continued
   session of the user (`agents_resume`) holds it from its first update. A queued row holds `session` and no
   `outputFilePath`.
@@ -244,8 +246,8 @@ This is an extension of Megachat. Megachat sends it only when Air sent `asyncTas
 - On each attach, Megachat sends each unfinished row again, with `session` when the daemon knows it, and then one
   `async_task_progress` with `session` for each such row. Air can keep an open task from before the attach and drop the
   second spawn, and the progress still gives it the session. Air keeps the first value of a task.
-- A pi run gets no `session`: its provider session is a conversation of the harness, not a session of Claude Code or
-  Codex. The row of the import of past sessions gets no `session`. A client without `asyncTaskSessions` gets no
+- A pi run gets no `session`: its provider session is a conversation of the harness, not a session of Claude Code,
+  Codex or Junie. The row of the import of past sessions gets no `session`. A client without `asyncTaskSessions` gets no
   `session` and no `async_task_progress`.
 - A new child with `children.showInProject` `false` runs in a service session that Air hides. Its row holds `session`
   all the same, and Air decides how to open it.
@@ -505,6 +507,21 @@ tool belong to it. Megachat sends the fence as plain text in `agent_message_chun
   the support. A child never gets the rules.
 - Open for Air (the three points of the IJAI ticket): a capability `htmlFence` in `initialize`, whether a custom ACP agent
   gets `additionalDirectories` with the skill directory, and a public contract of the fence.
+
+## The archive of a Junie session
+
+- Air keeps the Done state of the Junie sessions in `~/.junie/sessions/agent-workbench-archive-state.jsonl`, next to
+  `index.jsonl` of Junie (`JunieSessionSource.kt` and `JunieSessionIndex.kt` of Air). "Done" adds one line
+  `{"sessionId","updatedAt","projectDir","archived":true}`, and a restore adds the same line with `archived` false.
+  The state of a session is its last line for its session ID and its project directory. Air reads the new lines of
+  the file when its size or its modification time changes.
+- `agents_archive` of Megachat adds such a line for a Junie session that no process runs: one whole line in one write
+  with the append flag. `updatedAt` is the time of the write, or the `updatedAt` of the session when that is later.
+  `projectDir` is the project directory of `summary.json` of the session folder, else of its line in `index.jsonl`,
+  without a separator at its end. Megachat adds no line to `index.jsonl`, and it changes no other line and no other
+  file of Junie. A session whose last line has `archived` true counts as archived in Megachat, also when Air wrote it.
+- Not checked in Air: whether Air hides and shows a session after a line of Megachat without a restart, and what Air
+  does for a session of a linked git worktree (see the open checks of `junie-sessions` in `docs/manual-checks.md`).
 
 ## The archive of a session that has a thread of Air
 Checked against the Air sources at `b819bcfd4b452` (`plugins/air`) on 2026-11-15.

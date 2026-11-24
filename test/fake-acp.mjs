@@ -12,7 +12,8 @@ let servers = []
 // requests in their order, separated by commas, and the last answer repeats: injected (the default), promptRequired,
 // failed, error, drop (injected, and the turn ends with no work after it), trail (injected, with a chunk of the reply
 // before the answer and one more chunk of the same reply after it, then the end of the turn), or hang (no answer). off is an agent
-// without the steering extension.
+// without the steering extension. startedNewTurn is the answer of Junie for a session without a running turn: Junie
+// does not read idleBehavior, and it starts a turn of its own with the message.
 const answers = (process.env.FAKE_ACP_STEERING ?? 'injected').split(',')
 let steerings = 0
 let prompting = false
@@ -29,6 +30,22 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 // "Error: late reason" on the error output and an exit), or app-server (the code 1001 of codex-acp with a message of two
 // lines).
 const startFailure = process.env.FAKE_ACP_NEW
+// FAKE_ACP_MODEL_OPTIONS lists the values of the config option `model` of the session, separated by commas, as Junie
+// gives its model list: in the group `proxy:central`, with the first value as the current value. The answers of
+// session/new and session/load hold the option. With FAKE_ACP_MODEL_OPTIONS_IN=update, the answers hold no option, and
+// a config_option_update before the answer gives it.
+async function modelConfig(ctx) {
+  const values = (process.env.FAKE_ACP_MODEL_OPTIONS ?? '').split(',').filter(Boolean)
+  if (!values.length) return {}
+  const configOptions = [
+    { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'default', options: [{ value: 'default', name: 'Default' }, { value: 'plan', name: 'Plan' }] },
+    { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: values[0],
+      options: [{ group: 'proxy:central', name: 'proxy:central', options: values.map(value => ({ value, name: value.split(':').at(-1) })) }] },
+  ]
+  if (process.env.FAKE_ACP_MODEL_OPTIONS_IN !== 'update') return { configOptions }
+  await ctx.client.notify(methods.client.session.update, { sessionId: 'fake-session', update: { sessionUpdate: 'config_option_update', configOptions } })
+  return {}
+}
 agent({ name: 'fake-claude' })
   .onRequest(methods.agent.initialize, async () => {
     for (const chunk of JSON.parse(process.env.FAKE_ACP_STDERR ?? '[]')) {
@@ -49,6 +66,7 @@ agent({ name: 'fake-claude' })
     const text = ctx.params.prompt.map(block => block.text).join('\n')
     // The turn ended before the request arrived.
     if (answer === 'promptRequired') { steered?.({ text, work: false }); return { outcome: 'promptRequired', reason: 'noRunningTurn' } }
+    if (answer === 'startedNewTurn') { steered?.({ text, work: false }); return { outcome: 'startedNewTurn' } }
     if (!prompting) return { outcome: 'promptRequired', reason: 'noRunningTurn' }
     // The reply of the step streams at the time of the request. The Codex adapter can send the rest after its answer.
     if (answer === 'trail') await ctx.client.notify(methods.client.session.update, {
@@ -76,7 +94,7 @@ agent({ name: 'fake-claude' })
     // The options of a Claude session, so a test can read the settings sources and the session settings.
     if (ctx.params._meta?.claudeCode) await writeFile(join(process.cwd(), 'claude-options.json'), JSON.stringify(ctx.params._meta.claudeCode.options))
     await writeFile(join(process.cwd(), 'agent.pid'), String(process.pid))
-    return { sessionId: 'fake-session' }
+    return { sessionId: 'fake-session', ...await modelConfig(ctx) }
   })
   .onRequest(methods.agent.session.load, async ctx => {
     servers = ctx.params.mcpServers
@@ -86,7 +104,7 @@ agent({ name: 'fake-claude' })
     await ctx.client.notify(methods.client.session.update, {
       sessionId: 'fake-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old replay' } },
     })
-    return {}
+    return modelConfig(ctx)
   })
   // Each mode request, so a test can read the mode that the daemon sends. FAKE_ACP_MODES lists the modes of the
   // session, as the adapter lists the modes that the settings of Claude Code allow. The value exit ends the agent.

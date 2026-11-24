@@ -123,6 +123,7 @@ function settingsRules(values, onboarding, rules, notice, projects = [], offers 
     message('instructions.children', values['children.agent'], ...CHILD_STEPS.map(step => values[`children.${step}`])),
     message('instructions.claude', values['children.permissionMode'], values['children.claudeModel']),
     message('instructions.codex', values['children.codexModel']),
+    message('instructions.junie', values['children.junieModel']),
     message('instructions.projects', PROJECT_SETTINGS.join(', ')),
     ...(projects.length ? projects.map(([directory, text]) => message('instructions.project', directory, text)) : [message('instructions.projects.none')]),
     onboarding === 'pending' ? onboardingRules(values, rules) : message('instructions.settings'),
@@ -733,7 +734,7 @@ export class PiMegachatService {
           ...(terminalStates.has(run.status) && !run.reported ? { separateResult: true } : {}) }))
         // Each directory names the agent of a new task in it: a project value of children.agent wins over the global value.
         const workspaces = directoriesOf(state).map(item => ({ ...item, defaultAgent: this.settings.values(item.cwd)['children.agent'] }))
-        return result({ agents: ['claude', 'codex', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces, runs,
+        return result({ agents: ['claude', 'codex', 'junie', 'pi'], defaultAgent: this.settings.values()['children.agent'], workspaces, runs,
           hotSessions: hotSessionsOf(state, this.workdayClock.now()),
           ...(this.suggestions !== 'off' ? { initiative: { declines: state.initiative.declines, silenced: state.initiative.silenced, suggestion: state.initiative.suggestion } } : {}) })
       }),

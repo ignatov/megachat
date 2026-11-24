@@ -22,8 +22,10 @@ const count = value => Number.isSafeInteger(value) && value >= 0
 const indexPosition = value => value && typeof value === 'object' && !Array.isArray(value)
   && Object.entries(value).every(([key, item]) => ['before', 'offset', 'until', 'updated', 'id', 'after'].includes(key) && count(item))
   && (value.updated === undefined) === (value.id === undefined)
-/** pi has no live source. Its sessions come only from the index of past sessions. */
-const INDEX_ONLY = 'pi'
+/** pi and Junie have no live source. Their sessions come only from the index of past sessions. */
+const INDEX_ONLY = new Set(['pi', 'junie'])
+/** The name of an agent without a live source, for the text that says that the index is off. */
+const INDEX_ONLY_NAMES = { pi: 'pi', junie: 'Junie' }
 /** The entries of one page of a read from the end of a log. */
 export const NEWEST_LIMIT = 20
 export const NEWEST_MAX_LIMIT = 100
@@ -43,10 +45,10 @@ export class SessionHistoryService {
 
   get indexed() { return Boolean(this.index?.enabled) }
 
-  /** Accepts a known agent. pi needs the index. */
+  /** Accepts a known agent. pi and Junie need the index. */
   agent(agent) {
-    requireCondition(typeof agent === 'string' && (Object.hasOwn(this.providers, agent) || agent === INDEX_ONLY))
-    requireCondition(agent !== INDEX_ONLY || this.indexed, 'sessionsIndexOff')
+    requireCondition(typeof agent === 'string' && (Object.hasOwn(this.providers, agent) || INDEX_ONLY.has(agent)))
+    requireCondition(!INDEX_ONLY.has(agent) || this.indexed, 'sessionsIndexOff', INDEX_ONLY_NAMES[agent])
     return agent
   }
 
@@ -76,7 +78,7 @@ export class SessionHistoryService {
     if (agent !== 'all') this.agent(agent)
     requireCondition(agent !== 'all' || !cursor)
     const indexed = this.indexed
-    const agents = agent === 'all' ? [...Object.keys(this.providers), ...(indexed ? [INDEX_ONLY] : [])] : [agent]
+    const agents = agent === 'all' ? [...Object.keys(this.providers), ...(indexed ? INDEX_ONLY : [])] : [agent]
     const position = agent === 'all' ? null : this.position(cursor, { cwd, agent, query })
     if (position?.index !== undefined) requireCondition(indexed && indexPosition(position.index))
     else if (position) {
@@ -96,7 +98,7 @@ export class SessionHistoryService {
           const page = await this.indexPage(cwd, agent, query, position?.index, caughtUp)
           if (page) return page
         }
-        if (agent === INDEX_ONLY) return { agent, matches: [], complete: false, error: message('error.sessionsIndexOff') }
+        if (INDEX_ONLY.has(agent)) return { agent, matches: [], complete: false, error: message('error.sessionsIndexOff', INDEX_ONLY_NAMES[agent]) }
         return await this.searchPage(cwd, agent, query, position?.index ? null : position)
       }
       catch { return { agent, matches: [], complete: false, error: message('error.sessions') } }
@@ -111,7 +113,7 @@ export class SessionHistoryService {
   async indexPage(cwd, agent, query, position, caughtUp) {
     const index = this.index.store
     if (!index) return undefined
-    const live = agent !== INDEX_ONLY
+    const live = !INDEX_ONLY.has(agent)
     if (live && !await index.hasSessions(agent, cwd)) return undefined
     const terms = queryTerms(query)
     if (live && query.trim() && !terms.length) return undefined
@@ -180,7 +182,7 @@ export class SessionHistoryService {
     cwd = await this.workspace(cwd)
     // A native pi child lives in the conversation of the daemon, and a pi run of the state names its session. So it
     // needs no index, and a log of the pi command-line agent cannot have its ID.
-    const child = agent === INDEX_ONLY && typeof sessionId === 'string' && Boolean(await this.children?.owns(cwd, sessionId))
+    const child = agent === 'pi' && typeof sessionId === 'string' && Boolean(await this.children?.owns(cwd, sessionId))
     if (!child) this.agent(agent)
     requireCondition(typeof sessionId === 'string' && sessionIdPattern.test(sessionId))
     requireCondition(typeof query === 'string' && query.length <= 200)
@@ -191,7 +193,7 @@ export class SessionHistoryService {
       const page = await this.indexRead(identity, position?.index?.after ?? 0)
       if (page) return { ...page, index: await this.index.status() }
     }
-    requireCondition(child || agent !== INDEX_ONLY, 'missing')
+    requireCondition(child || !INDEX_ONLY.has(agent), 'missing')
     const page = await (child ? this.children : this.providers[agent]).read(cwd, sessionId, position?.historyCursor ?? null)
     return { agent, session: this.filteredSession(page.session),
       entries: page.entries.filter(entry => entry.text.toLowerCase().includes(query.toLowerCase())).map(entry => this.excerpt(entry, query)),

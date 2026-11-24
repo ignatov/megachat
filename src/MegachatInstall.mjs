@@ -1,16 +1,16 @@
 import { constants, existsSync } from 'node:fs'
-import { access, chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
-import { bundledBinaries, CentralConfigurationService } from './CentralConfigurationService.mjs'
+import { bundledBinaries, CentralConfigurationService, commandOnPath, executableFile as executable } from './CentralConfigurationService.mjs'
 import { STOP_WAIT_MS } from './DaemonClient.mjs'
 import { runningDaemon, stopDaemon, workLines } from './DaemonWork.mjs'
 import { megachatVersion } from './MegachatBuild.mjs'
 import { readProjectRecord, stateDirectories } from './MegachatHome.mjs'
 import { message } from './messages.mjs'
-import { ENTRY_GIT_VARIABLES, npmPathEntry } from './npmEnvironment.mjs'
+import { ENTRY_GIT_VARIABLES } from './npmEnvironment.mjs'
 import { gitCheckout } from './sourceBuildId.mjs'
 
 /** A test sets this variable, so that no test can reach the `acp.json` of the user. */
@@ -166,29 +166,13 @@ export async function removeEntry(path, now = new Date(), ours = ownEntry) {
   return { status: 'removed', backup, existing }
 }
 
-async function executable(path) {
-  try { await access(path, constants.X_OK); return (await stat(path)).isFile() }
-  catch { return false }
-}
-
-/**
- * The first `codex` on [path]. A directory that npm adds does not count, such as `node_modules/.bin`: the daemon does
- * not get it.
- */
-async function codexOnPath(path) {
-  for (const directory of path.split(delimiter).filter(item => isAbsolute(item))) {
-    if (npmPathEntry(directory)) continue
-    if (await executable(join(directory, 'codex'))) return join(directory, 'codex')
-  }
-  return undefined
-}
-
 /**
  * Checks what Megachat needs at run time, at the places that `CentralConfigurationService` and the shims use. Each
  * result is one line. The checks never print the output of Central or of the key helper of Claude Code. [binaries]
  * holds the platform binaries that npm installed with the agents. The checks pass when the platform and Central pass
  * and a child agent is ready: Claude with a binary and a key, or Codex with a binary. A Claude child gets its key from
- * the Central entry of Claude Code, else from the route of pi in Central.
+ * the Central entry of Claude Code, else from the route of pi in Central. The line about Junie names the `junie` on the
+ * `PATH` of a child, which has the directory of node and the directory of the Central command before [path].
  */
 async function checks({ configuration, platform, path, binaries }) {
   const lines = []
@@ -215,8 +199,11 @@ async function checks({ configuration, platform, path, binaries }) {
     lines.push(message(key, configuration.settings, configuration.keyHelperTimeout / 1000))
   }
   catch { lines.push(message('install.claudeCentral')) }
-  const codex = await codexOnPath(path)
+  const codex = await commandOnPath('codex', path)
   lines.push(codex ? message('install.codex', codex) : binaries.codex ? message('install.codexBundled') : message('install.codexMissing'))
+  // Junie is optional, so its line does not change the result of the checks.
+  const junie = await configuration.junieOnPath()
+  lines.push(junie ? message('install.junie', junie) : message('install.junieMissing'))
   const claudeReady = (userClaude || binaries.claude !== undefined) && claudeKey
   const codexReady = codex !== undefined || binaries.codex !== undefined
   return { lines, passed: platformPassed && centralPassed && (claudeReady || codexReady) }

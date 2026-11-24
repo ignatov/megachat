@@ -18,7 +18,7 @@ export function taskTitle(prompt) {
 }
 
 /** The name of the agent of a run for the chat. A run without the field is from before the choice of the agent. */
-const agentName = agent => agent === 'codex' ? 'Codex' : agent === 'pi' ? 'Pi' : 'Claude'
+const agentName = agent => ({ codex: 'Codex', junie: 'Junie', pi: 'Pi' })[agent] ?? 'Claude'
 
 /** The title of the task of [run]: its own title, else the title or the first prompt line of the first run of the task. */
 function runTitle(state, run) {
@@ -28,7 +28,7 @@ function runTitle(state, run) {
 }
 
 /** The name of an agent of `agents_running` for the stop dialog. */
-const sessionAgentName = agent => ({ claude: 'Claude Code', codex: 'Codex', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
+const sessionAgentName = agent => ({ claude: 'Claude Code', codex: 'Codex', junie: 'Junie', pi: 'pi', opencode: 'OpenCode' })[agent] ?? String(agent ?? '?')
 
 /**
  * An `agent_message_chunk` of the main session. Each chunk has the phase `final_answer` of Air on the update
@@ -114,13 +114,13 @@ export function taskRows(state) {
 
 /**
  * The session of the provider of [run] for its row in Air, with the same address as `_session/service/record`, or
- * `null`. Only a Claude or a Codex run with a provider session has one. A pi run has `providerSessionId` too, but it
- * is the conversation of the harness and not a session of Claude Code or Codex. A run without the field `agent` is
- * from before the choice of the agent, so it is a Claude run.
+ * `null`. Only a Claude, a Codex or a Junie run with a provider session has one. A pi run has `providerSessionId` too,
+ * but it is the conversation of the harness and not a session of an agent that Air lists. A run without the field
+ * `agent` is from before the choice of the agent, so it is a Claude run. The agent ID of Junie in Air is `junie`.
  */
 export function rowSession(run) {
   const agentId = run?.agent ?? 'claude'
-  if (!run?.providerSessionId || (agentId !== 'claude' && agentId !== 'codex')) return null
+  if (!run?.providerSessionId || !['claude', 'codex', 'junie'].includes(agentId)) return null
   return { agentId, sessionId: run.providerSessionId, cwd: run.cwd }
 }
 

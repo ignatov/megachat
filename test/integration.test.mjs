@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { MemoryStorage } from '@earendil-works/pi-durable'
 import { AcpBridge, taskRows } from '../src/AcpBridge.mjs'
 import { AcpRunService } from '../src/AcpRunService.mjs'
+import { CentralConfigurationService } from '../src/CentralConfigurationService.mjs'
 import { CodexSessionHistoryService } from '../src/CodexSessionHistoryService.mjs'
 import { DaemonClient } from '../src/DaemonClient.mjs'
 import { DaemonDirectory } from '../src/DaemonDirectory.mjs'
@@ -27,8 +28,11 @@ async function finishChildren(service) {
     && Object.values(state.runs).every(run => terminalStates.has(run.status) && run.reported) ? state : undefined)
 }
 
-/** A daemon with the fake agent. The launch of a child waits for [launch], when it is set. */
-async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions, showInProject = false, launch } = {}) {
+/**
+ * A daemon with the fake agent. The launch of a child waits for [launch], when it is set. With [configuration], the
+ * launch of that configuration decides whether the child starts, as in the daemon.
+ */
+async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 10000, env = {}, launchError, suggestions, showInProject = false, launch, configuration } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'megachat-integration-'))
   const fake = fauxProvider()
   fake.setResponses([
@@ -54,6 +58,7 @@ async function fixture(t, prompt = 'approval', agent = 'claude', { deadlineMs = 
     launchedAgents.push(agent)
     await launch
     if (launchError) throw launchError
+    await configuration?.childLaunch(agent)
     return { env: { ...process.env, ...env } }
   } }, {
     args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))], deadlineMs,
@@ -115,6 +120,79 @@ test('a Codex child requests permission, registers its service session, and its 
   assert.deepEqual(progressOf(viewer), [{ sessionUpdate: 'async_task_progress', asyncTaskId: `${run.id}:running`, session }])
   // The row of the permission request comes after the session, so it holds the session from its spawn.
   assert.deepEqual(spawnedRows(viewer).find(update => update.asyncTaskId === `${run.id}:approval`).session, session)
+})
+
+test('a Junie child runs as the agent junie, its row and its permission request name Junie, and its hidden session has the agent ID junie', { timeout: 10000 }, async t => {
+  const launch = Promise.withResolvers()
+  // The fixture sets children.showInProject to false, so the session of the child is a service session.
+  const { daemon, cwd, fake, service, launchedAgents } = await fixture(t, 'approval', 'junie', { launch: launch.promise })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'approval', agent: 'junie', title: 'First' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'), fauxAssistantMessage('The child finished.'),
+  ])
+  const viewer = await attach(daemon, cwd, { native: true, serviceSessions: true, approve: true, taskSessions: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Use Junie' }] })
+  const launching = Object.values((await service.state.snapshot()).runs)[0]
+  const [row] = await rowsOf(viewer, [launching.id], 'running')
+  assert.deepEqual([row.name, row.description, row.session], ['First', `Junie · ${basename(cwd)}`, undefined])
+  launch.resolve()
+  const state = await finishChildren(service)
+  assert.deepEqual(launchedAgents, ['junie'])
+  const run = Object.values(state.runs)[0]
+  assert.deepEqual([run.agent, run.status, run.providerSessionId], ['junie', 'completed', 'fake-session'])
+  // Junie gets no options of Claude Code in session/new.
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'new', claudeOptions: false })
+  assert.equal(viewer.asked[0].toolCall.title, message('permission.title', 'Junie', 'First', 'Write a file'))
+  assert.deepEqual(viewer.registrations.map(item => [item.agentId, item.sessionId]), [['junie', 'fake-session']])
+  const session = { agentId: 'junie', sessionId: 'fake-session', cwd }
+  assert.deepEqual(progressOf(viewer), [{ sessionUpdate: 'async_task_progress', asyncTaskId: `${run.id}:running`, session }])
+  assert.deepEqual(spawnedRows(viewer).find(update => update.asyncTaskId === `${run.id}:approval`).session, session)
+})
+
+test('a follow-up to a Junie child loads its session and stays with Junie, and the Stop of its row sends a cancel', { timeout: 15000 }, async t => {
+  const { daemon, cwd, fake, service, launchedAgents } = await fixture(t, 'hello', 'junie')
+  const viewer = await attach(daemon, cwd, { native: true })
+  t.after(() => viewer.connection.close())
+  await viewer.connection.agent.request(methods.agent.session.prompt, { sessionId: viewer.sessionId, prompt: [{ type: 'text', text: 'Work' }] })
+  const [first] = Object.values((await finishChildren(service)).runs)
+  assert.deepEqual([first.agent, first.status, first.providerSessionId], ['junie', 'completed', 'fake-session'])
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_send', { cwd, childSessionId: first.childSessionId, prompt: 'wait' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Sent.'), fauxAssistantMessage('Reported.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('follow-up', 'Continue')).submissionId}`)
+  const followUp = await waitForState(service.state, state => Object.values(state.runs).find(run => run.id !== first.id && run.status === 'dispatched'))
+  assert.deepEqual([followUp.agent, followUp.childSessionId, followUp.providerSessionId], ['junie', first.childSessionId, 'fake-session'])
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'load', sessionId: 'fake-session', claudeOptions: false })
+  assert.deepEqual(launchedAgents, ['junie', 'junie'])
+  // The user stops the row of the Junie run that runs. The child gets session/cancel and ends its turn as cancelled.
+  while (!(await readFile(join(cwd, 'dispatches'), 'utf8').catch(() => '')).split('\n').includes('wait')) await new Promise(resolve => setTimeout(resolve, 10))
+  const [row] = await rowsOf(viewer, [followUp.id], 'running')
+  assert.deepEqual(await stopTask(viewer, row.asyncTaskId), { stopped: true })
+  const ended = await waitForState(service.state, state => terminalStates.has(state.runs[followUp.id].status) ? state.runs[followUp.id] : undefined)
+  assert.deepEqual([ended.status, ended.stopReason], ['cancelled', 'cancelled'])
+})
+
+test('without the command junie, a Junie task ends before the start of a process with the text of the missing command, and it gets no continuation', { timeout: 10000 }, async t => {
+  const empty = await realpath(await mkdtemp(join(tmpdir(), 'megachat-no-junie-')))
+  t.after(() => rm(empty, { force: true, recursive: true }))
+  // The PATH of a child of this configuration holds only the empty directory.
+  const configuration = new CentralConfigurationService({ central: join(empty, 'central'), environment: { PATH: empty }, nodeDirectory: empty })
+  const { cwd, service, launchedAgents } = await fixture(t, 'hello', 'junie', { configuration })
+  service.state.resumeDelayMs = 0
+  t.mock.method(process.stderr, 'write', () => true)
+  await service.submit('work', 'Work')
+  const state = await finishChildren(service)
+  t.mock.restoreAll()
+  const runs = Object.values(state.runs)
+  assert.deepEqual(launchedAgents, ['junie'])
+  assert.equal(runs.length, 1)
+  assert.deepEqual([runs[0].agent, runs[0].status, runs[0].pid, runs[0].autoResume], ['junie', 'interrupted', null, false])
+  assert.equal(runs[0].error, 'The command junie is not on the PATH, so Megachat did not start the Junie task. Install Junie CLI, or give the task to Claude or Codex.')
+  // The fake agent writes these files at its start and at its prompt.
+  await assert.rejects(readFile(join(cwd, 'session-request.json'), 'utf8'), { code: 'ENOENT' })
+  await assert.rejects(readFile(join(cwd, 'dispatches'), 'utf8'), { code: 'ENOENT' })
 })
 
 test('a child registers no service session with the default of children.showInProject', { timeout: 10000 }, async t => {
@@ -1156,6 +1234,29 @@ test('a steer after the end of the turn becomes a follow-up in the same session 
   assert.equal(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')).operation, 'load')
 })
 
+test('a message that a Junie child answers with startedNewTurn becomes a follow-up in the same session, as a possible repeat', { timeout: 15000 }, async t => {
+  // Junie does not read idleBehavior: without a running turn, it starts a turn of its own and answers startedNewTurn.
+  const { cwd, daemon, fake, service } = await fixture(t, 'steer', 'junie', { env: { FAKE_ACP_STEERING: 'startedNewTurn' } })
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_spawn', { cwd, prompt: 'steer', agent: 'junie' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Delegated.'),
+  ])
+  await daemon.json(`/wait?submission=${(await service.submit('work', 'Work')).submissionId}`)
+  await dispatched(cwd, 'steer')
+  const [run] = Object.values((await service.state.snapshot()).runs)
+  const steered = await steerTurn(service, daemon, fake, 'late', { childSessionId: run.childSessionId, prompt: 'One more file' })
+  assert.equal(steered.outcome, 'followUp')
+  const state = await finishChildren(service)
+  const [first, next] = Object.values(state.runs)
+  assert.deepEqual([first.agent, first.status, next.agent, next.status], ['junie', 'resumed', 'junie', 'completed'])
+  assert.deepEqual([next.resumeOf, next.providerSessionId, next.prompt], [first.id, first.providerSessionId, message('child.steer.followUp')])
+  // The message did not become delivered in the first run. The follow-up loads the session and gets it as a possible repeat.
+  assert.ok(!first.steers.some(item => item.outcome === 'injected'))
+  const prompts = (await readFile(join(cwd, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(prompts[1].at(-1), `${message('child.steer.added')}\n\n${message('child.steer.repeat', 1)}\nOne more file`)
+  assert.deepEqual(JSON.parse(await readFile(join(cwd, 'session-request.json'), 'utf8')), { operation: 'load', sessionId: 'fake-session', claudeOptions: false })
+})
+
 for (const [mode, env, sent] of [['an agent without steering', 'off', 0], ['a failed steering', 'failed', 1],
   ['an error of the steering request', 'error', 1], ['mode interrupt', 'injected', 0]]) {
   test(`with ${mode}, a steer cancels the turn and continues the session with the message and one report`, { timeout: 15000 }, async t => {
@@ -1734,4 +1835,68 @@ test('a client without asyncTasks gets no row and no stop', { timeout: 15000 }, 
   assert.ok(!updates.some(event => event.update.sessionUpdate?.startsWith('async_task')))
   await service.state.stopChild(run.id)
   await finishChildren(service)
+})
+
+test('agents_resume continues a Junie session of the listed directory in a Junie child, and refuses a session of another directory', { timeout: 15000 }, async t => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'megachat-junie-resume-')))
+  t.after(() => rm(home, { force: true, recursive: true }))
+  const project = join(home, 'work', 'demo-app')
+  const other = join(home, 'work', 'other')
+  // Two sessions of Junie: one of the project, and one of the other listed directory.
+  const session = async (id, cwd) => {
+    const folder = join(home, '.junie', 'sessions', id)
+    await mkdir(folder, { recursive: true })
+    await writeFile(join(folder, 'events.jsonl'), [{ kind: 'UserPromptEvent', requestId: `${id}-1`, prompt: 'Fix the parser', presentablePrompt: 'Fix the parser' },
+      { kind: 'SessionA2uxEvent', event: { state: 'COMPLETED', agentEvent: { kind: 'ResultBlockUpdatedEvent', stepId: `${id}-2`, result: 'The parser works.' } } },
+      { kind: 'TaskState', state: 'COMPLETED' }].map((value, index) => `${JSON.stringify({ ...value, timestampMs: Date.now() - 60000 + index })}\n`).join(''))
+    await writeFile(join(folder, 'summary.json'), JSON.stringify({ sessionId: id, createdAt: Date.now() - 60000, updatedAt: Date.now(), projectDir: cwd, taskName: 'Fix the parser' }))
+  }
+  for (const directory of [project, other, join(home, 'state')]) await mkdir(directory, { recursive: true })
+  await session('session-260101-120000-abcd', project)
+  await session('session-260101-130000-efgh', other)
+  const fake = fauxProvider()
+  // The first pass of the index gives a summary turn of its own, which takes the first reply.
+  fake.setResponses(Array(4).fill(fauxAssistantMessage('Summary told.')))
+  const models = createModels()
+  models.setProvider(fake.provider)
+  const model = fake.getModel()
+  const service = await PiMegachatService.open(new MemoryStorage(), models, { provider: model.provider, modelId: model.id }, {},
+    { sessionsPath: join(home, 'state', 'sessions.sqlite'), home, environment: {}, reportRetryDelayMs: 20,
+      sessionIndex: { watch: () => ({ close() {}, on() {} }), debounceMs: 10 } })
+  await service.settings.set('children.showInProject', false)
+  for (const directory of [project, other]) await service.state.addWorkspace(directory)
+  const launchedAgents = []
+  const children = new AcpRunService(service.state, { childLaunch: async agent => { launchedAgents.push(agent); return { env: process.env } } },
+    { args: [fileURLToPath(new URL('./fake-acp.mjs', import.meta.url))] })
+  await children.start()
+  await service.resume()
+  t.after(async () => { await children.close(); await service.close() })
+  await service.sessionIndex.idle()
+  await waitForState(service.state, state => !state.current && !state.sessionIndex?.summary ? true : undefined)
+  const resume = service.extension().tools.find(item => item.name === 'agents_resume')
+  // A session of another directory: the index holds it only for the other directory, so the call fails, and no run starts.
+  await assert.rejects(resume.execute({ cwd: project, agent: 'junie', sessionId: 'session-260101-130000-efgh', prompt: 'hello' }, { taskId: 'direct' }), { code: 'missing' })
+  await assert.rejects(resume.execute({ cwd: project, agent: 'junie', sessionId: 'session-260101-999999-none', prompt: 'hello' }, { taskId: 'direct' }), { code: 'missing' })
+  assert.deepEqual(Object.keys((await service.state.snapshot()).runs), [])
+  // An existing Junie session: the child loads it, and the run is not a service session, also with children.showInProject false.
+  fake.setResponses([
+    fauxAssistantMessage(fauxToolCall('agents_resume', { cwd: project, agent: 'junie', sessionId: 'session-260101-120000-abcd', prompt: 'hello', title: 'Continue' }), { stopReason: 'toolUse' }),
+    fauxAssistantMessage('Resumed in the background.'), fauxAssistantMessage('The child finished.'),
+  ])
+  await service.submit('work', 'Continue the Junie session')
+  const state = await waitForState(service.state, value => !value.current && Object.keys(value.runs).length
+    && Object.values(value.runs).every(item => terminalStates.has(item.status) && item.reported) ? value : undefined)
+  const [run] = Object.values(state.runs)
+  assert.deepEqual([run.agent, run.status, run.providerSessionId, run.serviceSession, run.title], ['junie', 'completed', 'session-260101-120000-abcd', false, 'Continue'])
+  assert.deepEqual(launchedAgents, ['junie'])
+  assert.deepEqual(JSON.parse(await readFile(join(project, 'session-request.json'), 'utf8')), { operation: 'load', sessionId: 'session-260101-120000-abcd', claudeOptions: false })
+  assert.deepEqual(state.serviceSessions, {})
+})
+
+test('without the index of past sessions, agents_resume with the agent junie fails with the text of the index and starts no run', { timeout: 10000 }, async t => {
+  const { cwd, service } = await fixture(t, 'hello')
+  const resume = service.extension().tools.find(item => item.name === 'agents_resume')
+  await assert.rejects(resume.execute({ cwd, agent: 'junie', sessionId: 'session-260101-120000-abcd', prompt: 'hello' }, { taskId: 'direct' }),
+    { code: 'sessionsIndexOff', message: message('error.sessionsIndexOff', 'Junie') })
+  assert.deepEqual(Object.keys((await service.state.snapshot()).runs), [])
 })

@@ -3,6 +3,7 @@ import { relative } from 'node:path'
 import { logFailure } from './messages.mjs'
 import { directoryOf, parseLine, readLines, timeOf } from './SessionLog.mjs'
 import { indexedTitle } from './SessionText.mjs'
+import { WAIT_STEPS } from './SessionStatus.mjs'
 import { readBackward } from './SessionTail.mjs'
 
 const HOUR_MS = 3600000
@@ -32,7 +33,7 @@ const fromRow = row => ({ path: row.path, agent: row.agent, ino: row.ino, size: 
   mtimeMs: row.last_write_at, step: row.last_step ?? undefined, read: true, error: false })
 
 /**
- * The live table of the session files of Claude Code, Codex and pi on the machine, for the tool `agents_running`. It
+ * The live table of the session files of Claude Code, Codex, pi and Junie on the machine, for the tool `agents_running`. It
  * exists only with the consent of the user, the setting `sessions.index`. For each file it keeps the path, the inode,
  * the size, the byte offset of the read, the agent, the session ID, the `cwd`, the title, the start time, the time of
  * the last write and the last step, and no message text. `sessions.sqlite` keeps the table, so a restart answers at
@@ -248,7 +249,10 @@ export class SessionCatalog {
     if (!stat.isFile()) { await this.#drop(path); return }
     const ino = String(stat.ino)
     const old = this.records.get(path)
-    if (old?.read && !old.error && old.ino === ino && old.size === stat.size && Math.floor(old.mtimeMs) === Math.floor(stat.mtimeMs)) return
+    // The table keeps the time of a recorded wait in the memory only. A record of an earlier start has the step
+    // without its time, so the tail is read one time more.
+    const timeless = WAIT_STEPS.has(old?.step) && old.stepAt === undefined
+    if (old?.read && !old.error && old.ino === ino && old.size === stat.size && Math.floor(old.mtimeMs) === Math.floor(stat.mtimeMs) && !timeless) return
     if (this.scope && !(old?.read && old.ino === ino && this.#inScope(old.cwd))) {
       if (this.outside.get(path) === ino) return
       let cwd
@@ -263,7 +267,7 @@ export class SessionCatalog {
     }
     let record
     try {
-      record = old?.read && !old.error && old.ino === ino && stat.size >= old.size && stat.size - old.offset <= APPEND_LIMIT
+      record = old?.read && !old.error && old.ino === ino && stat.size >= old.size && stat.size - old.offset <= APPEND_LIMIT && !timeless
         ? await this.#append(source, old, stat)
         : await this.#full(source, path, stat, old?.read && old.ino === ino && stat.size >= old.size ? old : undefined)
     }
@@ -279,6 +283,7 @@ export class SessionCatalog {
 
   /** Reads the first lines of a file until the session tells its `cwd`. A scoped table reads no more of a file of another directory. */
   async #cwd(source, path, stat) {
+    if (source.describe) return (await source.describe(path, this.fs)).cwd
     for await (const batch of readLines(this.fs, path, { end: Math.min(stat.size, HEAD_BYTES), chunkBytes: TAIL_BYTES, batchLines: 8 })) {
       for (const line of batch.lines) {
         const cwd = parseLine(source, line, path)?.parsed.meta?.cwd
@@ -308,12 +313,14 @@ export class SessionCatalog {
   /** Reads the appended complete lines after the offset of [old]. */
   async #append(source, old, stat) {
     const record = { ...old }
+    // A file next to the log can come after the first lines of the log, so a record without a directory asks again.
+    if (source.describe && !record.cwd) this.#take(record, { value: {}, parsed: { meta: await source.describe(old.path, this.fs) } }, { newer: false })
     for await (const batch of readLines(this.fs, old.path, { start: old.offset, end: stat.size })) {
       for (const line of batch.lines) {
         const item = parseLine(source, line, old.path)
         if (!item) continue
         this.#take(record, item, { newer: true })
-        if (item.parsed.step) record.step = item.parsed.step
+        if (item.parsed.step) Object.assign(record, { step: item.parsed.step, stepAt: item.parsed.stepAt })
       }
       record.offset = batch.end
     }
@@ -326,17 +333,22 @@ export class SessionCatalog {
    */
   async #full(source, path, stat, old) {
     const record = old ? { sessionId: old.sessionId, cwd: old.cwd, startedAt: old.startedAt, title: old.title, titleRank: old.titleRank } : {}
+    // The files next to the log give the session data that the log does not hold, such as the project directory of Junie.
+    const described = source.describe ? await source.describe(path, this.fs) : undefined
+    if (described) this.#take(record, { value: {}, parsed: { meta: described } }, { newer: true })
     for await (const batch of readLines(this.fs, path, { end: Math.min(stat.size, HEAD_BYTES), chunkBytes: TAIL_BYTES, batchLines: 8 })) {
       for (const line of batch.lines) {
         const item = parseLine(source, line, path)
         if (item) this.#take(record, item, { newer: true })
       }
-      if (record.cwd && record.startedAt !== undefined && (record.sessionId || source.agent === 'claude')) break
+      // The log of a source with `describe` holds no more session data than its first lines give.
+      if (described || record.cwd && record.startedAt !== undefined && (record.sessionId || source.agent === 'claude')) break
     }
     // The tail comes newest first, so only a title of a higher rank replaces one that the tail gave already.
     const tail = {}
     let offset
     let step
+    let stepAt
     let whole = true
     for await (const { line, start, end, cut } of readBackward(this.fs, path, { end: stat.size, budget: TAIL_LIMIT })) {
       // Without a complete line in the read part, the next read starts at the end of the file.
@@ -344,7 +356,7 @@ export class SessionCatalog {
       if (cut) { whole = false; break }
       const item = line ? parseLine(source, line, path) : undefined
       if (item) {
-        step ??= item.parsed.step
+        if (step === undefined && item.parsed.step) ({ step, stepAt } = item.parsed)
         this.#take(tail, item, { newer: false })
       }
       const bytes = stat.size - start
@@ -355,6 +367,6 @@ export class SessionCatalog {
     if (tail.title !== undefined && !(record.titleRank > tail.titleRank)) Object.assign(record, { title: tail.title, titleRank: tail.titleRank })
     record.cwd ??= tail.cwd
     record.sessionId ??= tail.sessionId
-    return Object.assign(record, { offset: offset ?? 0, step })
+    return Object.assign(record, { offset: offset ?? 0, step, stepAt })
   }
 }

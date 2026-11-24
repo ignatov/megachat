@@ -72,18 +72,23 @@ export const PAGE_SCAN_BYTES = 8 * 1024 * 1024
  * It gives the last [limit] entries whose text, after the secret filter, holds [query], in the order of the log, and
  * `before`: the offset of the oldest line that the page read, or null at the start of the file or when the read gave no
  * line. A page reads at most about 8 MB, so a large log opens without a read of the whole file. Each text is cut to
- * about 2 KB. [secrets] is an optional `KnownSecrets`: the filter removes its exact values too.
+ * about 2 KB. [secrets] is an optional `KnownSecrets`: the filter removes its exact values too. An agent can write one
+ * entry more than one time, as Junie writes an ended block again after the end of its turn. A page gives an entry key
+ * one time, from its newest line. A copy of the entry in an older page comes again there.
  */
 export async function newestPage(fs, source, path, { before, limit, query = '', secrets }) {
   const end = before ?? (await fs.stat(path)).size
   const needle = query.toLowerCase()
   const entries = []
+  const keys = new Set()
   // A read that gives no line, such as of a file that became shorter, gives no cursor, so a caller does not loop.
   let oldest = 0
   for await (const { line, start } of readBackward(fs, path, { end, budget: PAGE_SCAN_BYTES })) {
     oldest = start
-    const entry = line ? parseLine(source, line, path)?.parsed.entry : undefined
+    const parsed = line ? parseLine(source, line, path)?.parsed.entry : undefined
+    const entry = parsed && !keys.has(parsed.key) ? parsed : undefined
     if (entry) {
+      keys.add(entry.key)
       const { text, clipped } = indexedText(entry.text, secrets)
       if (text.toLowerCase().includes(needle)) entries.push({ ...entry, text, clipped })
     }
